@@ -1,0 +1,6 @@
+[submodule "skills/literature-match"]
+	path = skills/literature-match
+	url = https://github.com/leike0813/literature-match
+[submodule "skills/literature-digest"]
+	path = skills/literature-digest
+	url = https://github.com/leike0813/literature-digest
