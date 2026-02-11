@@ -4,3 +4,6 @@
 [submodule "skills/literature-digest"]
 	path = skills/literature-digest
 	url = https://github.com/leike0813/literature-digest
+[submodule "skills/tag-regulator"]
+	path = skills/tag-regulator
+	url = https://github.com/leike0813/tag-regulator
