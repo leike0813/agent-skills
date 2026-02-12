@@ -7,3 +7,6 @@
 [submodule "skills/tag-regulator"]
 	path = skills/tag-regulator
 	url = https://github.com/leike0813/tag-regulator
+[submodule "skills/skill-converter-agent"]
+	path = skills/skill-converter-agent
+	url = https://github.com/leike0813/skill-converter-agent
