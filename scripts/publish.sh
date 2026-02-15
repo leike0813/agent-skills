@@ -34,7 +34,7 @@ DRY_RUN=0
 # defaults (override via env / config / cli)
 # -----------------------------
 AGG_WT_DEFAULT=/home/joshua/Workspace/Code/Skill/agent-skills/
-AGG_URL_DEFAULT="https://github.com/leike0813/agent-skills.git"
+AGG_URL_DEFAULT="https://github.com/leike0813/agent-skills"
 
 DEV_ROOT=""
 PKG_DIR=""
