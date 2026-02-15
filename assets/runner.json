@@ -1,0 +1,26 @@
+{
+  "id": "tag-regulator",
+  "name": "tag-regulator",
+  "description": "Normalize and infer Zotero tags under a strict controlled vocabulary file.",
+  "version": "1.0.1",
+  "engines": ["gemini", "codex"],
+  "schemas": {
+    "input": "assets/input.schema.json",
+    "parameter": "assets/parameter.schema.json",
+    "output": "assets/output.schema.json"
+  },
+  "artifacts": [
+    {
+      "name": "result_json",
+      "role": "result",
+      "pattern": "result/result.json",
+      "required": true
+    }
+  ],
+  "entrypoint": {
+    "prompts": {
+      "gemini": "调用名为 tag-regulator 的SKILL。file输入：valid_tags={{ input.valid_tags }}。inline输入：metadata={{ input.metadata }}, input_tags={{ input.input_tags }}。参数：valid_tags_format={{ parameter.valid_tags_format }}, infer_tag={{ parameter.infer_tag }}。严格按 tag-regulator/SKILL.md 执行，stdout 只能输出一个 JSON 对象。",
+      "codex": "You are $tag-regulator. File input: valid_tags={{ input.valid_tags }}. Inline inputs: metadata={{ input.metadata }}, input_tags={{ input.input_tags }}. Parameters: valid_tags_format={{ parameter.valid_tags_format }}, infer_tag={{ parameter.infer_tag }}. Follow tag-regulator/SKILL.md strictly and print exactly one JSON object to stdout."
+    }
+  }
+}
