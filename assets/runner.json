@@ -1,0 +1,26 @@
+{
+    "id": "skill-converter-agent",
+    "version": "1.0.0",
+    "name": "Skill Converter Agent",
+    "description": "Directory-first converter for transforming a generic skill into a Skill-Runner AutoSkill package.",
+    "engines": [
+        "gemini",
+        "codex"
+    ],
+    "runtime": {
+        "language": "python",
+        "version": "3.11",
+        "dependencies": []
+    },
+    "entrypoint": {
+        "prompts": {
+            "gemini": "Use skill `skill-converter-agent` in auto-execution mode. First run `zip_directory_wrapper.py --mode unpack` to unzip {{ input.source_skill_package }} to a workspace directory, then run the same directory conversion logic, then optionally repack via `--mode pack`. Apply prompt-based classification and conversion. Always run final validator `validate_converted_skill.py`. Return only final JSON.",
+            "codex": "$skill-converter-agent` in auto-execution mode. First run `zip_directory_wrapper.py --mode unpack` to unzip {{ input.source_skill_package }} to a workspace directory, then run the same directory conversion logic, then optionally repack via `--mode pack`. Apply prompt-based classification and conversion. Always run final validator `validate_converted_skill.py`. Return only final JSON."
+        }
+    },
+    "schemas": {
+        "input": "assets/input.schema.json",
+        "parameter": "assets/parameter.schema.json",
+        "output": "assets/output.schema.json"
+    }
+}
