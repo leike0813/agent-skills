@@ -2,22 +2,27 @@
 set -euo pipefail
 
 # ==============================================================================
-# publish.sh (SAFE)
+# SAFE publish script for agent-skills aggregator
 #
-# Store this script in local aggregator repo: ~/Workspace/Code/Skill/agent-skills/scripts/
-# Run it from a skill dev repo root (anywhere inside that repo is OK).
+# Store:  ~/Workspace/Code/Skill/agent-skills/scripts/publish.sh
+# Run from inside a skill dev repo (any subdir is OK).
 #
-# Features:
-# - True dry-run: no filesystem modifications, no worktree changes, no commits, no pushes
-# - Publishes using file list derived from git (honors .gitignore via --exclude-standard)
-# - Updates aggregator main only in skills/<skill> directory
-# - Updates/creates skill/<skill> branch via TEMP worktree (never overwrites aggregator worktree)
-# - Refuses to run if aggregator local branches are not aligned with origin (for touched branches)
+# Safety properties:
+# - DRY-RUN has zero side effects (no file writes, no worktrees, no commits, no pushes)
+# - Never overwrites the main aggregator worktree root.
+# - Uses temporary git worktrees for BOTH:
+#     1) main branch update: skills/<skill>/
+#     2) skill/<skill> branch: repo root == package
+# - Publishes file set derived from git (honors .gitignore via --exclude-standard)
+# - Refuses if aggregator local/remote are not aligned (main always; skill branch if exists)
 #
 # Dependencies: git, awk, tar, sed, find, mktemp
 # ==============================================================================
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
 log() { echo "==> $*" >&2; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
@@ -33,15 +38,15 @@ DRY_RUN=0
 # -----------------------------
 # defaults (override via env / config / cli)
 # -----------------------------
-AGG_WT_DEFAULT=/home/joshua/Workspace/Code/Skill/agent-skills/
-AGG_URL_DEFAULT="https://github.com/leike0813/agent-skills"
+AGG_WT_DEFAULT="/home/joshua/Workspace/Code/Skill/agent-skills/"
+AGG_URL_DEFAULT="https://github.com/leike0813/agent-skills.git"
 
 DEV_ROOT=""
 PKG_DIR=""
 SKILL=""
-EXCLUDES="${EXCLUDES:-}"                 # comma-separated prefix excludes relative to package root (optional)
+EXCLUDES="${EXCLUDES:-}" # comma-separated prefix excludes relative to package root (optional)
 
-AGG_WT="${AGG_WT:-${AGG_WT_DEFAULT}}"                     # local aggregator worktree path (default: script_dir/..)
+AGG_WT="${AGG_WT:-${AGG_WT_DEFAULT}}" # local agent-skills worktree path (default: script_dir/..)
 AGG_URL="${AGG_URL:-${AGG_URL_DEFAULT}}"
 AGG_MAIN="${AGG_MAIN:-main}"
 AGG_SKILLS_DIR="${AGG_SKILLS_DIR:-skills}"
@@ -92,7 +97,7 @@ load_kv_config() {
     else
       die "Bad config line (expect KEY=VALUE): $line"
     fi
-  done < "$f"
+  done <"$f"
 }
 
 # -----------------------------
@@ -100,21 +105,63 @@ load_kv_config() {
 # -----------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dev-root) DEV_ROOT="${2:-}"; shift 2;;
-    --pkg-dir) PKG_DIR="${2:-}"; shift 2;;
-    --skill) SKILL="${2:-}"; shift 2;;
-    --excludes) EXCLUDES="${2:-}"; shift 2;;
-    --agg-wt) AGG_WT="${2:-}"; shift 2;;
-    --agg-url) AGG_URL="${2:-}"; shift 2;;
-    --agg-main) AGG_MAIN="${2:-}"; shift 2;;
-    --agg-skills-dir) AGG_SKILLS_DIR="${2:-}"; shift 2;;
-    --skill-branch-prefix) SKILL_BRANCH_PREFIX="${2:-}"; shift 2;;
-    --only-main) ONLY_MAIN=1; shift;;
-    --only-skill-branch) ONLY_SKILL_BRANCH=1; shift;;
-    --config) CFG_FILE="${2:-}"; shift 2;;
-    --dry-run) DRY_RUN=1; shift;;
-    -h|--help) usage; exit 0;;
-    *) die "Unknown arg: $1";;
+  --dev-root)
+    DEV_ROOT="${2:-}"
+    shift 2
+    ;;
+  --pkg-dir)
+    PKG_DIR="${2:-}"
+    shift 2
+    ;;
+  --skill)
+    SKILL="${2:-}"
+    shift 2
+    ;;
+  --excludes)
+    EXCLUDES="${2:-}"
+    shift 2
+    ;;
+  --agg-wt)
+    AGG_WT="${2:-}"
+    shift 2
+    ;;
+  --agg-url)
+    AGG_URL="${2:-}"
+    shift 2
+    ;;
+  --agg-main)
+    AGG_MAIN="${2:-}"
+    shift 2
+    ;;
+  --agg-skills-dir)
+    AGG_SKILLS_DIR="${2:-}"
+    shift 2
+    ;;
+  --skill-branch-prefix)
+    SKILL_BRANCH_PREFIX="${2:-}"
+    shift 2
+    ;;
+  --only-main)
+    ONLY_MAIN=1
+    shift
+    ;;
+  --only-skill-branch)
+    ONLY_SKILL_BRANCH=1
+    shift
+    ;;
+  --config)
+    CFG_FILE="${2:-}"
+    shift 2
+    ;;
+  --dry-run)
+    DRY_RUN=1
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *) die "Unknown arg: $1" ;;
   esac
 done
 
@@ -173,7 +220,7 @@ PKG_PATH="${DEV_ROOT}/${PKG_DIR}"
 [[ -d "${PKG_PATH}" ]] || die "PKG_DIR not found: ${PKG_PATH}"
 [[ -f "${PKG_PATH}/SKILL.md" ]] || die "SKILL.md not found in: ${PKG_PATH}"
 
-# infer SKILL from frontmatter name: (supports quotes)
+# infer SKILL from frontmatter name: (supports quotes, avoids awk/bourne-quote pitfalls)
 if [[ -z "${SKILL}" ]]; then
   SKILL="$(awk '
     BEGIN{in_fm=0}
@@ -181,7 +228,7 @@ if [[ -z "${SKILL}" ]]; then
     in_fm==1 && $0 ~ /^[[:space:]]*name:[[:space:]]*/ {
       sub(/^[[:space:]]*name:[[:space:]]*/, "", $0);
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0);
-      gsub(/^["'\''"]|["'\''"]$/, "", $0);
+      gsub(/^["\047]|["\047]$/, "", $0);  # \047 = single quote
       print $0; exit
     }
   ' "${PKG_PATH}/SKILL.md")"
@@ -189,7 +236,7 @@ if [[ -z "${SKILL}" ]]; then
 fi
 
 SKILL_BRANCH="${SKILL_BRANCH_PREFIX}${SKILL}"
-AGG_SKILL_DIR="${AGG_WT}/${AGG_SKILLS_DIR}/${SKILL}"
+AGG_SKILL_DIR_REL="${AGG_SKILLS_DIR}/${SKILL}"
 
 log "DEV_ROOT       = ${DEV_ROOT}"
 log "PKG_DIR        = ${PKG_DIR}"
@@ -198,37 +245,198 @@ log "SKILL          = ${SKILL}"
 log "AGG_WT         = ${AGG_WT}"
 log "AGG_MAIN       = ${AGG_MAIN}"
 log "AGG_SKILLS_DIR = ${AGG_SKILLS_DIR}"
-log "AGG_SKILL_DIR  = ${AGG_SKILL_DIR}"
+log "AGG_SKILL_DIR  = ${AGG_WT}/${AGG_SKILL_DIR_REL}"
 log "SKILL_BRANCH   = ${SKILL_BRANCH}"
 log "EXCLUDES       = ${EXCLUDES}"
 log "DRY_RUN        = ${DRY_RUN}"
 
 # ==============================================================================
-# Preflight safety checks (read-only)
+# Preflight (read-only)
 # ==============================================================================
-# aggregator must be clean
 [[ -z "$(git -C "${AGG_WT}" status --porcelain)" ]] || die "Aggregator worktree has local changes: ${AGG_WT}"
 
-# fetch
 git -C "${AGG_WT}" fetch origin --prune
 
-# ensure main exists on origin
 git -C "${AGG_WT}" show-ref --verify --quiet "refs/remotes/origin/${AGG_MAIN}" || die "origin/${AGG_MAIN} not found."
 
-# if we're going to update main, require AGG_WT is on main to keep things predictable
-if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
-  cur="$(git -C "${AGG_WT}" rev-parse --abbrev-ref HEAD)"
-  [[ "${cur}" == "${AGG_MAIN}" ]] || die "Aggregator worktree is on '${cur}', please checkout '${AGG_MAIN}' in ${AGG_WT} and retry."
+# Require main aligned (strict)
+local_main="$(git -C "${AGG_WT}" rev-parse "${AGG_MAIN}" 2>/dev/null || true)"
+remote_main="$(git -C "${AGG_WT}" rev-parse "origin/${AGG_MAIN}")"
+if [[ -n "${local_main}" && "${local_main}" != "${remote_main}" ]]; then
+  die "Aggregator local ${AGG_MAIN} != origin/${AGG_MAIN}. Please align (pull --ff-only) and retry."
 fi
 
-# require local main equals origin/main (strict per your requirement)
-local_main="$(git -C "${AGG_WT}" rev-parse "${AGG_MAIN}")"
-remote_main="$(git -C "${AGG_WT}" rev-parse "origin/${AGG_MAIN}")"
-[[ "${local_main}" == "${remote_main}" ]] || die "Aggregator local ${AGG_MAIN} != origin/${AGG_MAIN}. Please align (pull --ff-only) and retry."
+# Skill branch strictness:
+# - local exists & origin exists => must match
+# - local exists & origin missing => refuse
+# - origin exists & local missing => ok (we will create local)
+if git -C "${AGG_WT}" show-ref --verify --quiet "refs/heads/${SKILL_BRANCH}"; then
+  if git -C "${AGG_WT}" show-ref --verify --quiet "refs/remotes/origin/${SKILL_BRANCH}"; then
+    lsb="$(git -C "${AGG_WT}" rev-parse "${SKILL_BRANCH}")"
+    rsb="$(git -C "${AGG_WT}" rev-parse "origin/${SKILL_BRANCH}")"
+    [[ "${lsb}" == "${rsb}" ]] || die "Local ${SKILL_BRANCH} != origin/${SKILL_BRANCH}. Align first then retry."
+  else
+    die "Local ${SKILL_BRANCH} exists but origin/${SKILL_BRANCH} does not. Push/delete it first, then retry."
+  fi
+fi
 
-# strict check for skill branch consistency:
-# - if origin branch exists and local exists -> must match
-# - if origin exists but local missing -> OK (will create tracking)
-# - if local exists but origin missing -> refuse (inconsistent)
-if git -C "${AGG_WT}" show-ref --verify --quiet "refs/heads/${_
+# Refuse if target path is gitlink (submodule)
+if git -C "${AGG_WT}" ls-files --stage -- "${AGG_SKILL_DIR_REL}" | awk '{print $1}' | grep -q "^160000$"; then
+  die "${AGG_SKILL_DIR_REL} is a submodule (gitlink). Convert it to a normal directory first."
+fi
 
+# ==============================================================================
+# Build publish file list (honors .gitignore)
+# ==============================================================================
+TMPDIR="$(mktemp -d)"
+cleanup() { rm -rf "${TMPDIR}"; }
+trap cleanup EXIT
+
+LIST_RAW="${TMPDIR}/files_raw.txt"
+LIST_REL="${TMPDIR}/files_rel.txt"
+LIST_FINAL="${TMPDIR}/files_final.txt"
+TARFILE="${TMPDIR}/pkg.tar"
+
+git -C "${DEV_ROOT}" ls-files -c -o --exclude-standard -- "${PKG_DIR}" >"${LIST_RAW}"
+[[ -s "${LIST_RAW}" ]] || die "No publishable files found under ${PKG_DIR} (all ignored or missing)."
+
+sed "s#^${PKG_DIR}/##" "${LIST_RAW}" >"${LIST_REL}"
+
+if [[ -n "${EXCLUDES}" ]]; then
+  awk -v ex="${EXCLUDES}" '
+    BEGIN{
+      n=split(ex,a,",");
+      for(i=1;i<=n;i++){
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[i]);
+        if(a[i]!="") exa[a[i]]=1;
+      }
+    }
+    {
+      for (p in exa) {
+        if ($0==p) next;
+        if (index($0, p"/")==1) next;
+      }
+      print
+    }
+  ' "${LIST_REL}" >"${LIST_FINAL}"
+else
+  cp "${LIST_REL}" "${LIST_FINAL}"
+fi
+
+[[ -s "${LIST_FINAL}" ]] || die "After EXCLUDES filtering, nothing left to publish."
+
+# ==============================================================================
+# DRY-RUN: print plan and exit (NO SIDE EFFECTS)
+# ==============================================================================
+if [[ "${DRY_RUN}" == "1" ]]; then
+  log "DRY RUN plan:"
+  echo "  - Files to publish: $(wc -l <"${LIST_FINAL}")" >&2
+  if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
+    echo "  - Would update ${AGG_MAIN}:${AGG_SKILL_DIR_REL} via temp worktree and push origin/${AGG_MAIN}" >&2
+  fi
+  if [[ "${ONLY_MAIN}" != "1" ]]; then
+    echo "  - Would create/update ${SKILL_BRANCH} via temp worktree and push origin/${SKILL_BRANCH}" >&2
+  fi
+  exit 0
+fi
+
+# create tarball from PKG_PATH using file list
+(cd "${PKG_PATH}" && tar -cf "${TARFILE}" -T "${LIST_FINAL}")
+
+# ==============================================================================
+# Helper: safely clear directory content
+# ==============================================================================
+clear_dir_contents() {
+  local d="$1"
+  [[ -d "$d" ]] || mkdir -p "$d"
+  # remove all contents including dotfiles safely
+  local old_dotglob old_nullglob
+  old_dotglob="$(shopt -p dotglob || true)"
+  old_nullglob="$(shopt -p nullglob || true)"
+  shopt -s dotglob nullglob
+  rm -rf -- "$d"/*
+  eval "${old_dotglob}" >/dev/null 2>&1 || true
+  eval "${old_nullglob}" >/dev/null 2>&1 || true
+}
+
+# ==============================================================================
+# Use worktrees for both main and skill branch updates
+# ==============================================================================
+MAIN_WT="${TMPDIR}/agg-main-wt"
+SKILL_WT="${TMPDIR}/agg-skill-wt"
+
+# Ensure local tracking branches exist when needed (doesn't touch worktree files)
+if ! git -C "${AGG_WT}" show-ref --verify --quiet "refs/heads/${AGG_MAIN}"; then
+  git -C "${AGG_WT}" branch --track "${AGG_MAIN}" "origin/${AGG_MAIN}"
+fi
+
+if git -C "${AGG_WT}" show-ref --verify --quiet "refs/remotes/origin/${SKILL_BRANCH}" &&
+  ! git -C "${AGG_WT}" show-ref --verify --quiet "refs/heads/${SKILL_BRANCH}"; then
+  git -C "${AGG_WT}" branch --track "${SKILL_BRANCH}" "origin/${SKILL_BRANCH}"
+fi
+
+# --- Step 1: update main skills/<skill>
+if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
+  git -C "${AGG_WT}" worktree add "${MAIN_WT}" "${AGG_MAIN}"
+
+  mkdir -p "${MAIN_WT}/${AGG_SKILLS_DIR}"
+  mkdir -p "${MAIN_WT}/${AGG_SKILL_DIR_REL}"
+  clear_dir_contents "${MAIN_WT}/${AGG_SKILL_DIR_REL}"
+  tar -xf "${TARFILE}" -C "${MAIN_WT}/${AGG_SKILL_DIR_REL}"
+
+  git -C "${MAIN_WT}" add "${AGG_SKILL_DIR_REL}"
+  if ! git -C "${MAIN_WT}" diff --cached --quiet; then
+    git -C "${MAIN_WT}" commit -m "publish(${SKILL}): update ${AGG_SKILL_DIR_REL}"
+    git -C "${MAIN_WT}" push origin "${AGG_MAIN}"
+  else
+    log "No changes detected for ${AGG_MAIN}:${AGG_SKILL_DIR_REL}"
+  fi
+
+  git -C "${AGG_WT}" worktree remove --force "${MAIN_WT}"
+  git -C "${AGG_WT}" worktree prune
+fi
+
+# --- Step 2: update/create skill branch where repo root == package
+if [[ "${ONLY_MAIN}" != "1" ]]; then
+  git -C "${AGG_WT}" fetch origin --prune
+
+  if git -C "${AGG_WT}" show-ref --verify --quiet "refs/heads/${SKILL_BRANCH}"; then
+    git -C "${AGG_WT}" worktree add "${SKILL_WT}" "${SKILL_BRANCH}"
+  else
+    # create orphan branch in a detached worktree
+    git -C "${AGG_WT}" worktree add --detach "${SKILL_WT}" "${AGG_MAIN}"
+    git -C "${SKILL_WT}" checkout --orphan "${SKILL_BRANCH}"
+  fi
+
+  git -C "${SKILL_WT}" rm -rf . >/dev/null 2>&1 || true
+  git -C "${SKILL_WT}" clean -fdx
+  tar -xf "${TARFILE}" -C "${SKILL_WT}"
+
+  git -C "${SKILL_WT}" add -A
+  if git -C "${SKILL_WT}" diff --cached --quiet; then
+    git -C "${SKILL_WT}" commit --allow-empty -m "init(${SKILL}): create ${SKILL_BRANCH}"
+  else
+    git -C "${SKILL_WT}" commit -m "sync(${SKILL}): publish package root"
+  fi
+  git -C "${SKILL_WT}" push -u origin "${SKILL_BRANCH}"
+
+  git -C "${AGG_WT}" worktree remove --force "${SKILL_WT}"
+  git -C "${AGG_WT}" worktree prune
+fi
+
+# Post-check alignment
+git -C "${AGG_WT}" fetch origin --prune
+
+if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
+  lm2="$(git -C "${AGG_WT}" rev-parse "${AGG_MAIN}")"
+  rm2="$(git -C "${AGG_WT}" rev-parse "origin/${AGG_MAIN}")"
+  [[ "${lm2}" == "${rm2}" ]] || die "Post-check failed: ${AGG_MAIN} != origin/${AGG_MAIN}"
+fi
+
+if [[ "${ONLY_MAIN}" != "1" ]]; then
+  lsb2="$(git -C "${AGG_WT}" rev-parse "${SKILL_BRANCH}")"
+  rsb2="$(git -C "${AGG_WT}" rev-parse "origin/${SKILL_BRANCH}")"
+  [[ "${lsb2}" == "${rsb2}" ]] || die "Post-check failed: ${SKILL_BRANCH} != origin/${SKILL_BRANCH}"
+fi
+
+log "Done. Safe publish completed; aggregator local & remote aligned."
