@@ -1,0 +1,67 @@
+{
+  "type": "object",
+  "required": [
+    "metadata",
+    "input_tags",
+    "remove_tags",
+    "add_tags",
+    "suggest_tags",
+    "provenance",
+    "warnings",
+    "error"
+  ],
+  "properties": {
+    "metadata": {
+      "description": "Echo of input metadata. Free-form JSON value."
+    },
+    "input_tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "remove_tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "add_tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "suggest_tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["generated_at"],
+      "properties": {
+        "generated_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        }
+      },
+      "additionalProperties": true
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "error": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["type", "message"],
+          "properties": {
+            "type": { "type": "string" },
+            "message": { "type": "string" },
+            "details": {}
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "valid_tags_format": {
+      "type": "string",
+      "description": "Format of input.valid_tags. yaml/json are strict modes; auto explicitly tries yaml->json.",
+      "enum": ["yaml", "json", "auto"],
+      "default": "yaml"
+    },
+    "infer_tag": {
+      "type": "boolean",
+      "description": "Whether to infer tags from metadata. Effective behavior is still constrained by SKILL.md defaults when metadata is missing/empty.",
+      "default": true
+    }
+  },
+  "additionalProperties": false
+}

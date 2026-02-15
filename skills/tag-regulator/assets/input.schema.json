@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "metadata": {
+      "description": "Paper metadata as inline JSON input (object/string/bibtex-like text are all acceptable).",
+      "x-input-source": "inline"
+    },
+    "input_tags": {
+      "type": "array",
+      "description": "Raw tags to normalize, provided as inline input.",
+      "items": {
+        "type": "string"
+      },
+      "x-input-source": "inline"
+    },
+    "valid_tags": {
+      "type": "string",
+      "description": "Absolute path to controlled vocabulary file injected by Strict Key-Matching from uploads/valid_tags.",
+      "x-input-source": "file",
+      "extensions": [".yaml", ".yml", ".json"]
+    }
+  },
+  "required": ["input_tags", "valid_tags"],
+  "additionalProperties": false
+}
