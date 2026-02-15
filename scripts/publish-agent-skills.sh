@@ -207,15 +207,16 @@ if [[ -z "${SKILL}" ]]; then
   # name: foo-bar
   # ---
   SKILL="$(awk '
-    BEGIN{in=0}
-    /^---[[:space:]]*$/ {in = 1-in; next}
-    in==1 && $0 ~ /^[[:space:]]*name:[[:space:]]*/ {
+    BEGIN{in_fm=0}
+    /^---[[:space:]]*$/ {in_fm = 1 - in_fm; next}
+    in_fm==1 && $0 ~ /^[[:space:]]*name:[[:space:]]*/ {
       sub(/^[[:space:]]*name:[[:space:]]*/, "", $0);
-      gsub(/[[:space:]]+$/, "", $0);
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0);
+      gsub(/^["'\''"]|["'\''"]$/, "", $0);
       print $0; exit
     }
   ' "${PKG_PATH}/SKILL.md")"
-  [[ -n "${SKILL}" ]] || SKILL="$(basename "${PKG_PATH}")"
+  [ -n "${SKILL}" ]] || SKILL="$(basename "${PKG_PATH}")"
 fi
 
 [[ -n "${AGG_URL}" ]] || die "AGG_URL is required (set in config/env or pass --agg-url)."
