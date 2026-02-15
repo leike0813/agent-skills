@@ -1,0 +1,111 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": [
+                "succeeded",
+                "failed"
+            ]
+        },
+        "classification": {
+            "type": "string",
+            "enum": [
+                "not_convertible",
+                "convertible_with_constraints",
+                "ready_for_auto"
+            ]
+        },
+        "failure_reason": {
+            "type": "string",
+            "description": "Failure reason for non-convertible source."
+        },
+        "converted_skill_package_path": {
+            "type": "string",
+            "description": "Path to generated install-ready skill zip package.",
+            "x-type": "artifact",
+            "x-role": "converted_skill_package",
+            "x-filename": "converted_skill.zip"
+        },
+        "converted_skill_directory_path": {
+            "type": "string",
+            "description": "Path to converted skill root directory."
+        },
+        "conversion_report_path": {
+            "type": "string",
+            "description": "Path to conversion report.",
+            "x-type": "artifact",
+            "x-role": "conversion_report",
+            "x-filename": "conversion_report.md"
+        }
+    },
+    "required": [
+        "status",
+        "classification"
+    ],
+    "allOf": [
+        {
+            "if": {
+                "properties": {
+                    "classification": {
+                        "const": "not_convertible"
+                    }
+                },
+                "required": [
+                    "classification"
+                ]
+            },
+            "then": {
+                "required": [
+                    "failure_reason"
+                ],
+                "not": {
+                    "anyOf": [
+                        {
+                            "required": [
+                                "converted_skill_package_path"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "converted_skill_directory_path"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "conversion_report_path"
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "if": {
+                "properties": {
+                    "classification": {
+                        "enum": [
+                            "convertible_with_constraints",
+                            "ready_for_auto"
+                        ]
+                    }
+                },
+                "required": [
+                    "classification"
+                ]
+            },
+            "then": {
+                "required": [
+                    "converted_skill_package_path",
+                    "conversion_report_path"
+                ],
+                "not": {
+                    "required": [
+                        "failure_reason"
+                    ]
+                }
+            }
+        }
+    ]
+}

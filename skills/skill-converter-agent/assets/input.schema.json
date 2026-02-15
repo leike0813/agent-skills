@@ -1,0 +1,15 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+        "source_skill_package": {
+            "type": "string",
+            "description": "Path to source skill package zip.",
+            "x-input-source": "file",
+            "extensions": [
+                ".zip"
+            ]
+        }
+    },
+    "required": ["source_skill_package"]
+}
