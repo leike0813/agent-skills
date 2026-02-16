@@ -96,6 +96,7 @@ description: 目录优先的 Skill 转换代理，将普通 skill 改造为 Skil
      - 只保留必要字段；
      - artifact 使用 `x-type=artifact`、`x-role`、`x-filename` 明确约束；
      - `required` 与实际可执行路径一致，禁止“永远无法产出”的必填项。
+     - **绝对禁止将 `result.json` 标记为 artifact。**
 
 9. **简短示例（用于约束输出风格）**
    - 示例 A：直接返回结果型
