@@ -3,7 +3,10 @@
   "name": "tag-regulator",
   "description": "Normalize and infer Zotero tags under a strict controlled vocabulary file.",
   "version": "1.0.1",
-  "engines": ["gemini", "codex"],
+  "execution_modes": [
+    "auto",
+    "interactive"
+  ],
   "schemas": {
     "input": "assets/input.schema.json",
     "parameter": "assets/parameter.schema.json",
