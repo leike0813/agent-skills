@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "name": "Literature Digest",
   "description": "Generate digests and extract references from academic papers (Markdown).",
-  "engines": [
-    "gemini",
-    "codex"
+  "execution_modes": [
+    "auto",
+    "interactive"
   ],
   "runtime": {
     "language": "python",
