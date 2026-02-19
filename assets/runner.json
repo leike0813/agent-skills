@@ -3,9 +3,9 @@
     "version": "1.0.0",
     "name": "Skill Converter Agent",
     "description": "Directory-first converter for transforming a generic skill into a Skill-Runner AutoSkill package.",
-    "engines": [
-        "gemini",
-        "codex"
+    "execution_modes": [
+        "auto",
+        "interactive"
     ],
     "runtime": {
         "language": "python",
