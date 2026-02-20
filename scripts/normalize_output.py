@@ -16,6 +16,29 @@ def _dedup_preserve_order(values: list[str]) -> list[str]:
     return out
 
 
+def _normalize_suggest_tag_objects(values: list[Any]) -> list[dict[str, str]] | None:
+    parsed: list[dict[str, str]] = []
+    for item in values:
+        if not isinstance(item, dict):
+            return None
+        tag = item.get("tag")
+        note = item.get("note")
+        if not isinstance(tag, str) or not isinstance(note, str):
+            return None
+        parsed.append({"tag": tag, "note": note})
+
+    deduped: list[dict[str, str]] = []
+    seen_tags: set[str] = set()
+    for item in parsed:
+        tag = item["tag"]
+        if tag in seen_tags:
+            continue
+        seen_tags.add(tag)
+        deduped.append(item)
+
+    return sorted(deduped, key=lambda item: item["tag"])
+
+
 def normalize_output_data(output_data: Any) -> Any:
     if not isinstance(output_data, dict):
         return output_data
@@ -35,8 +58,12 @@ def normalize_output_data(output_data: Any) -> Any:
     if isinstance(add_tags, list) and all(isinstance(x, str) for x in add_tags):
         output_data["add_tags"] = sorted(_dedup_preserve_order(add_tags))
 
-    if isinstance(suggest_tags, list) and all(isinstance(x, str) for x in suggest_tags):
-        output_data["suggest_tags"] = sorted(_dedup_preserve_order(suggest_tags))
+    if isinstance(suggest_tags, list):
+        normalized_objects = _normalize_suggest_tag_objects(suggest_tags)
+        if normalized_objects is not None:
+            output_data["suggest_tags"] = normalized_objects
+        elif all(isinstance(x, str) for x in suggest_tags):
+            output_data["suggest_tags"] = sorted(_dedup_preserve_order(suggest_tags))
 
     return output_data
 
@@ -61,4 +88,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
