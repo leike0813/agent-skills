@@ -167,6 +167,7 @@ JSON：
 
 - 推断结果必须优先映射到 `valid_tags`（即：只把受控词表支持的 tag 写入 `add_tags`）。
 - 若某个概念很相关但不在 `valid_tags`，则将其归一化后写入 `suggest_tags[].tag`，并生成对应 `suggest_tags[].note`，不得写入 `add_tags`。
+- suggest_tags[].note **必须是简短的，直接的对于 `suggest_tags[].tag` 的语义描述，例如 `目标检测`、`DEtection TRansformer`、`端到端训练` 等，不需要对原因进行说明！不允许加入额外的描述！**
 - 若不确定，倾向于不添加，并在 `warnings` 中说明不确定性。
 
 ### Step 4：确定性输出整形（稳定排序）
