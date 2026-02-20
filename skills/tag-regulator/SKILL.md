@@ -1,6 +1,6 @@
 ---
 name: tag-regulator
-description: 在严格受控词表（`valid_tags`）约束下，利用 LLM 语义理解对 Zotero tags 进行规范化，并可基于元数据推断（infer_tag）标签。作为 `$tag-regulator` 被调用，从 prompt payload 读取 `metadata`/`input_tags`/`valid_tags`/`infer_tag`，stdout 必须且只能输出一个 JSON 对象。
+description: 在严格受控词表（`valid_tags`）约束下，利用 LLM 语义理解对 Zotero tags 进行规范化，并可基于元数据推断（infer_tag）标签。作为 `$tag-regulator` 被调用，从 prompt payload 读取 `metadata`/`input_tags`/`valid_tags`/`infer_tag`，并支持 `tag_note_language` 控制建议说明语言，stdout 必须且只能输出一个 JSON 对象。
 metadata:
   author: joshua
   version: "0.1.0"
@@ -16,13 +16,14 @@ metadata:
 - `{{ input.input_tags }}`：待规范的原始 tag 列表（字符串数组）
 - `{{ parameter.infer_tag }}`：是否从元数据推断 tag（布尔语义；默认行为见下）
 - `{{ parameter.valid_tags_format }}`：受控词表文件格式（`yaml|json|auto`），默认 `yaml`
+- `{{ parameter.tag_note_language }}`：`suggest_tags[].note` 使用的语言（自由字符串，推荐 BCP 47，如 `zh-CN`/`en-US`）
 - `{{ input.valid_tags }}`：受控词表文件路径
 
 在 stdout 输出**且只能输出一个 JSON 对象**，描述：
 
 - 需要从输入列表中移除哪些 tag（`remove_tags`）
 - 需要新增哪些受控 tag（`add_tags`，且必须属于 `valid_tags`）
-- 需要建议哪些“已规范但不在受控词表中”的 tag（`suggest_tags`）
+- 需要建议哪些“已规范但不在受控词表中”的 tag（`suggest_tags`，对象项含 `tag` 与 `note`）
 
 这是一个 **Agent Skill**：核心工作依赖语义理解（同义、改写、隐含含义），脚本仅用于校验/格式化等辅助，不承担语义决策。
 发布包内仅保留运行时必需脚本：
@@ -38,7 +39,7 @@ metadata:
    - `input_tags`（回显；必须与输入一致，不得改写）
    - `remove_tags`（数组；元素必须来自 `input_tags` 原始条目）
    - `add_tags`（数组；不重复；每个元素必须属于 `valid_tags`）
-   - `suggest_tags`（数组；不重复；按命名规范输出；且不得包含任何已在 `valid_tags` 中的 tag）
+   - `suggest_tags`（对象数组；每项必须包含 `tag`/`note` 字符串；按 `tag` 去重并稳定排序；且 `tag` 不得属于 `valid_tags`）
    - `provenance.generated_at`（UTC ISO-8601 字符串，以 `Z` 结尾）
    - `warnings`（数组）
    - `error`（`object|null`）
@@ -50,6 +51,9 @@ metadata:
 5) 受控词表：
    - `add_tags ⊆ valid_tags` 为硬约束。
    - 不在 `valid_tags` 但语义相关的候选 tag 只能进入 `suggest_tags`（先按命名规范归一化）。
+6) `tag_note_language` 作用域：
+   - 仅影响 `suggest_tags[].note` 的语言表达；
+   - 不得影响 `remove_tags`、`add_tags`、`suggest_tags[].tag`、`warnings`、`error` 的取值与决策逻辑。
 
 ## `infer_tag` 默认行为（必须遵守）
 
@@ -59,6 +63,12 @@ metadata:
 2) 否则，若 `infer_tag` 可被解释为真/假 → 采用该语义。
 3) 否则，若显式提供了 `infer_tag` 但无法解释为真/假 → 默认 `infer_tag=true`。
 4) 否则，若未提供 `infer_tag` 且 `metadata` 非空 → 默认 `infer_tag=true`。
+
+## `tag_note_language` 默认与作用域（必须遵守）
+
+1) 该参数是可选自由字符串（推荐 BCP 47 命名，如 `zh-CN`、`en-US`），不做严格语法校验。
+2) 若未提供 `tag_note_language`，`suggest_tags[].note` 使用与上下文一致的默认语言表达。
+3) 该参数只影响 `suggest_tags[].note`，不得影响其他字段和决策路径。
 
 ## Tag 命名规范（生成 `suggest_tags` 时必须应用）
 
@@ -129,7 +139,9 @@ JSON：
 3) **建议（不在受控词表中）**：
    - 若 `t` 表达的概念与任务相关，但无法映射到任何 `v ∈ valid_tags`，则：
      - 当 `t` 非标准/噪声/重复时，将 `t` 放入 `remove_tags`
-     - 生成一个按命名规范归一化后的候选，放入 `suggest_tags`
+     - 生成一个按命名规范归一化后的候选对象并放入 `suggest_tags`：
+       - `tag`: 规范化候选 tag
+       - `note`: 对 `tag` 语义的简明解释（语言由 `tag_note_language` 指定）
    - `suggest_tags` 用于后续词表治理；除非其已存在于 `valid_tags`，否则不得加入 `add_tags`。
 
 4) **作为噪声移除**：
@@ -139,7 +151,7 @@ JSON：
 
 - `remove_tags` 中的元素必须严格从 `input_tags` 原始条目中选择（不得发明新字符串）。
 - `add_tags` 不得重复，且每个元素必须属于 `valid_tags`。
-- `suggest_tags` 不得重复，且不得包含任何已在 `valid_tags` 中的条目。
+- `suggest_tags[].tag` 不得重复，且不得包含任何已在 `valid_tags` 中的条目。
 
 ### Step 3：从 `metadata` 推断 tag（若启用）
 
@@ -154,7 +166,7 @@ JSON：
 推断规则：
 
 - 推断结果必须优先映射到 `valid_tags`（即：只把受控词表支持的 tag 写入 `add_tags`）。
-- 若某个概念很相关但不在 `valid_tags`，则将其归一化后写入 `suggest_tags`，不得写入 `add_tags`。
+- 若某个概念很相关但不在 `valid_tags`，则将其归一化后写入 `suggest_tags[].tag`，并生成对应 `suggest_tags[].note`，不得写入 `add_tags`。
 - 若不确定，倾向于不添加，并在 `warnings` 中说明不确定性。
 
 ### Step 4：确定性输出整形（稳定排序）
@@ -163,13 +175,13 @@ JSON：
 
 - `remove_tags`：按 `input_tags` 中出现顺序输出，并去重。
 - `add_tags`：去重后按字典序排序。
-- `suggest_tags`：去重后按字典序排序。
+- `suggest_tags`：按 `tag` 去重（同一 `tag` 多次出现时保留首个有效 `note`），并按 `tag` 字典序稳定排序。
 
 ### Step 4.5：运行时脚本调用时机（若可用）
 
 - 在得到候选输出 JSON 后、最终写入 stdout 前，调用 `tag-regulator/scripts/normalize_output.py` 对输出进行收敛。
 - 输入：候选输出 JSON（文件形式或等价内存对象）。
-- 期望效果：`remove_tags` 顺序/去重一致，`add_tags` 与 `suggest_tags` 去重并稳定排序。
+- 期望效果：`remove_tags` 顺序/去重一致，`add_tags` 去重并稳定排序，`suggest_tags` 按 `tag` 去重并稳定排序。
 - 调用失败时不得中断主流程：记录一条 `warnings`，并执行“无脚本回退流程”。
 
 ### Step 4.6：无脚本回退流程（必须可执行）
@@ -178,7 +190,7 @@ JSON：
 
 - `remove_tags`：按 `input_tags` 原始顺序过滤并去重。
 - `add_tags`：去重后按字典序排序。
-- `suggest_tags`：去重后按字典序排序。
+- `suggest_tags`：按 `tag` 去重（保留首个有效 `note`），再按 `tag` 字典序排序。
 
 回退后仍必须满足全部契约：stdout 单 JSON、required keys 完整、`add_tags ⊆ valid_tags`、`remove_tags ⊆ input_tags`。
 
@@ -199,7 +211,7 @@ JSON：
   "input_tags": [],
   "remove_tags": [],
   "add_tags": [],
-  "suggest_tags": [],
+  "suggest_tags": [{ "tag": "facet:value", "note": "explanation text" }],
   "provenance": { "generated_at": "YYYY-MM-DDTHH:MM:SSZ" },
   "warnings": [],
   "error": null
@@ -289,10 +301,11 @@ JSON：
 {
   "metadata": {
     "title": "Crack segmentation in tunnel linings using UNet",
-    "keywords": ["tunnel", "crack", "segmentation"]
+    "keywords": ["tunnel", "crack", "segmentation", "vision transformer"]
   },
-  "input_tags": ["topic:cracking"],
+  "input_tags": ["topic:cracking", "backbone:vit"],
   "infer_tag": true,
+  "tag_note_language": "zh-CN",
   "valid_tags_format": "yaml",
   "valid_tags": "/abs/path/to/uploads/valid_tags"
 }
@@ -312,12 +325,17 @@ JSON：
 {
   "metadata": {
     "title": "Crack segmentation in tunnel linings using UNet",
-    "keywords": ["tunnel", "crack", "segmentation"]
+    "keywords": ["tunnel", "crack", "segmentation", "vision transformer"]
   },
-  "input_tags": ["topic:cracking"],
-  "remove_tags": ["topic:cracking"],
+  "input_tags": ["topic:cracking", "backbone:vit"],
+  "remove_tags": ["topic:cracking", "backbone:vit"],
   "add_tags": ["ai_task:segmentation", "field:CE/UG/Tunnel", "model:DL/UNet", "topic:crack"],
-  "suggest_tags": [],
+  "suggest_tags": [
+    {
+      "tag": "model:DL/ViT",
+      "note": "Vision Transformer"
+    }
+  ],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
   "warnings": ["推断具有启发式性质；如结果异常请人工复核"],
   "error": null

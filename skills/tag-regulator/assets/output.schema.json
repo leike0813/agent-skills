@@ -29,8 +29,15 @@
     },
     "suggest_tags": {
       "type": "array",
-      "items": { "type": "string" },
-      "uniqueItems": true
+      "items": {
+        "type": "object",
+        "required": ["tag", "note"],
+        "properties": {
+          "tag": { "type": "string" },
+          "note": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
     },
     "provenance": {
       "type": "object",
