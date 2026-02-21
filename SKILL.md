@@ -27,6 +27,7 @@ metadata:
 
 这是一个 **Agent Skill**：核心工作依赖语义理解（同义、改写、隐含含义），脚本仅用于校验/格式化等辅助，不承担语义决策。
 发布包内仅保留运行时必需脚本：
+
 - `tag-regulator/scripts/validate_valid_tags.py`（执行开始阶段校验 `valid_tags`）
 - `tag-regulator/scripts/normalize_output.py`（输出前做确定性收敛）
 
@@ -67,7 +68,7 @@ metadata:
 ## `tag_note_language` 默认与作用域（必须遵守）
 
 1) 该参数是可选自由字符串（推荐 BCP 47 命名，如 `zh-CN`、`en-US`），不做严格语法校验。
-2) 若未提供 `tag_note_language`，`suggest_tags[].note` 使用与上下文一致的默认语言表达。
+2) 若未提供 `tag_note_language` 或无法从 `tag_note_language` 的语义中解析出语言意图，默认回退为 `zh-CN`。
 3) 该参数只影响 `suggest_tags[].note`，不得影响其他字段和决策路径。
 
 ## Tag 命名规范（生成 `suggest_tags` 时必须应用）
@@ -168,6 +169,7 @@ JSON：
 - 推断结果必须优先映射到 `valid_tags`（即：只把受控词表支持的 tag 写入 `add_tags`）。
 - 若某个概念很相关但不在 `valid_tags`，则将其归一化后写入 `suggest_tags[].tag`，并生成对应 `suggest_tags[].note`，不得写入 `add_tags`。
 - suggest_tags[].note **必须是简短的，直接的对于 `suggest_tags[].tag` 的语义描述，例如 `目标检测`、`DEtection TRansformer`、`端到端训练` 等，不需要对原因进行说明！不允许加入额外的描述！**
+- suggest_tags[].note 如果是不适合翻译的专有概念（如 `Vision Transformer`、`Ground Truth`等），可以保留原文而不进行翻译。
 - 若不确定，倾向于不添加，并在 `warnings` 中说明不确定性。
 
 ### Step 4：确定性输出整形（稳定排序）
@@ -235,7 +237,8 @@ JSON：
 }
 ```
 
-- `valid_tags`: 
+- `valid_tags`:
+
 ```yaml
 - status:2-to-read
 - field:CE/UG/Tunnel
@@ -271,7 +274,8 @@ JSON：
 }
 ```
 
-- `valid_tags`: 
+- `valid_tags`:
+
 ```json
 [
   "field:CE/UG/Tunnel",
@@ -313,6 +317,7 @@ JSON：
 ```
 
 - `valid_tags`:
+
 ```yaml
 - field:CE/UG/Tunnel
 - topic:crack
@@ -382,6 +387,7 @@ JSON：
 ```
 
 - `valid_tags`:
+
 ```yaml
 - field:CE/UG/Tunnel
 ```
