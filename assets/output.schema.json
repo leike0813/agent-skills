@@ -13,6 +13,12 @@
             "x-role": "references",
             "x-filename": "references.json"
         },
+        "citation_analysis_path": {
+            "type": "string",
+            "x-type": "artifact",
+            "x-role": "citation-analysis",
+            "x-filename": "citation_analysis.json"
+        },
         "provenance": {
             "type": "object",
             "properties": {
@@ -40,6 +46,7 @@
     "required": [
         "digest_path",
         "references_path",
+        "citation_analysis_path",
         "provenance",
         "warnings",
         "error"

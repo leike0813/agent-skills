@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "literature_digest_v1"
 DIGEST_FILENAME = "digest.md"
 REFERENCES_FILENAME = "references.json"
+CITATION_ANALYSIS_FILENAME = "citation_analysis.json"
 
 
 def utc_now_iso() -> str:
@@ -147,6 +147,144 @@ def _normalize_reference_item(item: object, *, fix: bool, warnings: list[str]) -
     return out
 
 
+def _normalize_citation_analysis_obj(
+    obj: object,
+    *,
+    fix: bool,
+    warnings: list[str],
+    language_hint: str | None,
+) -> dict[str, Any] | None:
+    if isinstance(obj, str):
+        s = obj.strip()
+        if not s:
+            return None
+        if not (s.startswith("{") and s.endswith("}")):
+            return None
+        try:
+            obj = json.loads(s)
+        except Exception:  # noqa: BLE001
+            return None
+
+    if not isinstance(obj, dict):
+        return None
+
+    out: dict[str, Any] = dict(obj)
+
+    if fix:
+        meta = _ensure_dict(out.get("meta"))
+        scope = _ensure_dict(meta.get("scope"))
+
+        meta.setdefault("language", language_hint or "")
+        scope.setdefault("section_title", "Introduction")
+        scope.setdefault("line_start", 0)
+        scope.setdefault("line_end", 0)
+        meta["scope"] = scope
+        out["meta"] = meta
+
+        out.setdefault("items", [])
+        out.setdefault("unmapped_mentions", [])
+        out.setdefault("report_md", "")
+
+    return out
+
+
+def _validate_citation_analysis_obj(obj: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(obj, dict):
+        return ["citation_analysis must be a JSON object"]
+
+    meta = obj.get("meta")
+    if not isinstance(meta, dict):
+        errors.append("citation_analysis.meta must be object")
+        meta = {}
+
+    language = meta.get("language")
+    if not isinstance(language, str):
+        errors.append("citation_analysis.meta.language must be string")
+
+    scope = meta.get("scope")
+    if not isinstance(scope, dict):
+        errors.append("citation_analysis.meta.scope must be object")
+        scope = {}
+
+    section_title = scope.get("section_title")
+    if not isinstance(section_title, str):
+        errors.append("citation_analysis.meta.scope.section_title must be string")
+
+    line_start = _as_int_or_none(scope.get("line_start"))
+    line_end = _as_int_or_none(scope.get("line_end"))
+    if line_start is None or line_end is None:
+        errors.append("citation_analysis.meta.scope.line_start/line_end must be int")
+
+    scope_valid = (
+        line_start is not None
+        and line_end is not None
+        and line_start > 0
+        and line_end > 0
+        and line_start <= line_end
+    )
+
+    items = obj.get("items")
+    if not isinstance(items, list):
+        errors.append("citation_analysis.items must be array")
+        items = []
+
+    unmapped = obj.get("unmapped_mentions")
+    if not isinstance(unmapped, list):
+        errors.append("citation_analysis.unmapped_mentions must be array")
+        unmapped = []
+
+    report_md = obj.get("report_md")
+    if not isinstance(report_md, str):
+        errors.append("citation_analysis.report_md must be string")
+
+    def validate_mentions_array(container: object, *, path: str) -> None:
+        if not isinstance(container, list):
+            return
+        for i, mention in enumerate(container):
+            if not isinstance(mention, dict):
+                continue
+            ms = _as_int_or_none(mention.get("line_start"))
+            me = _as_int_or_none(mention.get("line_end"))
+            if ms is None or me is None:
+                continue
+            if scope_valid and not (line_start <= ms <= me <= line_end):  # type: ignore[operator]
+                errors.append(f"{path}[{i}].line_start/line_end out of meta.scope range")
+
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        mentions = item.get("mentions")
+        validate_mentions_array(mentions, path=f"citation_analysis.items[{i}].mentions")
+
+    validate_mentions_array(unmapped, path="citation_analysis.unmapped_mentions")
+    return errors
+
+
+def _validate_references_items(items: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(items, list):
+        return ["references must be a JSON array"]
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append(f"references[{i}] must be object")
+            continue
+        author = item.get("author")
+        if not isinstance(author, list) or any(not isinstance(a, str) for a in author):
+            errors.append(f"references[{i}].author must be string[]")
+        if not isinstance(item.get("title"), str):
+            errors.append(f"references[{i}].title must be string")
+        year = item.get("year")
+        if year is not None and not isinstance(year, int):
+            errors.append(f"references[{i}].year must be int|null")
+        if not isinstance(item.get("raw"), str):
+            errors.append(f"references[{i}].raw must be string")
+        conf = item.get("confidence")
+        if not isinstance(conf, (int, float)):
+            errors.append(f"references[{i}].confidence must be number")
+    return errors
+
+
 def _materialize_outputs(
     out: dict[str, Any],
     *,
@@ -181,7 +319,25 @@ def _materialize_outputs(
             references_items = out["references.items"]
             warnings.append("references: migrated field 'references.items' and materialized to references_path")
 
-    if digest_content is None and references_items is None:
+    citation_analysis_obj: dict[str, Any] | None = None
+    if "citation_analysis_path" not in out or not out.get("citation_analysis_path"):
+        citation_analysis_obj = _normalize_citation_analysis_obj(
+            out.get("citation_analysis"),
+            fix=True,
+            warnings=warnings,
+            language_hint=str(out.get("language")) if isinstance(out.get("language"), str) else None,
+        )
+        if citation_analysis_obj is None and "citation_analysis.json" in out:
+            citation_analysis_obj = _normalize_citation_analysis_obj(
+                out.get("citation_analysis.json"),
+                fix=True,
+                warnings=warnings,
+                language_hint=str(out.get("language")) if isinstance(out.get("language"), str) else None,
+            )
+        if citation_analysis_obj is not None:
+            warnings.append("citation_analysis: materialized to citation_analysis_path")
+
+    if digest_content is None and references_items is None and citation_analysis_obj is None:
         return
 
     output_root.mkdir(parents=True, exist_ok=True)
@@ -203,6 +359,13 @@ def _materialize_outputs(
         out.pop("references", None)
         out.pop("references.items", None)
 
+    if citation_analysis_obj is not None:
+        ca_file = output_root / CITATION_ANALYSIS_FILENAME
+        _write_json(ca_file, citation_analysis_obj)
+        out["citation_analysis_path"] = str(ca_file)
+        out.pop("citation_analysis", None)
+        out.pop("citation_analysis.json", None)
+
 
 def _normalize_top_level(
     obj: object,
@@ -223,13 +386,7 @@ def _normalize_top_level(
     out: dict[str, Any] = dict(obj)
 
     if fix:
-        if out.get("schema_version") != SCHEMA_VERSION:
-            out["schema_version"] = SCHEMA_VERSION
-            warnings.append(f"schema_version forced to {SCHEMA_VERSION}")
-
-        out.setdefault("parent_itemKey", "")
-        out.setdefault("md_attachment_key", "")
-        out.setdefault("provenance", {"generated_at": "", "input_hash": ""})
+        out.setdefault("provenance", {"generated_at": "", "input_hash": "", "model": ""})
         out.setdefault("warnings", [])
         out.setdefault("error", None)
 
@@ -237,34 +394,28 @@ def _normalize_top_level(
 
         out.setdefault("digest_path", "")
         out.setdefault("references_path", "")
+        out.setdefault("citation_analysis_path", "")
 
-    if out.get("schema_version") != SCHEMA_VERSION:
-        errors.append(f"schema_version must be {SCHEMA_VERSION}")
+        if "schema_version" in out:
+            out.pop("schema_version", None)
+            warnings.append("removed legacy field 'schema_version'")
+        if "parent_itemKey" in out:
+            out.pop("parent_itemKey", None)
+            warnings.append("removed legacy field 'parent_itemKey'")
+        if "md_attachment_key" in out:
+            out.pop("md_attachment_key", None)
+            warnings.append("removed legacy field 'md_attachment_key'")
 
     for required_key in [
-        "schema_version",
-        "parent_itemKey",
-        "md_attachment_key",
         "digest_path",
         "references_path",
+        "citation_analysis_path",
         "provenance",
         "warnings",
         "error",
     ]:
         if required_key not in out:
             errors.append(f"missing required key: {required_key}")
-
-    if not isinstance(out.get("parent_itemKey"), str):
-        errors.append("parent_itemKey must be string")
-        if fix:
-            out["parent_itemKey"] = str(out.get("parent_itemKey", ""))
-            warnings.append("parent_itemKey coerced to string")
-
-    if not isinstance(out.get("md_attachment_key"), str):
-        errors.append("md_attachment_key must be string")
-        if fix:
-            out["md_attachment_key"] = str(out.get("md_attachment_key", ""))
-            warnings.append("md_attachment_key coerced to string")
 
     if not isinstance(out.get("digest_path"), str):
         errors.append("digest_path must be string")
@@ -278,10 +429,19 @@ def _normalize_top_level(
             out["references_path"] = "" if out.get("references_path") is None else str(out.get("references_path"))
             warnings.append("references_path coerced to string")
 
+    if not isinstance(out.get("citation_analysis_path"), str):
+        errors.append("citation_analysis_path must be string")
+        if fix:
+            out["citation_analysis_path"] = (
+                "" if out.get("citation_analysis_path") is None else str(out.get("citation_analysis_path"))
+            )
+            warnings.append("citation_analysis_path coerced to string")
+
     prov = _ensure_dict(out.get("provenance"))
     if fix:
         prov.setdefault("generated_at", "")
         prov.setdefault("input_hash", "")
+        prov.setdefault("model", "")
     out["provenance"] = prov
 
     if not _is_utc_iso8601_z(prov.get("generated_at")):
@@ -304,6 +464,18 @@ def _normalize_top_level(
         except Exception as e:  # noqa: BLE001
             warnings.append(f"provenance.input_hash compute failed: {e}")
 
+    model_val = prov.get("model")
+    if model_val is None:
+        errors.append("provenance.model must be string")
+        if fix:
+            prov["model"] = ""
+            warnings.append("provenance.model set to ''")
+    elif not isinstance(model_val, str):
+        errors.append("provenance.model must be string")
+        if fix:
+            prov["model"] = str(model_val)
+            warnings.append("provenance.model coerced to string")
+
     warnings_val = out.get("warnings")
     if not isinstance(warnings_val, list):
         errors.append("warnings must be array")
@@ -318,24 +490,84 @@ def _normalize_top_level(
             out["error"] = {"code": "INVALID_ERROR_FIELD", "message": "error was not object/null"}
             warnings.append("error replaced with object")
 
-    if fix:
-        out["warnings"] = _as_str_list(out.get("warnings")) + warnings
+    def maybe_relocate_text_artifact(key: str, filename: str) -> None:
+        if not fix or md_path is None:
+            return
+        current = out.get(key)
+        if not isinstance(current, str) or not current:
+            return
+        expected = output_root / filename
+        if Path(current) == expected:
+            return
+        src = Path(current)
+        if not src.exists():
+            return
+        try:
+            _write_text(expected, src.read_text(encoding="utf-8"))
+            out[key] = str(expected)
+            warnings.append(f"{key}: relocated to {expected.name} under md_path directory")
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"{key}: relocate failed: {e}")
 
-    # When fixing, ensure materialized files exist if paths are set.
-    if fix and isinstance(out.get("digest_path"), str) and out["digest_path"]:
+    def maybe_relocate_json_artifact(key: str, filename: str) -> None:
+        if not fix or md_path is None:
+            return
+        current = out.get(key)
+        if not isinstance(current, str) or not current:
+            return
+        expected = output_root / filename
+        if Path(current) == expected:
+            return
+        src = Path(current)
+        if not src.exists():
+            return
+        try:
+            data = json.loads(src.read_text(encoding="utf-8"))
+            _write_json(expected, data)
+            out[key] = str(expected)
+            warnings.append(f"{key}: relocated to {expected.name} under md_path directory")
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"{key}: relocate failed: {e}")
+
+    maybe_relocate_text_artifact("digest_path", DIGEST_FILENAME)
+    maybe_relocate_json_artifact("references_path", REFERENCES_FILENAME)
+    maybe_relocate_json_artifact("citation_analysis_path", CITATION_ANALYSIS_FILENAME)
+
+    # Validate artifacts when paths are set (both check and fix mode).
+    if isinstance(out.get("digest_path"), str) and out["digest_path"]:
         if not Path(out["digest_path"]).exists():
             errors.append("digest_path does not exist")
-    if fix and isinstance(out.get("references_path"), str) and out["references_path"]:
+
+    if isinstance(out.get("references_path"), str) and out["references_path"]:
         rp = Path(out["references_path"])
         if not rp.exists():
             errors.append("references_path does not exist")
         else:
             try:
-                refs = json.loads(rp.read_text(encoding="utf-8"))
-                if not isinstance(refs, list):
-                    errors.append("references_path must contain a JSON array")
+                refs_obj = json.loads(rp.read_text(encoding="utf-8"))
+                if fix and isinstance(refs_obj, list):
+                    normalized: list[dict[str, Any]] = []
+                    for item in refs_obj:
+                        normalized.append(_normalize_reference_item(item, fix=True, warnings=warnings))
+                    _write_json(rp, normalized)
+                    refs_obj = normalized
+                errors.extend(_validate_references_items(refs_obj))
             except Exception as e:  # noqa: BLE001
                 errors.append(f"references_path unreadable JSON: {e}")
+
+    if isinstance(out.get("citation_analysis_path"), str) and out["citation_analysis_path"]:
+        cap = Path(out["citation_analysis_path"])
+        if not cap.exists():
+            errors.append("citation_analysis_path does not exist")
+        else:
+            try:
+                ca_obj = json.loads(cap.read_text(encoding="utf-8"))
+                errors.extend(_validate_citation_analysis_obj(ca_obj))
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"citation_analysis_path unreadable JSON: {e}")
+
+    if fix:
+        out["warnings"] = _as_str_list(out.get("warnings")) + warnings
 
     return out, warnings, errors
 
