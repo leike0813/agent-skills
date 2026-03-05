@@ -19,7 +19,7 @@
   },
   "entrypoint": {
     "prompts": {
-      "gemini": "Please call the skill named \"{{ skill.id }}\".\n\nPlease ingest the markdown file at `{{ input.md_path }}`.\nThen generate a literature digest in `{{ parameter.language }}` following the SKILL.md protocol.\n\nOutput the final JSON object to stdout logic as defined in SKILL.md.\n\nInput Context:\n- md_path: {{ input.md_path }}\n- language: {{ parameter.language }}"
+      "gemini": "Please call the skill named \"{{ skill.id }}\".\n\nPlease ingest the markdown file at `{{ input.md_path }}`.\nThen generate artifacts below following the SKILL.md protocol:\n1) `digest.md` (in `{{ parameter.language }}`)\n2) `references.json`\n3) `citation_analysis.json` (in `{{ parameter.language }}`) \n\nOutput the final JSON object to stdout logic as defined in SKILL.md.\n\nInput Context:\n- md_path: {{ input.md_path }}\n- language: {{ parameter.language }}"
     }
   }
 }
