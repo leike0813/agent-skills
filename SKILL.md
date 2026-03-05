@@ -12,7 +12,7 @@ compatibility: Requires local filesystem read access to md_path; no network requ
 
 从 prompt 中读取：
 - `md_path`：待解析的论文 Markdown 文件路径。
-- `language`： 论文总结使用的语言。
+- `language`： 论文总结及参考文献分析使用的语言。
 
 约束：
 - `md_path` 是唯一内容来源；以 UTF‑8 读取。
@@ -21,7 +21,7 @@ compatibility: Requires local filesystem read access to md_path; no network requ
   - `en-US`
   - `fr-FR`
   - ...
-  无法解析或未显式给出时，回退为默认值 `zh-CN`（只影响 `digest` 语言）。
+  无法解析或未显式给出时，回退为默认值 `zh-CN`（只影响 `digest` 和 `citation_analysis` 语言）。
 
 ## 输出
 
