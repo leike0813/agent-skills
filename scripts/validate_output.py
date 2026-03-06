@@ -238,12 +238,16 @@ def _validate_citation_analysis_obj(obj: object) -> list[str]:
     if not isinstance(report_md, str):
         errors.append("citation_analysis.report_md must be string")
 
+    all_mentions: list[tuple[str, dict[str, Any]]] = []
+
     def validate_mentions_array(container: object, *, path: str) -> None:
         if not isinstance(container, list):
             return
         for i, mention in enumerate(container):
             if not isinstance(mention, dict):
+                errors.append(f"{path}[{i}] must be object")
                 continue
+            all_mentions.append((f"{path}[{i}]", mention))
             ms = _as_int_or_none(mention.get("line_start"))
             me = _as_int_or_none(mention.get("line_end"))
             if ms is None or me is None:
@@ -253,12 +257,80 @@ def _validate_citation_analysis_obj(obj: object) -> list[str]:
 
     for i, item in enumerate(items):
         if not isinstance(item, dict):
+            errors.append(f"citation_analysis.items[{i}] must be object")
             continue
+        for field_name in ["ref_index", "mentions", "function", "summary", "confidence"]:
+            if field_name not in item:
+                errors.append(f"citation_analysis.items[{i}] missing field: {field_name}")
         mentions = item.get("mentions")
         validate_mentions_array(mentions, path=f"citation_analysis.items[{i}].mentions")
 
     validate_mentions_array(unmapped, path="citation_analysis.unmapped_mentions")
+
+    mention_ids: list[str] = []
+    for path, mention in all_mentions:
+        mention_id = mention.get("mention_id")
+        marker = mention.get("marker")
+        style = mention.get("style")
+        snippet = mention.get("snippet")
+        if not isinstance(mention_id, str) or not mention_id.strip():
+            errors.append(f"{path}.mention_id must be non-empty string")
+        else:
+            mention_ids.append(mention_id)
+        if not isinstance(marker, str):
+            errors.append(f"{path}.marker must be string")
+        if style not in ("numeric", "author-year", "unknown"):
+            errors.append(f"{path}.style must be one of numeric/author-year/unknown")
+        if not isinstance(snippet, str):
+            errors.append(f"{path}.snippet must be string")
+        if _as_int_or_none(mention.get("line_start")) is None:
+            errors.append(f"{path}.line_start must be int")
+        if _as_int_or_none(mention.get("line_end")) is None:
+            errors.append(f"{path}.line_end must be int")
+
+    if len(mention_ids) != len(set(mention_ids)):
+        errors.append("citation_analysis mention_id must be unique across items and unmapped_mentions")
+
     return errors
+
+
+def _extract_preprocess_expected_mentions(preprocess_artifact: Path | None) -> tuple[int | None, str | None]:
+    if preprocess_artifact is None:
+        return None, None
+    if not preprocess_artifact.exists():
+        return None, f"preprocess artifact does not exist: {preprocess_artifact}"
+    try:
+        obj = json.loads(preprocess_artifact.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return None, f"preprocess artifact unreadable JSON: {e}"
+    if not isinstance(obj, dict):
+        return None, "preprocess artifact must be a JSON object"
+    stats = obj.get("stats")
+    if not isinstance(stats, dict):
+        return None, "preprocess artifact missing object: stats"
+    expected = _as_int_or_none(stats.get("total_mentions"))
+    if expected is None:
+        return None, "preprocess artifact stats.total_mentions must be int"
+    return expected, None
+
+
+def _count_citation_mentions(citation_analysis_obj: object) -> int | None:
+    if not isinstance(citation_analysis_obj, dict):
+        return None
+    items = citation_analysis_obj.get("items")
+    unmapped = citation_analysis_obj.get("unmapped_mentions")
+    if not isinstance(items, list) or not isinstance(unmapped, list):
+        return None
+    total = 0
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        mentions = item.get("mentions")
+        if not isinstance(mentions, list):
+            return None
+        total += len(mentions)
+    total += len(unmapped)
+    return total
 
 
 def _validate_references_items(items: object) -> list[str]:
@@ -373,6 +445,7 @@ def _normalize_top_level(
     fix: bool,
     md_path: Path | None,
     output_root: Path,
+    preprocess_artifact: Path | None = None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     warnings: list[str] = []
     errors: list[str] = []
@@ -555,6 +628,10 @@ def _normalize_top_level(
             except Exception as e:  # noqa: BLE001
                 errors.append(f"references_path unreadable JSON: {e}")
 
+    expected_mentions, expected_mentions_error = _extract_preprocess_expected_mentions(preprocess_artifact)
+    if expected_mentions_error:
+        errors.append(expected_mentions_error)
+
     if isinstance(out.get("citation_analysis_path"), str) and out["citation_analysis_path"]:
         cap = Path(out["citation_analysis_path"])
         if not cap.exists():
@@ -563,6 +640,15 @@ def _normalize_top_level(
             try:
                 ca_obj = json.loads(cap.read_text(encoding="utf-8"))
                 errors.extend(_validate_citation_analysis_obj(ca_obj))
+                if expected_mentions is not None:
+                    consumed_mentions = _count_citation_mentions(ca_obj)
+                    if consumed_mentions is None:
+                        errors.append("unable to count consumed mentions from citation_analysis")
+                    elif consumed_mentions != expected_mentions:
+                        errors.append(
+                            "citation_analysis mention coverage mismatch: "
+                            f"expected {expected_mentions}, got {consumed_mentions}"
+                        )
             except Exception as e:  # noqa: BLE001
                 errors.append(f"citation_analysis_path unreadable JSON: {e}")
 
@@ -585,6 +671,11 @@ def main() -> int:
     parser.add_argument("--in", dest="in_path", default=None, help="Input JSON file path (default: stdin)")
     parser.add_argument("--md-path", default=None, help="Optional md_path to compute provenance.input_hash")
     parser.add_argument("--out-dir", default=None, help="Directory to write digest/references files (fix mode only)")
+    parser.add_argument(
+        "--preprocess-artifact",
+        default=None,
+        help="Optional citation preprocess JSON path for mention coverage check",
+    )
     args = parser.parse_args()
 
     in_path = Path(args.in_path) if args.in_path else None
@@ -594,17 +685,36 @@ def main() -> int:
 
     out_dir = Path(args.out_dir).expanduser() if args.out_dir else None
     output_root = _resolve_output_root(out_dir, md_path)
+    preprocess_artifact = Path(args.preprocess_artifact).expanduser() if args.preprocess_artifact else None
 
     obj = _load_input(in_path)
 
     if args.mode == "check":
-        _, _, errors = _normalize_top_level(obj, fix=False, md_path=None, output_root=output_root)
+        _, _, errors = _normalize_top_level(
+            obj,
+            fix=False,
+            md_path=None,
+            output_root=output_root,
+            preprocess_artifact=preprocess_artifact,
+        )
         report = {"ok": len(errors) == 0, "errors": errors}
         print(json.dumps(report, ensure_ascii=False))
         return 0 if report["ok"] else 2
 
-    fixed, _, _ = _normalize_top_level(obj, fix=True, md_path=md_path, output_root=output_root)
-    _, _, post_errors = _normalize_top_level(fixed, fix=False, md_path=None, output_root=output_root)
+    fixed, _, _ = _normalize_top_level(
+        obj,
+        fix=True,
+        md_path=md_path,
+        output_root=output_root,
+        preprocess_artifact=preprocess_artifact,
+    )
+    _, _, post_errors = _normalize_top_level(
+        fixed,
+        fix=False,
+        md_path=None,
+        output_root=output_root,
+        preprocess_artifact=preprocess_artifact,
+    )
     if post_errors:
         fixed.setdefault("warnings", [])
         fixed["warnings"] = _as_str_list(fixed["warnings"]) + [f"validate_output: still invalid: {e}" for e in post_errors]
