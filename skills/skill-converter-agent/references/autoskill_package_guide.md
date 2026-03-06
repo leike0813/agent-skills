@@ -1,6 +1,6 @@
 # AutoSkill 包构建指南
 
-本文说明什么是 AutoSkill 包、它与普通 Open Agent Skills 包的区别、在 Skill-Runner 中可执行所需规范，以及如何把普通 Skill 包转换为 AutoSkill 包。
+本文说明什么是 AutoSkill 包、它与普通 Open Agent Skills 包的区别、在 Skill-Runner 中可执行所需规范，以及如何把普通 Skill 包转换为 AutoSkill 包。AutoSkill 同时支持全自动（auto）与交互式（interactive）两种执行模式。
 
 ## 1. 什么是 AutoSkill 包
 
@@ -18,7 +18,7 @@ AutoSkill 包是“可被 Skill-Runner 稳定自动执行”的 Skill 包。
 - 普通 Skill：通常只要 `SKILL.md`（以及可选脚本/参考文件）即可交互式使用。
 - AutoSkill：必须补齐 `assets/runner.json` 与 schema 合同，确保服务端可自动编排执行。
 - 普通 Skill：允许大量临时决策和交互分支。
-- AutoSkill：需要收敛输入输出边界，减少运行中临时决策，支持稳定自动化。
+- AutoSkill：需要收敛输入输出边界，减少运行中的非预期临时决策。**interactive 模式允许受控的多轮交互**，但交互点必须被合同约束。
 - 普通 Skill：输出格式可灵活。
 - AutoSkill：输出必须满足 `output.schema.json`，artifact 必须可定位与校验。
 
@@ -62,29 +62,21 @@ AutoSkill 包是“可被 Skill-Runner 稳定自动执行”的 Skill 包。
 - `version`（建议单调递增，如 `1.0.0`）
 - `engines`（非空列表）
 - `schemas.input` / `schemas.parameter` / `schemas.output`
-- `artifacts`（非空列表，描述产物模式）
 
 说明：
 
-- `engines` 是强约束，只允许列表中的引擎执行。
+- `engines` 是**可选**字段：提供时，仅列表中的引擎可执行；**缺失时按系统支持的全部引擎处理**。
+- `unsupported_engines` 可选：用于从允许集合中剔除。有效集合 = (engines 或全量) - unsupported_engines。
+- `execution_modes` 是必填字段（见下文 2.6 节）。
 - `version` 建议采用数字点分形式（例如 `1.2.0`）。
 
 ### 2.4 输入/参数/输出协议
 
 详细规则见 `docs/file_protocol.md`，这里给出关键约束：
 
-- `input.schema.json`：定义文件输入；字段名对应上传文件的严格键匹配。
+- `input.schema.json`：定义业务输入；支持 `file`（上传文件路径）与 `inline`（请求体 JSON 值）两类来源。
 - `parameter.schema.json`：定义标量配置参数（string/number/bool 等）。
 - `output.schema.json`：定义结构化输出与 artifact 字段。
-
-### Input 字段规范
-
-在 `input.schema.json` 的属性里，对输入项目字段标记 `x-input-source`：
-
-- `x-input-source`: `file`（默认）：文件型输入，prompt 中给出文件路径，由 Agent 读取。
-- `x-input-source`: `inline`：直接型输入，直接加入 prompt中。
-
-`required` 字段必须出现在 prompt 中（或语义可解析），否则 skill 执行直接报错。
 
 ### Artifact 字段规范
 
@@ -102,8 +94,34 @@ AutoSkill 包是“可被 Skill-Runner 稳定自动执行”的 Skill 包。
 
 - 明确输入、参数、输出字段语义。
 - 明确失败分支和返回格式。
-- 尽量减少“执行中需要用户临时决策”的步骤；若必须决策，需参数化或约束化。
 - 对最终输出 JSON 给出明确结构要求。
+- **auto 模式**：尽量消除执行中需要用户临时决策的步骤；若必须决策，需参数化或约束化。
+- **interactive 模式**：允许受控的多轮交互（如向用户确认、展示中间结果并询问下一步），但交互点应在 SKILL.md 中显式标注，使用 `__SKILL_DONE__` 作为最终完成标记。
+
+### 2.6 执行模式声明（execution_modes）
+
+runner.json 中的 execution_modes 必须声明 skill 支持的执行模式，值为 auto 和/或 interactive 的数组：
+
+```json
+"execution_modes": ["auto", "interactive"]
+```
+
+| 模式 | 语义 | 适用场景 |
+|------|------|----------|
+| auto | 全自动单轮执行，不等待用户输入 | 数据处理、代码生成等确定性任务 |
+| interactive | 多轮交互式执行，可暂停等待用户回复 | 需要人工确认、引导式创作等任务 |
+
+设计指引：
+
+- 若 skill 只适用于全自动：`["auto"]`
+- 若 skill 只适用于交互式：`["interactive"]`
+- 若 skill 两者皆可：`["auto", "interactive"]`
+
+interactive 模式关键约束：
+
+- 最终完成判定：assistant 回复中包含 `__SKILL_DONE__` 标记（强条件），或当轮输出通过 output schema 校验（软条件）。
+- `max_attempt`（runner.json 可选字段，正整数 >= 1）仅作用于 interactive 模式，控制最大交互轮次。
+- tool_use / tool 回显中的标记文本不参与完成判定。
 
 ## 3. 如何构建 AutoSkill 包
 
@@ -119,12 +137,12 @@ AutoSkill 包是“可被 Skill-Runner 稳定自动执行”的 Skill 包。
    将交互式模糊描述改为可自动执行的步骤，并显式要求返回结构化 JSON。
 
 4. 编写三类 schema  
-   - `input.schema.json`：只放输入（例如需要操作的文件、需要处理的数据等）
-   - `parameter.schema.json`：只放配置参数（影响执行行为的参数，而非直接处理的数据）
+   - `input.schema.json`：定义业务输入（可混合 file 与 inline）
+   - `parameter.schema.json`：只放配置参数
    - `output.schema.json`：放结构化输出与 artifact 定义
 
 5. 编写 `runner.json`  
-   声明 `engines`、schema 路径、artifact 合同、版本等。
+   声明 `engines`、schema 路径、版本等。
 
 6. 做本地校验  
    检查身份一致性、schema 文件存在性、字段 required 合理性、artifact 是否可实际产出。
@@ -187,16 +205,18 @@ AutoSkill 包是“可被 Skill-Runner 稳定自动执行”的 Skill 包。
 
 - [ ] 顶层目录、`runner.id`、`SKILL.md` name 三者一致
 - [ ] `SKILL.md`、`runner.json`、三类 schema 均存在
-- [ ] `runner.json.engines` 非空
+- [ ] `runner.json.execution_modes` 非空
+- [ ] `runner.json.engines` 非空或缺失（缺失按全量引擎处理）
 - [ ] `runner.json.schemas` 路径有效
-- [ ] `runner.json.artifacts` 非空且与输出一致
 - [ ] `output.schema.json` 对 artifact 字段已标注 `x-type: "artifact"`
 - [ ] 必填字段可被真实执行路径产出
-- [ ] 在目标引擎下完成至少一次试跑
+- [ ] interactive skill 的 SKILL.md 包含 `__SKILL_DONE__` 标记指引
+- [ ] 在目标引擎与目标执行模式下完成至少一次试跑
 
 ---
 
 参考：
 
-- `file_protocol.md`
-- `skill-runner_api_reference.md`
+- `docs/file_protocol.md`
+- `docs/api_reference.md`
+- `docs/run_artifacts.md`
