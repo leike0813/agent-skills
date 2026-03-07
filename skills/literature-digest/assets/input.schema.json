@@ -3,6 +3,10 @@
   "properties": {
     "source_path": {
       "type": "string",
+      "extensions": [
+        ".md",
+        ".pdf"
+      ],
       "description": "Path to the source file to digest; format is detected from file content"
     }
   },
