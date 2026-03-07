@@ -2,7 +2,7 @@
   "id": "literature-digest",
   "version": "1.0.0",
   "name": "Literature Digest",
-  "description": "Generate digests and extract references from academic papers (Markdown).",
+  "description": "Generate digests and extract references from academic paper source files.",
   "execution_modes": [
     "auto",
     "interactive"
@@ -10,7 +10,9 @@
   "runtime": {
     "language": "python",
     "version": "3.11",
-    "dependencies": []
+    "dependencies": [
+      "pymupdf4llm"
+    ]
   },
   "schemas": {
     "input": "assets/input.schema.json",
@@ -19,7 +21,7 @@
   },
   "entrypoint": {
     "prompts": {
-      "gemini": "Please call the skill named \"{{ skill.id }}\".\n\nPlease ingest the markdown file at `{{ input.md_path }}`.\nThen generate artifacts below following the SKILL.md protocol:\n1) `digest.md` (in `{{ parameter.language }}`)\n2) `references.json`\n3) `citation_analysis.json` (in `{{ parameter.language }}`) \n\nOutput the final JSON object to stdout logic as defined in SKILL.md.\n\nInput Context:\n- md_path: {{ input.md_path }}\n- language: {{ parameter.language }}"
+      "gemini": "Please call the skill named \"{{ skill.id }}\".\n\nPlease ingest the source file at `{{ input.source_path }}`. The input may be markdown, PDF, or an extensionless file; determine format from file content as defined in SKILL.md.\nThen generate artifacts below following the SKILL.md protocol:\n1) `digest.md` (in `{{ parameter.language }}`)\n2) `references.json`\n3) `citation_analysis.json` (in `{{ parameter.language }}`)\n\nOutput the final JSON object to stdout logic as defined in SKILL.md.\n\nInput Context:\n- source_path: {{ input.source_path }}\n- language: {{ parameter.language }}"
     }
   }
 }
