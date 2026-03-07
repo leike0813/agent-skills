@@ -87,7 +87,7 @@ description: 目录优先的 Skill 转换代理，将普通 skill 改造为 Skil
      - 生成/更新 `assets/input.schema.json`
      - 生成/更新 `assets/parameter.schema.json`
      - 生成/更新 `assets/output.schema.json`
-     - 生成/更新 `assets/runner.json`（写入第 7 步确定的 `execution_modes`）
+     - 生成/更新 `assets/runner.json`（写入第 7 步确定的 `execution_modes`，补齐 `runtime.dependencies`）
    - 复制参考文档到目标目录：
      - `references/file_protocol.md`
    - 确保目标 `SKILL.md` 明确提到：
@@ -103,6 +103,12 @@ description: 目录优先的 Skill 转换代理，将普通 skill 改造为 Skil
       - artifact 字段使用 `x-type`、`x-role`、`x-filename`。
       - `required` 必须与真实可产出路径一致。
       - 禁止将 `result.json` 标记为 artifact。
+      - 对于 `产出文件型` Skill，需要在 output schema 中将产出目标文件标记为 `required`
+    - runner.json 补丁重点：
+      - 文件合同中规定的必要字段必须严格存在且格式正确
+      - `schemas` 字段必须指向正确的相对文件路径（相对于 Skill 包的根目录）
+      - `runtime.dependencies` 数组内容需要检查 Skill 包中的所有 Python 脚本所需的第三方依赖，显式导入必须全部覆盖，注意有的依赖库的导入名与安装名不同（例如 opencv-python 是安装名，cv2 是对应的导入名）
+      - `entrypoint.prompts` 一般不需要太复杂甚至可以留空，除非该 Skill 包的输入数据或参数容易存在歧义
 
 11. **最终验证门（必须执行）**
     - 目录改造完成后执行：
