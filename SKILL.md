@@ -104,6 +104,7 @@ description: 目录优先的 Skill 转换代理，将普通 skill 改造为 Skil
       - `required` 必须与真实可产出路径一致。
       - 禁止将 `result.json` 标记为 artifact。
       - 对于 `产出文件型` Skill，需要在 output schema 中将产出目标文件标记为 `required`
+      - 对于支持 `auto` 模式的 Skill，不要把 Skill 执行完成标记 `__SKILL_DONE__` 作为必要字段加入 output schema
     - runner.json 补丁重点：
       - 文件合同中规定的必要字段必须严格存在且格式正确
       - `schemas` 字段必须指向正确的相对文件路径（相对于 Skill 包的根目录）
