@@ -21,19 +21,23 @@ def sha256_file(path: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate provenance for literature_digest_v1.")
-    parser.add_argument("--md-path", required=True, help="Path to the MinerU Markdown file.")
+    parser.add_argument("--source-path", default=None, help="Path to the original input source file.")
+    parser.add_argument("--md-path", default=None, help="Deprecated alias for --source-path.")
     args = parser.parse_args()
 
-    md_path = Path(args.md_path)
+    source_arg = args.source_path or args.md_path
+    if not source_arg:
+        raise SystemExit("--source-path is required")
+    source_path = Path(source_arg)
 
     out: dict[str, object] = {"generated_at": utc_now_iso(), "input_hash": ""}
-    if not md_path.exists():
-        out["error"] = {"code": "FILE_NOT_FOUND", "message": f"md_path not found: {md_path}"}
+    if not source_path.exists():
+        out["error"] = {"code": "FILE_NOT_FOUND", "message": f"source_path not found: {source_path}"}
         print(json.dumps(out, ensure_ascii=False))
         return 2
 
     try:
-        out["input_hash"] = sha256_file(md_path)
+        out["input_hash"] = sha256_file(source_path)
         out["error"] = None
         print(json.dumps(out, ensure_ascii=False))
         return 0
@@ -45,4 +49,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

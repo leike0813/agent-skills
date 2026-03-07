@@ -95,20 +95,20 @@ def _write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _resolve_output_root(explicit_out_dir: Path | None, md_path: Path | None) -> Path:
+def _resolve_output_root(explicit_out_dir: Path | None, source_path: Path | None) -> Path:
     # Strategy (to avoid sandbox escapes in some agents):
-    # 1) Use the input md_path directory (preferred, if available)
+    # 1) Use the input source_path directory (preferred, if available)
     # 2) Explicit CLI --out-dir
     # 3) Env var LITERATURE_DIGEST_OUTPUT_DIR (plugin can set)
     # 4) OS temp dir
-    if md_path is not None:
-        return md_path.parent
+    if source_path is not None:
+        return source_path.parent
     if explicit_out_dir is not None:
         return explicit_out_dir
     env = os.environ.get("LITERATURE_DIGEST_OUTPUT_DIR")
     if env:
         return Path(env).expanduser()
-    # Last resort fallback (should be avoided when md_path is available).
+    # Last resort fallback (should be avoided when source_path is available).
     return Path.cwd()
 
 
@@ -443,7 +443,7 @@ def _normalize_top_level(
     obj: object,
     *,
     fix: bool,
-    md_path: Path | None,
+    source_path: Path | None,
     output_root: Path,
     preprocess_artifact: Path | None = None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
@@ -530,10 +530,10 @@ def _normalize_top_level(
             prov["input_hash"] = ""
             warnings.append("provenance.input_hash reset to ''")
 
-    if fix and md_path is not None and prov.get("input_hash") in ("", None):
+    if fix and source_path is not None and prov.get("input_hash") in ("", None):
         try:
-            prov["input_hash"] = sha256_file(md_path)
-            warnings.append("provenance.input_hash computed from md_path")
+            prov["input_hash"] = sha256_file(source_path)
+            warnings.append("provenance.input_hash computed from source_path")
         except Exception as e:  # noqa: BLE001
             warnings.append(f"provenance.input_hash compute failed: {e}")
 
@@ -564,7 +564,7 @@ def _normalize_top_level(
             warnings.append("error replaced with object")
 
     def maybe_relocate_text_artifact(key: str, filename: str) -> None:
-        if not fix or md_path is None:
+        if not fix or source_path is None:
             return
         current = out.get(key)
         if not isinstance(current, str) or not current:
@@ -578,12 +578,12 @@ def _normalize_top_level(
         try:
             _write_text(expected, src.read_text(encoding="utf-8"))
             out[key] = str(expected)
-            warnings.append(f"{key}: relocated to {expected.name} under md_path directory")
+            warnings.append(f"{key}: relocated to {expected.name} under source_path directory")
         except Exception as e:  # noqa: BLE001
             warnings.append(f"{key}: relocate failed: {e}")
 
     def maybe_relocate_json_artifact(key: str, filename: str) -> None:
-        if not fix or md_path is None:
+        if not fix or source_path is None:
             return
         current = out.get(key)
         if not isinstance(current, str) or not current:
@@ -598,7 +598,7 @@ def _normalize_top_level(
             data = json.loads(src.read_text(encoding="utf-8"))
             _write_json(expected, data)
             out[key] = str(expected)
-            warnings.append(f"{key}: relocated to {expected.name} under md_path directory")
+            warnings.append(f"{key}: relocated to {expected.name} under source_path directory")
         except Exception as e:  # noqa: BLE001
             warnings.append(f"{key}: relocate failed: {e}")
 
@@ -669,7 +669,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate/fix literature_digest_v1 output JSON (file-based outputs).")
     parser.add_argument("--mode", choices=["check", "fix"], default="check")
     parser.add_argument("--in", dest="in_path", default=None, help="Input JSON file path (default: stdin)")
-    parser.add_argument("--md-path", default=None, help="Optional md_path to compute provenance.input_hash")
+    parser.add_argument("--source-path", default=None, help="Optional original input path to compute provenance.input_hash")
+    parser.add_argument("--md-path", default=None, help="Deprecated alias for --source-path")
     parser.add_argument("--out-dir", default=None, help="Directory to write digest/references files (fix mode only)")
     parser.add_argument(
         "--preprocess-artifact",
@@ -679,12 +680,13 @@ def main() -> int:
     args = parser.parse_args()
 
     in_path = Path(args.in_path) if args.in_path else None
-    md_path = Path(args.md_path) if args.md_path else None
-    if md_path is not None and not md_path.exists():
-        md_path = None
+    source_arg = args.source_path or args.md_path
+    source_path = Path(source_arg) if source_arg else None
+    if source_path is not None and not source_path.exists():
+        source_path = None
 
     out_dir = Path(args.out_dir).expanduser() if args.out_dir else None
-    output_root = _resolve_output_root(out_dir, md_path)
+    output_root = _resolve_output_root(out_dir, source_path)
     preprocess_artifact = Path(args.preprocess_artifact).expanduser() if args.preprocess_artifact else None
 
     obj = _load_input(in_path)
@@ -693,7 +695,7 @@ def main() -> int:
         _, _, errors = _normalize_top_level(
             obj,
             fix=False,
-            md_path=None,
+            source_path=None,
             output_root=output_root,
             preprocess_artifact=preprocess_artifact,
         )
@@ -704,14 +706,14 @@ def main() -> int:
     fixed, _, _ = _normalize_top_level(
         obj,
         fix=True,
-        md_path=md_path,
+        source_path=source_path,
         output_root=output_root,
         preprocess_artifact=preprocess_artifact,
     )
     _, _, post_errors = _normalize_top_level(
         fixed,
         fix=False,
-        md_path=None,
+        source_path=None,
         output_root=output_root,
         preprocess_artifact=preprocess_artifact,
     )

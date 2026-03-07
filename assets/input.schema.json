@@ -1,11 +1,10 @@
 {
   "type": "object",
   "properties": {
-    "md_path": {
+    "source_path": {
       "type": "string",
-      "description": "Path to the markdown file to digest",
-      "extensions": [".md"]
+      "description": "Path to the source file to digest; format is detected from file content"
     }
   },
-  "required": ["md_path"]
+  "required": ["source_path"]
 }
