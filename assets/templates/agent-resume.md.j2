@@ -1,0 +1,74 @@
+# Agent Resume
+
+这是从 `review-master.db` 渲染出的 Agent 恢复视图。数据库真源是 `resume_brief`、`resume_open_loops`、`resume_recent_decisions`、`resume_must_not_forget` 与 `workflow_state`。它的职责是帮助 Agent 在首次调用、跨 Session 恢复和上下文压缩后重新对齐任务状态；它不是用户主确认工件，也不是可直写真源。
+
+## Resume State
+
+| Field | Value |
+| --- | --- |
+| `resume_status` | {{ resume_status }} |
+| `is_bootstrap` | {{ is_bootstrap }} |
+| `current_stage` | {{ current_stage }} |
+| `stage_gate` | {{ stage_gate }} |
+| `active_comment_id` | {{ active_comment_id }} |
+
+## What To Understand First
+
+- Current state summary: {{ current_state_summary }}
+- Current objective: {{ current_objective }}
+- Current focus: {{ current_focus }}
+- Why paused: {{ why_paused }}
+- Next operator action: {{ next_operator_action }}
+- Next action anchor: {{ next_action_anchor }}
+
+## Open Loops
+
+这些是当前尚未闭环的关键事项。恢复时先确认这里是否和当前 gate 输出一致。
+
+| Order | Message |
+| --- | --- |
+{% for item in open_loops -%}
+| {{ loop.index }} | {{ item }} |
+{% else -%}
+|  |  |
+{% endfor %}
+
+## Recent Decisions
+
+这些是最近已经锁定或用户已经确认的关键决策。新 Session 不应无声推翻它们。
+
+| Order | Message |
+| --- | --- |
+{% for item in recent_decisions -%}
+| {{ loop.index }} | {{ item }} |
+{% else -%}
+|  |  |
+{% endfor %}
+
+## Must Not Forget
+
+这些提醒来自静态 Skill 摘要与运行时恢复层，帮助 Agent 在长上下文跨度下持续遵守核心纪律。
+
+| Order | Message |
+| --- | --- |
+{% for item in must_not_forget -%}
+| {{ loop.index }} | {{ item }} |
+{% else -%}
+|  |  |
+{% endfor %}
+
+## Resume Read Order
+
+恢复时固定按以下顺序重建认知：
+
+| Step | Read This |
+| --- | --- |
+{% for item in resume_read_order -%}
+| {{ loop.index }} | {{ item }} |
+{% endfor %}
+
+## Skill Runtime Digest
+
+下面是静态 Skill 摘要，用于提醒 Agent 当前 workflow 的核心目标、约束与执行方法。
+
+{{ runtime_digest }}

@@ -1,0 +1,13 @@
+# Atomic Comment Workboard
+
+这是阶段四的主视图。数据库真源是 `atomic_comment_state`、`atomic_comment_target_locations`、`atomic_comment_analysis_links`、`atomic_comments` 和 `raw_thread_atomic_links`。用户在阶段四主要阅读这张视图，以确认 canonical atomic item 的优先级、依赖、证据缺口和下一步动作。
+
+## Atomic Workboard Table
+
+| `comment_id` | Source Reviewers | Source Threads | `status` | `priority` | `evidence_gap` | Target Locations | Analysis Summary | `user_confirmation_needed` | `next_action` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+{% for row in rows -%}
+| {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.status }} | {{ row.priority }} | {{ row.evidence_gap }} | {{ row.target_locations or '' }} | {{ row.analysis_summary or '' }} | {{ row.user_confirmation_needed }} | {{ row.next_action }} |
+{% else -%}
+|  |  |  |  |  |  |  |  |  |  |
+{% endfor %}

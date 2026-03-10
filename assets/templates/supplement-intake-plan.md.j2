@@ -1,0 +1,18 @@
+# Supplement Intake And Landing Plan
+
+这是从 `review-master.db` 渲染出的 Stage 5 补材接收与落地方案视图。数据库真源是 `supplement_intake_items` 与 `supplement_landing_links`。该视图用于向用户展示每轮补材的接收判定，以及被接收补材将如何落到 canonical atomic action 的具体位置。
+
+{% if round_groups -%}
+{% for group in round_groups -%}
+## Round: `{{ group.round_id }}`
+
+| File | Concern Summary | Decision | Decision Rationale | Landing Targets |
+| --- | --- | --- | --- | --- |
+{% for item in group["items"] -%}
+| `{{ item.file_path }}` | {{ item.concern_summary or "N/A" }} | `{{ item.decision or "pending" }}` | {{ item.decision_rationale or "N/A" }} | {% if item.landing_links %}{% for link in item.landing_links %}`{{ link.comment_id }}` / action {{ link.action_order }} / location {{ link.location_order }}: {{ link.planned_usage_note }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}N/A{% endif %} |
+{% endfor %}
+
+{% endfor -%}
+{% else -%}
+_No supplement intake records available._
+{% endif %}

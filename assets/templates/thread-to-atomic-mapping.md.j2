@@ -1,0 +1,23 @@
+# Thread to Atomic Mapping
+
+这是原始审稿意见块到 canonical atomic 意见的映射视图。数据库真源是 `raw_thread_atomic_links` 与 `atomic_comment_source_spans`。用户和 Agent 都应通过它确认拆分、合并与去重是否合理。
+
+{% for thread in threads -%}
+## {{ thread.thread_id }} ({{ thread.reviewer_id }})
+
+- Normalized summary: {{ thread.normalized_summary }}
+- Original text: {{ thread.original_text }}
+
+| Link Order | `comment_id` | Canonical Summary | Source Span | Note |
+| --- | --- | --- | --- | --- |
+{% for item in thread.linked_items -%}
+| {{ item.link_order }} | {{ item.comment_id }} | {{ item.canonical_summary }} | {{ item.excerpt_text or '' }} | {{ item.note or '' }} |
+{% else -%}
+|  |  |  |  |  |
+{% endfor %}
+
+{% else -%}
+## No Threads
+
+No mapping data available.
+{% endfor %}

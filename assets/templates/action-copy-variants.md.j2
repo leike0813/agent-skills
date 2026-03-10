@@ -1,0 +1,31 @@
+# Action Copy Variants
+
+这是从 `review-master.db` 渲染出的 Stage 6 文案版本视图。数据库真源是 `action_copy_variants` 与 `selected_action_copy_variants`。这里的 3 个版本，指的是最终稿里真正要落下去的 manuscript 局部落稿文本版本，而不是策略版本，也不是 response-side 方案版本。若一个 action 覆盖多个位置，则每个位置都必须各自提供一组 `v1/v2/v3`。
+
+{% for item in items -%}
+## {{ item.comment_id }} / action {{ item.action_order }}
+
+- Manuscript change: {{ item.manuscript_change }}
+- Expected response effect: {{ item.expected_response_letter_effect }}
+
+{% for location in item.locations -%}
+### location {{ location.location_order }}
+
+- Target location: {{ location.target_location }}
+
+#### manuscript final copy
+
+| Variant | Selected | Variant Text | Rationale |
+| --- | --- | --- | --- |
+{% for row in location.manuscript_variants -%}
+| {{ row.variant_label }} | {{ row.selected }} | {{ row.variant_text }} | {{ row.rationale }} |
+{% else -%}
+|  |  |  |  |
+{% endfor %}
+
+{% endfor -%}
+{% else -%}
+## No Action Copy Variants
+
+No Stage 6 copy variants available.
+{% endfor %}

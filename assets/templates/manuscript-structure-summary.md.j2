@@ -1,0 +1,42 @@
+# Manuscript Structure Summary
+
+这是从 `review-master.db` 渲染出的全文级只读视图。数据库真源是 `manuscript_summary`、`manuscript_sections` 和 `manuscript_claims`。用户应通过这份视图确认结构理解是否准确；Agent 可以读取它获取辅助信息，但不得直接编辑。
+
+## Project Summary
+
+| Field | Value |
+| --- | --- |
+| `main_entry` | {{ main_entry }} |
+| `project_shape` | {{ project_shape }} |
+
+## Sections
+
+| Section ID | Section Title | Purpose in Manuscript | Key Files or Locations |
+| --- | --- | --- | --- |
+{% for row in sections -%}
+| {{ row.section_id }} | {{ row.section_title }} | {{ row.purpose_in_manuscript }} | {{ row.key_files_or_locations }} |
+{% else -%}
+|  |  |  |  |
+{% endfor %}
+
+## Core Claims
+
+| Claim ID | Core Claim | Main Evidence | Supporting Section IDs | Risk Level |
+| --- | --- | --- | --- | --- |
+{% for row in claims -%}
+| {{ row.claim_id }} | {{ row.core_claim }} | {{ row.main_evidence }} | {{ row.supporting_section_ids }} | {{ row.risk_level }} |
+{% else -%}
+|  |  |  |  |  |
+{% endfor %}
+
+## High Risk Areas
+
+这些区域通常需要更谨慎地改稿或补证据。
+
+| Zone ID | Description |
+| --- | --- |
+{% for item in risk_areas -%}
+| Z{{ loop.index }} | {{ item }} |
+{% else -%}
+|  |  |
+{% endfor %}
