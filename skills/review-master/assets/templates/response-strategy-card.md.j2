@@ -1,0 +1,59 @@
+# Response Strategy Card: {{ header.comment_id }}
+
+这张卡是从数据库渲染出的单 canonical atomic item 只读策略视图。数据库真源包括 `atomic_comments`、`raw_thread_atomic_links`、`atomic_comment_state`、`atomic_comment_target_locations`、`strategy_cards`、`strategy_card_actions`、`strategy_action_target_locations`、`strategy_card_evidence_items`、`strategy_card_pending_confirmations` 和 `comment_completion_status`。一张卡只服务一个 `comment_id`。
+
+## Header
+
+| Field | Value |
+| --- | --- |
+| `comment_id` | {{ header.comment_id }} |
+| Source reviewers | {{ header.source_reviewers }} |
+| Source threads | {{ header.source_thread_ids }} |
+| `status` | {{ header.status or '' }} |
+| `priority` | {{ header.priority or '' }} |
+| `evidence_gap` | {{ header.evidence_gap or '' }} |
+| Target locations | {{ header.target_locations or '' }} |
+
+## Canonical Atomic Item
+
+- Canonical summary: {{ header.canonical_summary }}
+- Required action: {{ header.required_action }}
+
+## Response Stance
+
+- Proposed stance: {{ header.proposed_stance or '' }}
+- Why this stance is defensible: {{ header.stance_rationale or '' }}
+
+## Planned Manuscript Actions
+
+| Action ID | Manuscript Change | Target Locations | Expected Response-Letter Effect |
+| --- | --- | --- | --- |
+{% for row in actions -%}
+| A{{ row.action_order }} | {{ row.manuscript_change }} | {{ row.target_locations or '' }} | {{ row.expected_response_letter_effect }} |
+{% else -%}
+|  |  |  |  |
+{% endfor %}
+
+## Required Evidence
+
+| Evidence ID | Required Material | Available Now (`yes/no`) | Gap Note |
+| --- | --- | --- | --- |
+{% for row in evidence_rows -%}
+| E{{ row.evidence_order }} | {{ row.required_material }} | {{ row.available_now }} | {{ row.gap_note }} |
+{% else -%}
+|  |  |  |  |
+{% endfor %}
+
+## Pending Confirmations
+
+{% for item in pending_confirmations -%}
+- {{ item }}
+{% else -%}
+- None
+{% endfor %}
+
+## Completion Definition
+
+{% for item in completion_lines -%}
+- [{% if item.checked %}x{% else %} {% endif %}] {{ item.label }}
+{% endfor %}

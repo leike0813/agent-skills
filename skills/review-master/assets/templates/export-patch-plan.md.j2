@@ -1,0 +1,25 @@
+# Export Patch Plan
+
+这是从 `review-master.db` 渲染出的 Stage 6 导出补丁计划视图。数据库真源是 `export_patch_sets` 与 `export_patches`。导出脚本只负责复制导出副本，并按这里对应的显式锚点执行插入或替换；它不负责语义判断，也不负责生成最终文案。
+
+{% for patch_set in patch_sets -%}
+## {{ patch_set.patch_set_id }}
+
+- Artifact kind: {{ patch_set.artifact_kind }}
+- Source root: {{ patch_set.source_root }}
+- Output root: {{ patch_set.output_root }}
+- Status: {{ patch_set.status }}
+
+| Order | Comment | Action | Location | Target File | Operation | Anchor Text | Marked Text | Clean Text | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+{% for patch in patch_set.patches -%}
+| {{ patch.patch_order }} | {{ patch.comment_id }} | {{ patch.action_order }} | {{ patch.location_order }} | {{ patch.target_file }} | {{ patch.operation }} | {{ patch.anchor_text }} | {{ patch.marked_text }} | {{ patch.clean_text }} | {{ patch.notes }} |
+{% else -%}
+|  |  |  |  |  |  |  |  |  |  |
+{% endfor %}
+
+{% else -%}
+## No Export Patch Sets
+
+No Stage 6 export patch truth available.
+{% endfor %}

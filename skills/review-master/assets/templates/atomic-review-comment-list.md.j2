@@ -1,0 +1,13 @@
+# Atomic Review Comment List
+
+这是从 `review-master.db` 渲染出的 canonical atomic 意见只读视图。数据库真源是 `atomic_comments`、`raw_thread_atomic_links`、`raw_review_threads` 和 `atomic_comment_state`。同一条 atomic item 可以同时服务多个原始 reviewer 意见块。
+
+## Canonical Atomic Table
+
+| `comment_id` | Source Reviewers | Source Threads | `status` | `priority` | `evidence_gap` | Canonical Summary | Required Action | Target Locations |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+{% for row in rows -%}
+| {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.status or '' }} | {{ row.priority or '' }} | {{ row.evidence_gap or '' }} | {{ row.canonical_summary }} | {{ row.required_action }} | {{ row.target_locations or '' }} |
+{% else -%}
+|  |  |  |  |  |  |  |  |  |
+{% endfor %}

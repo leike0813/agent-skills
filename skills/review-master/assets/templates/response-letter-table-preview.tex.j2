@@ -1,0 +1,45 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\title{Point-to-Point Response Letter}
+\author{review-master Export}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Point-to-Point Response Letter}
+% 这是从 review-master.db 渲染出的最终 Response Letter LaTeX 预览。
+
+{% for group in reviewer_groups -%}
+\subsection*{ {{ group.heading_tex }} }
+\begin{longtable}{|p{0.22\textwidth}|p{0.20\textwidth}|p{0.24\textwidth}|p{0.24\textwidth}|}
+\hline
+\textbf{原始意见} & \textbf{修改位置/范围} & \textbf{关键修改片段} & \textbf{回复说明} \\
+\hline
+\endfirsthead
+\hline
+\textbf{原始意见} & \textbf{修改位置/范围} & \textbf{关键修改片段} & \textbf{回复说明} \\
+\hline
+\endhead
+{% for row in group.rows -%}
+\textbf{Comment:} {{ row.original_comment_tex }} & \texttt{ {{ row.modification_scope_tex }} } & {\color{blue}\ttfamily {{ row.key_revision_excerpt_tex }}} & {{ row.response_explanation_tex }} \\
+\hline
+{% else -%}
+ &  &  &  \\
+\hline
+{% endfor -%}
+\end{longtable}
+
+{% else -%}
+\textit{No final response rows available.}
+{% endfor %}
+
+\end{document}

@@ -1,0 +1,468 @@
+enums:
+  current_stage:
+    - stage_1
+    - stage_2
+    - stage_3
+    - stage_4
+    - stage_5
+    - stage_6
+  stage_gate:
+    - blocked
+    - ready
+  status:
+    - todo
+    - blocked
+    - ready
+    - in_progress
+    - done
+  priority:
+    - high
+    - medium
+    - low
+  evidence_gap:
+    - "yes"
+    - "no"
+  yes_no:
+    - "yes"
+    - "no"
+  project_shape:
+    - single_tex
+    - latex_project
+  source_type:
+    - reviewer_comment
+    - editor_comment
+  location_role:
+    - primary
+    - supporting
+  response_role:
+    - primary
+    - supporting
+    - merged_duplicate
+  profile_target:
+    - manuscript
+    - response_letter
+  style_rule_type:
+    - do
+    - dont
+    - anti_ai
+    - tone
+  variant_label:
+    - v1
+    - v2
+    - v3
+  artifact_name:
+    - marked_manuscript
+    - clean_manuscript
+    - response_markdown
+    - response_latex
+  artifact_status:
+    - pending
+    - ready
+    - exported
+  resume_status:
+    - bootstrap
+    - active
+    - blocked
+    - ready_to_resume
+    - completed
+  supplement_decision:
+    - ""
+    - accepted
+    - rejected
+
+required_tables:
+  - manuscript_summary
+  - manuscript_sections
+  - manuscript_claims
+  - raw_review_threads
+  - atomic_comments
+  - raw_thread_atomic_links
+  - atomic_comment_source_spans
+  - atomic_comment_state
+  - atomic_comment_target_locations
+  - atomic_comment_analysis_links
+  - strategy_cards
+  - strategy_card_actions
+  - strategy_action_target_locations
+  - strategy_card_evidence_items
+  - strategy_card_pending_confirmations
+  - supplement_intake_items
+  - supplement_landing_links
+  - comment_completion_status
+  - response_thread_resolution_links
+  - style_profiles
+  - style_profile_rules
+  - action_copy_variants
+  - selected_action_copy_variants
+  - response_thread_rows
+  - export_patch_sets
+  - export_patches
+  - export_artifacts
+  - workflow_state
+  - workflow_pending_user_confirmations
+  - workflow_global_blockers
+  - resume_brief
+  - resume_open_loops
+  - resume_recent_decisions
+  - resume_must_not_forget
+
+tables:
+  - name: manuscript_summary
+    sql: |
+      CREATE TABLE IF NOT EXISTS manuscript_summary (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          main_entry TEXT NOT NULL DEFAULT '',
+          project_shape TEXT NOT NULL DEFAULT '' CHECK (project_shape IN ('', 'single_tex', 'latex_project')),
+          high_risk_areas TEXT NOT NULL DEFAULT ''
+      )
+  - name: manuscript_sections
+    sql: |
+      CREATE TABLE IF NOT EXISTS manuscript_sections (
+          section_id TEXT PRIMARY KEY,
+          section_title TEXT NOT NULL DEFAULT '',
+          purpose_in_manuscript TEXT NOT NULL DEFAULT '',
+          key_files_or_locations TEXT NOT NULL DEFAULT ''
+      )
+  - name: manuscript_claims
+    sql: |
+      CREATE TABLE IF NOT EXISTS manuscript_claims (
+          claim_id TEXT PRIMARY KEY,
+          core_claim TEXT NOT NULL DEFAULT '',
+          main_evidence TEXT NOT NULL DEFAULT '',
+          supporting_section_ids TEXT NOT NULL DEFAULT '',
+          risk_level TEXT NOT NULL DEFAULT ''
+      )
+  - name: raw_review_threads
+    sql: |
+      CREATE TABLE IF NOT EXISTS raw_review_threads (
+          thread_id TEXT PRIMARY KEY,
+          reviewer_id TEXT NOT NULL,
+          thread_order INTEGER NOT NULL,
+          source_type TEXT NOT NULL CHECK (source_type IN ('reviewer_comment', 'editor_comment')),
+          original_text TEXT NOT NULL,
+          normalized_summary TEXT NOT NULL
+      )
+  - name: atomic_comments
+    sql: |
+      CREATE TABLE IF NOT EXISTS atomic_comments (
+          comment_id TEXT PRIMARY KEY,
+          comment_order INTEGER NOT NULL,
+          canonical_summary TEXT NOT NULL,
+          required_action TEXT NOT NULL
+      )
+  - name: raw_thread_atomic_links
+    sql: |
+      CREATE TABLE IF NOT EXISTS raw_thread_atomic_links (
+          thread_id TEXT NOT NULL REFERENCES raw_review_threads(thread_id) ON DELETE CASCADE,
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          link_order INTEGER NOT NULL,
+          PRIMARY KEY (thread_id, comment_id)
+      )
+  - name: atomic_comment_source_spans
+    sql: |
+      CREATE TABLE IF NOT EXISTS atomic_comment_source_spans (
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          thread_id TEXT NOT NULL REFERENCES raw_review_threads(thread_id) ON DELETE CASCADE,
+          excerpt_text TEXT NOT NULL,
+          note TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (comment_id, thread_id)
+      )
+  - name: atomic_comment_state
+    sql: |
+      CREATE TABLE IF NOT EXISTS atomic_comment_state (
+          comment_id TEXT PRIMARY KEY REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK (status IN ('todo', 'blocked', 'ready', 'in_progress', 'done')),
+          priority TEXT NOT NULL CHECK (priority IN ('high', 'medium', 'low')),
+          evidence_gap TEXT NOT NULL CHECK (evidence_gap IN ('yes', 'no')),
+          user_confirmation_needed TEXT NOT NULL CHECK (user_confirmation_needed IN ('yes', 'no')),
+          next_action TEXT NOT NULL DEFAULT ''
+      )
+  - name: atomic_comment_target_locations
+    sql: |
+      CREATE TABLE IF NOT EXISTS atomic_comment_target_locations (
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          location_order INTEGER NOT NULL,
+          target_location TEXT NOT NULL,
+          location_role TEXT NOT NULL CHECK (location_role IN ('primary', 'supporting')),
+          PRIMARY KEY (comment_id, location_order)
+      )
+  - name: atomic_comment_analysis_links
+    sql: |
+      CREATE TABLE IF NOT EXISTS atomic_comment_analysis_links (
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          analysis_order INTEGER NOT NULL,
+          manuscript_claim_or_section TEXT NOT NULL DEFAULT '',
+          existing_evidence TEXT NOT NULL DEFAULT '',
+          gap_summary TEXT NOT NULL DEFAULT '',
+          dependency_comment_id TEXT REFERENCES atomic_comments(comment_id) ON DELETE SET NULL,
+          PRIMARY KEY (comment_id, analysis_order)
+      )
+  - name: strategy_cards
+    sql: |
+      CREATE TABLE IF NOT EXISTS strategy_cards (
+          comment_id TEXT PRIMARY KEY REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          proposed_stance TEXT NOT NULL DEFAULT '',
+          stance_rationale TEXT NOT NULL DEFAULT ''
+      )
+  - name: strategy_card_actions
+    sql: |
+      CREATE TABLE IF NOT EXISTS strategy_card_actions (
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          action_order INTEGER NOT NULL,
+          manuscript_change TEXT NOT NULL DEFAULT '',
+          expected_response_letter_effect TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (comment_id, action_order)
+      )
+  - name: strategy_action_target_locations
+    sql: |
+      CREATE TABLE IF NOT EXISTS strategy_action_target_locations (
+          comment_id TEXT NOT NULL,
+          action_order INTEGER NOT NULL,
+          location_order INTEGER NOT NULL,
+          target_location TEXT NOT NULL,
+          PRIMARY KEY (comment_id, action_order, location_order),
+          FOREIGN KEY (comment_id, action_order)
+              REFERENCES strategy_card_actions(comment_id, action_order)
+              ON DELETE CASCADE
+      )
+  - name: strategy_card_evidence_items
+    sql: |
+      CREATE TABLE IF NOT EXISTS strategy_card_evidence_items (
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          evidence_order INTEGER NOT NULL,
+          required_material TEXT NOT NULL DEFAULT '',
+          available_now TEXT NOT NULL CHECK (available_now IN ('yes', 'no')),
+          gap_note TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (comment_id, evidence_order)
+      )
+  - name: strategy_card_pending_confirmations
+    sql: |
+      CREATE TABLE IF NOT EXISTS strategy_card_pending_confirmations (
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          confirmation_order INTEGER NOT NULL,
+          message TEXT NOT NULL,
+          PRIMARY KEY (comment_id, confirmation_order)
+      )
+  - name: supplement_intake_items
+    sql: |
+      CREATE TABLE IF NOT EXISTS supplement_intake_items (
+          round_id TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          concern_summary TEXT NOT NULL DEFAULT '',
+          decision TEXT NOT NULL DEFAULT '' CHECK (decision IN ('', 'accepted', 'rejected')),
+          decision_rationale TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (round_id, file_path)
+      )
+  - name: supplement_landing_links
+    sql: |
+      CREATE TABLE IF NOT EXISTS supplement_landing_links (
+          round_id TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          comment_id TEXT NOT NULL,
+          action_order INTEGER NOT NULL,
+          location_order INTEGER NOT NULL,
+          planned_usage_note TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (round_id, file_path, comment_id, action_order, location_order),
+          FOREIGN KEY (round_id, file_path)
+              REFERENCES supplement_intake_items(round_id, file_path)
+              ON DELETE CASCADE,
+          FOREIGN KEY (comment_id, action_order, location_order)
+              REFERENCES strategy_action_target_locations(comment_id, action_order, location_order)
+              ON DELETE CASCADE
+      )
+  - name: comment_completion_status
+    sql: |
+      CREATE TABLE IF NOT EXISTS comment_completion_status (
+          comment_id TEXT PRIMARY KEY REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          manuscript_change_done TEXT NOT NULL CHECK (manuscript_change_done IN ('yes', 'no')),
+          response_section_done TEXT NOT NULL CHECK (response_section_done IN ('yes', 'no')),
+          evidence_gap_closed TEXT NOT NULL CHECK (evidence_gap_closed IN ('yes', 'no')),
+          user_strategy_confirmed TEXT NOT NULL CHECK (user_strategy_confirmed IN ('yes', 'no')),
+          one_to_one_link_checked TEXT NOT NULL CHECK (one_to_one_link_checked IN ('yes', 'no')),
+          export_ready TEXT NOT NULL CHECK (export_ready IN ('yes', 'no'))
+      )
+  - name: response_thread_resolution_links
+    sql: |
+      CREATE TABLE IF NOT EXISTS response_thread_resolution_links (
+          thread_id TEXT NOT NULL REFERENCES raw_review_threads(thread_id) ON DELETE CASCADE,
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          response_order INTEGER NOT NULL,
+          response_role TEXT NOT NULL CHECK (response_role IN ('primary', 'supporting', 'merged_duplicate')),
+          PRIMARY KEY (thread_id, comment_id)
+      )
+  - name: style_profiles
+    sql: |
+      CREATE TABLE IF NOT EXISTS style_profiles (
+          profile_target TEXT PRIMARY KEY CHECK (profile_target IN ('manuscript', 'response_letter')),
+          profile_summary TEXT NOT NULL DEFAULT '',
+          anti_ai_focus TEXT NOT NULL DEFAULT ''
+      )
+  - name: style_profile_rules
+    sql: |
+      CREATE TABLE IF NOT EXISTS style_profile_rules (
+          profile_target TEXT NOT NULL REFERENCES style_profiles(profile_target) ON DELETE CASCADE,
+          rule_order INTEGER NOT NULL,
+          rule_type TEXT NOT NULL CHECK (rule_type IN ('do', 'dont', 'anti_ai', 'tone')),
+          rule_text TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (profile_target, rule_order)
+      )
+  - name: action_copy_variants
+    sql: |
+      CREATE TABLE IF NOT EXISTS action_copy_variants (
+          comment_id TEXT NOT NULL,
+          action_order INTEGER NOT NULL,
+          location_order INTEGER NOT NULL,
+          variant_label TEXT NOT NULL CHECK (variant_label IN ('v1', 'v2', 'v3')),
+          variant_text TEXT NOT NULL DEFAULT '',
+          rationale TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (comment_id, action_order, location_order, variant_label),
+          FOREIGN KEY (comment_id, action_order, location_order)
+              REFERENCES strategy_action_target_locations(comment_id, action_order, location_order)
+              ON DELETE CASCADE
+      )
+  - name: selected_action_copy_variants
+    sql: |
+      CREATE TABLE IF NOT EXISTS selected_action_copy_variants (
+          comment_id TEXT NOT NULL,
+          action_order INTEGER NOT NULL,
+          location_order INTEGER NOT NULL,
+          variant_label TEXT NOT NULL CHECK (variant_label IN ('v1', 'v2', 'v3')),
+          PRIMARY KEY (comment_id, action_order, location_order),
+          FOREIGN KEY (comment_id, action_order, location_order, variant_label)
+              REFERENCES action_copy_variants(comment_id, action_order, location_order, variant_label)
+              ON DELETE CASCADE
+      )
+  - name: response_thread_rows
+    sql: |
+      CREATE TABLE IF NOT EXISTS response_thread_rows (
+          thread_id TEXT PRIMARY KEY REFERENCES raw_review_threads(thread_id) ON DELETE CASCADE,
+          original_comment TEXT NOT NULL DEFAULT '',
+          modification_scope TEXT NOT NULL DEFAULT '',
+          key_revision_excerpt TEXT NOT NULL DEFAULT '',
+          response_explanation TEXT NOT NULL DEFAULT '',
+          latex_excerpt TEXT NOT NULL DEFAULT '',
+          latex_response_text TEXT NOT NULL DEFAULT ''
+      )
+  - name: export_patch_sets
+    sql: |
+      CREATE TABLE IF NOT EXISTS export_patch_sets (
+          patch_set_id TEXT PRIMARY KEY,
+          artifact_kind TEXT NOT NULL CHECK (artifact_kind IN ('marked_manuscript', 'clean_manuscript')),
+          source_root TEXT NOT NULL DEFAULT '',
+          output_root TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'exported'))
+      )
+  - name: export_patches
+    sql: |
+      CREATE TABLE IF NOT EXISTS export_patches (
+          patch_set_id TEXT NOT NULL REFERENCES export_patch_sets(patch_set_id) ON DELETE CASCADE,
+          patch_order INTEGER NOT NULL,
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          action_order INTEGER NOT NULL,
+          location_order INTEGER NOT NULL,
+          target_file TEXT NOT NULL DEFAULT '',
+          anchor_text TEXT NOT NULL DEFAULT '',
+          operation TEXT NOT NULL CHECK (operation IN ('replace', 'insert_after', 'insert_before')),
+          marked_text TEXT NOT NULL DEFAULT '',
+          clean_text TEXT NOT NULL DEFAULT '',
+          notes TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (patch_set_id, patch_order)
+      )
+  - name: export_artifacts
+    sql: |
+      CREATE TABLE IF NOT EXISTS export_artifacts (
+          artifact_name TEXT PRIMARY KEY CHECK (artifact_name IN ('marked_manuscript', 'clean_manuscript', 'response_markdown', 'response_latex')),
+          artifact_status TEXT NOT NULL CHECK (artifact_status IN ('pending', 'ready', 'exported')),
+          output_path TEXT NOT NULL DEFAULT ''
+      )
+  - name: workflow_state
+    sql: |
+      CREATE TABLE IF NOT EXISTS workflow_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          current_stage TEXT NOT NULL CHECK (current_stage IN ('stage_1', 'stage_2', 'stage_3', 'stage_4', 'stage_5', 'stage_6')),
+          stage_gate TEXT NOT NULL CHECK (stage_gate IN ('blocked', 'ready')),
+          active_comment_id TEXT REFERENCES atomic_comments(comment_id) ON DELETE SET NULL,
+          next_action TEXT NOT NULL
+      )
+  - name: workflow_pending_user_confirmations
+    sql: |
+      CREATE TABLE IF NOT EXISTS workflow_pending_user_confirmations (
+          position INTEGER PRIMARY KEY,
+          message TEXT NOT NULL
+      )
+  - name: workflow_global_blockers
+    sql: |
+      CREATE TABLE IF NOT EXISTS workflow_global_blockers (
+          position INTEGER PRIMARY KEY,
+          message TEXT NOT NULL
+      )
+  - name: resume_brief
+    sql: |
+      CREATE TABLE IF NOT EXISTS resume_brief (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          resume_status TEXT NOT NULL CHECK (resume_status IN ('bootstrap', 'active', 'blocked', 'ready_to_resume', 'completed')),
+          current_objective TEXT NOT NULL DEFAULT '',
+          current_focus TEXT NOT NULL DEFAULT '',
+          why_paused TEXT NOT NULL DEFAULT '',
+          next_operator_action TEXT NOT NULL DEFAULT ''
+      )
+  - name: resume_open_loops
+    sql: |
+      CREATE TABLE IF NOT EXISTS resume_open_loops (
+          position INTEGER PRIMARY KEY,
+          message TEXT NOT NULL
+      )
+  - name: resume_recent_decisions
+    sql: |
+      CREATE TABLE IF NOT EXISTS resume_recent_decisions (
+          position INTEGER PRIMARY KEY,
+          message TEXT NOT NULL
+      )
+  - name: resume_must_not_forget
+    sql: |
+      CREATE TABLE IF NOT EXISTS resume_must_not_forget (
+          position INTEGER PRIMARY KEY,
+          message TEXT NOT NULL
+      )
+
+bootstrap:
+  - sql: |
+      INSERT INTO manuscript_summary (id, main_entry, project_shape, high_risk_areas)
+      VALUES (1, '', '', '')
+      ON CONFLICT(id) DO NOTHING
+  - sql: |
+      INSERT INTO workflow_state (id, current_stage, stage_gate, active_comment_id, next_action)
+      VALUES (1, 'stage_1', 'ready', NULL, 'enter_stage_2')
+      ON CONFLICT(id) DO NOTHING
+  - sql: |
+      INSERT INTO style_profiles (profile_target, profile_summary, anti_ai_focus)
+      VALUES
+          ('manuscript', '', ''),
+          ('response_letter', '', '')
+      ON CONFLICT(profile_target) DO NOTHING
+  - sql: |
+      INSERT INTO export_artifacts (artifact_name, artifact_status, output_path)
+      VALUES
+          ('marked_manuscript', 'pending', ''),
+          ('clean_manuscript', 'pending', ''),
+          ('response_markdown', 'pending', ''),
+          ('response_latex', 'pending', '')
+      ON CONFLICT(artifact_name) DO NOTHING
+  - sql: |
+      INSERT INTO resume_brief (
+          id,
+          resume_status,
+          current_objective,
+          current_focus,
+          why_paused,
+          next_operator_action
+      )
+      VALUES (
+          1,
+          'bootstrap',
+          'Bootstrap a new review-master workspace and establish the first actionable state.',
+          'No historical execution exists yet. Confirm inputs, initialize the workspace, and prepare to enter stage_2.',
+          'This workspace is new. The resume system is active, but there is no prior history to recover.',
+          'Run gate-and-render, read the bootstrap resume, and start the first authored step from the recommended action.'
+      )
+      ON CONFLICT(id) DO NOTHING

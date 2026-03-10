@@ -1,0 +1,24 @@
+# Raw Review Thread List
+
+这是从 `review-master.db` 渲染出的原始审稿意见块只读视图。数据库真源是 `raw_review_threads`。这是最终 response letter 的正式索引层，用户应优先在这里核对 reviewer 原始条目的顺序与边界。
+
+## Raw Thread Table
+
+| `thread_id` | `reviewer_id` | `thread_order` | `source_type` | Normalized Summary | Linked Atomic Comments |
+| --- | --- | --- | --- | --- | --- |
+{% for row in rows -%}
+| {{ row.thread_id }} | {{ row.reviewer_id }} | {{ row.thread_order }} | {{ row.source_type }} | {{ row.normalized_summary }} | {{ row.linked_comment_ids or '' }} |
+{% else -%}
+|  |  |  |  |  |  |
+{% endfor %}
+
+## Original Thread Text
+
+{% for row in rows -%}
+### {{ row.thread_id }}
+
+- Original text: {{ row.original_text }}
+
+{% else -%}
+- None
+{% endfor %}
