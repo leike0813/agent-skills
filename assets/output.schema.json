@@ -8,7 +8,34 @@
       "x-type": "artifact",
       "x-role": "note",
       "x-filename": "note.<paper_key>.md"
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "generated_at": {
+            "type": "string"
+        },
+        "input_hash": {
+            "type": "string"
+        },
+        "model": {
+            "type": "string"
+        }
+      }
+    },
+    "warnings": {
+        "type": "array"
+    },
+    "error": {
+        "type": [
+            "object",
+            "null"
+        ]
     }
   },
-  "required": []
+  "required": [
+    "provenance",
+    "warnings",
+    "error"
+  ]
 }
