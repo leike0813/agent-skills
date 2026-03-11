@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "note_path": {
+      "type": "string",
+      "description": "Absolute path to the generated note artifact, or an empty string when no note file is produced.",
+      "x-type": "artifact",
+      "x-role": "note",
+      "x-filename": "note.<paper_key>.md"
+    }
+  },
+  "required": []
+}
