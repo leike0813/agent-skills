@@ -14,11 +14,6 @@
       "pymupdf4llm"
     ]
   },
-  "schemas": {
-    "input": "assets/input.schema.json",
-    "parameter": "assets/parameter.schema.json",
-    "output": "assets/output.schema.json"
-  },
   "entrypoint": {
     "prompts": {
       "codex": "$literature-explainer : Use the uploaded paper file at `{{ input.source_path }}` and the optional language parameter `{{ parameter.language }}`. Follow SKILL.md exactly in interactive mode: normalize the source first, build initial understanding, ask for user intent, run evidence-backed Q&A when requested, and only persist the final note after the user explicitly asks for a note and confirms final save. End with a stdout JSON object.",
