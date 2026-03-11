@@ -12,7 +12,10 @@
     "version": "3.11",
     "dependencies": [
       "pymupdf4llm"
-    ]
+    ],
+    "default_options": {
+      "hard_timeout_seconds": 1800
+    }
   },
   "entrypoint": {
     "prompts": {
