@@ -14,11 +14,6 @@
       "pymupdf4llm"
     ]
   },
-  "schemas": {
-    "input": "assets/input.schema.json",
-    "parameter": "assets/parameter.schema.json",
-    "output": "assets/output.schema.json"
-  },
   "entrypoint": {
     "prompts": {
       "gemini": "Please call the skill named \"{{ skill.id }}\".\n\nPlease ingest the source file at `{{ input.source_path }}`. The input may be markdown, PDF, or an extensionless file; determine format from file content as defined in SKILL.md.\nThen generate artifacts below following the SKILL.md protocol:\n1) `digest.md` (in `{{ parameter.language }}`)\n2) `references.json`\n3) `citation_analysis.json` (in `{{ parameter.language }}`)\n\nOutput the final JSON object to stdout logic as defined in SKILL.md.\n\nInput Context:\n- source_path: {{ input.source_path }}\n- language: {{ parameter.language }}",
