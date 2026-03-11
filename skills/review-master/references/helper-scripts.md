@@ -41,7 +41,7 @@ Stage 4 特别规则：
 Stage 5 特别规则：
 
 - Stage 5 仍没有语义辅助脚本
-- `active_comment_id` 的锁定、策略立场判断、evidence gap 判断、逐条确认请求、blocker 判断、稿件修改草案和 response 段落草案形成都由 Agent 大语言模型完成
+- `active_comment_id` 的锁定、策略立场判断、evidence gap 判断、逐条确认请求、blocker 判断、manuscript draft 和 response draft 形成都由 Agent 大语言模型完成
 - `gate-and-render` 在 Stage 5 中只负责写后门禁、blocked/ready 状态输出、恢复包更新和只读视图重渲染
 - 不允许为了逐条策略制定、草案形成或 blocker 识别临时编写语义脚本
 
@@ -218,6 +218,7 @@ conda run --no-capture-output -n DataProcessing python -u \
 - Stage 4 写库完成后也必须重新跑一次 `gate-and-render`，不能凭记忆直接进入 Stage 5
 - Stage 5 写库完成后也必须重新跑一次 `gate-and-render`，不能凭记忆继续当前条目或切换下一条
 - 不允许为原子化、去重、语义映射、优先级判断或回复策略制定临时编写脚本
+
 
 ## 人工回退
 

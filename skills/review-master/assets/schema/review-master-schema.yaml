@@ -86,9 +86,12 @@ required_tables:
   - strategy_action_target_locations
   - strategy_card_evidence_items
   - strategy_card_pending_confirmations
+  - strategy_action_manuscript_drafts
+  - comment_response_drafts
   - supplement_intake_items
   - supplement_landing_links
   - comment_completion_status
+  - comment_blockers
   - response_thread_resolution_links
   - style_profiles
   - style_profile_rules
@@ -243,6 +246,26 @@ tables:
           message TEXT NOT NULL,
           PRIMARY KEY (comment_id, confirmation_order)
       )
+  - name: strategy_action_manuscript_drafts
+    sql: |
+      CREATE TABLE IF NOT EXISTS strategy_action_manuscript_drafts (
+          comment_id TEXT NOT NULL,
+          action_order INTEGER NOT NULL,
+          location_order INTEGER NOT NULL,
+          draft_text TEXT NOT NULL DEFAULT '',
+          rationale TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (comment_id, action_order, location_order),
+          FOREIGN KEY (comment_id, action_order, location_order)
+              REFERENCES strategy_action_target_locations(comment_id, action_order, location_order)
+              ON DELETE CASCADE
+      )
+  - name: comment_response_drafts
+    sql: |
+      CREATE TABLE IF NOT EXISTS comment_response_drafts (
+          comment_id TEXT PRIMARY KEY REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          draft_text TEXT NOT NULL DEFAULT '',
+          rationale TEXT NOT NULL DEFAULT ''
+      )
   - name: supplement_intake_items
     sql: |
       CREATE TABLE IF NOT EXISTS supplement_intake_items (
@@ -274,12 +297,20 @@ tables:
     sql: |
       CREATE TABLE IF NOT EXISTS comment_completion_status (
           comment_id TEXT PRIMARY KEY REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
-          manuscript_change_done TEXT NOT NULL CHECK (manuscript_change_done IN ('yes', 'no')),
-          response_section_done TEXT NOT NULL CHECK (response_section_done IN ('yes', 'no')),
+          manuscript_draft_done TEXT NOT NULL CHECK (manuscript_draft_done IN ('yes', 'no')),
+          response_draft_done TEXT NOT NULL CHECK (response_draft_done IN ('yes', 'no')),
           evidence_gap_closed TEXT NOT NULL CHECK (evidence_gap_closed IN ('yes', 'no')),
           user_strategy_confirmed TEXT NOT NULL CHECK (user_strategy_confirmed IN ('yes', 'no')),
           one_to_one_link_checked TEXT NOT NULL CHECK (one_to_one_link_checked IN ('yes', 'no')),
           export_ready TEXT NOT NULL CHECK (export_ready IN ('yes', 'no'))
+      )
+  - name: comment_blockers
+    sql: |
+      CREATE TABLE IF NOT EXISTS comment_blockers (
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          blocker_order INTEGER NOT NULL,
+          message TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (comment_id, blocker_order)
       )
   - name: response_thread_resolution_links
     sql: |

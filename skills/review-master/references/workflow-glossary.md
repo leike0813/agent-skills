@@ -125,6 +125,14 @@
   - 由 Stage 5 已确认的策略/草案、已选 manuscript 文案和 thread-level 聚合共同生成
 - Stage 6 不存在 action-level 的 response-side 三版本选择
 
+## Stage 5 completion 字段语义
+
+- `manuscript_draft_done`
+  - 只表示 Stage 5 的 manuscript draft 真源已经写入
+- `response_draft_done`
+  - 只表示 Stage 5 的 response draft 真源已经写入
+- 它们都不表示 Stage 6 的最终文案或最终导出已经完成
+
 ## 样例与 fixture 路径命名
 
 playbook 示例中，保存脚本 JSON 输出的正式目录名固定为：

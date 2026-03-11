@@ -15,7 +15,7 @@
 5. 按 `resume_read_order` 恢复当前视图与阶段文档
 6. 更新 `review-master.db`
 7. 再次运行 `gate-and-render` 核心脚本
-8. 读取 `instruction_payload`
+8. 读取新的 `instruction_payload`
 9. 若无用户显式覆盖，则按 `recommended_next_action` 继续
 10. 若存在 `repair_sequence`，先修数据库，再重新验证
 
@@ -24,8 +24,8 @@
 - 运行时唯一真源是 `review-master.db`
 - `workflow_state` 只保存在数据库中
 - 首次调用和跨 Session 恢复都先走恢复协议，不允许绕开
-- `pending_user_confirmations` 非空时，必须先完成用户确认
-- `global_blockers` 非空时，必须先请求补材、澄清或额外输入
+- `workflow_pending_user_confirmations` 非空时，必须先完成用户确认
+- `workflow_global_blockers` 非空时，必须先请求补材、澄清或额外输入
 - `active_comment_id` 非空时，不得静默切换到别的 comment
 
 ## 阶段规则
@@ -60,12 +60,10 @@
   - 更新 `resume_brief` 与 `resume_recent_decisions`
 - 推荐：
   - 在结构摘要足以支撑后续 thread/atomic 映射时进入阶段三
-  - 若结构仍不清，则继续分析或追问用户
 - 阻断：
   - `manuscript_sections` 明显缺失
   - `manuscript_claims` 明显缺失
   - 高风险修改区尚未识别
-  - 结构问题足以影响后续 Stage 3
 - 禁止：
   - 跳过结构分析直接进入意见原子化
   - 跳过原子化直接进入阶段五
@@ -81,11 +79,10 @@
 - 推荐：
   - 先稳定 raw thread 边界
   - 再做 canonical atomic 建模
-  - 关系闭环后进入阶段四，写入 atomic workboard 关系表
+  - 关系闭环后进入阶段四
 - 阻断：
   - raw thread 边界不稳定
   - 是否合并存在高风险歧义
-  - editor 要求与 reviewer 要求冲突且无法判断
   - 存在未映射 thread 或孤立 atomic item
 - 禁止：
   - 跳过 raw thread 层直接写 atomic
@@ -107,7 +104,6 @@
 - 阻断：
   - 存在 atomic item 没有 state / location / analysis
   - `priority`、`evidence_gap` 或 `next_action` 未定
-  - provisional 信息已多到无法支撑 Stage 5
   - 待确认事项尚未完成
 - 禁止：
   - 在确认未完成时进入阶段五
@@ -116,33 +112,37 @@
 ### `stage_5`
 
 - 允许：
-  - 锁定或切换 `active_comment_id`
+  - 显式设置或切换 `active_comment_id`
   - 写入 `strategy_cards`
   - 写入 `strategy_card_actions`
   - 写入 `strategy_action_target_locations`
   - 写入 `strategy_card_evidence_items`
   - 写入 `strategy_card_pending_confirmations`
-  - 写入 `workflow_global_blockers`
+  - 写入 `supplement_intake_items`
+  - 写入 `supplement_landing_links`
+  - 写入 `strategy_action_manuscript_drafts`
+  - 写入 `comment_response_drafts`
+  - 写入 `comment_blockers`
   - 写入 `comment_completion_status`
+  - 仅在真正的阶段级阻断下写入 `workflow_global_blockers`
 - 推荐：
   - 先锁定 `active_comment_id`
   - 缺策略卡先补策略卡
-  - 进入真实草案执行前，先完成逐条策略确认
-  - 有待确认项先请求确认
-  - 有 blocker 先请求补材
-  - 只有草案与一一对应关系都落地后，才把该条 comment 记为完成
-  - 当前条目闭环后，才允许切换下一条
+  - 先完成逐条策略确认，再写 Stage 5 draft 真源
+  - 当前 comment 有局部 blocker 时优先解决它，但用户仍可显式切到别的 comment
+  - 只有 manuscript draft、response draft 与一一对应关系都落地后，才把该条 comment 记为完成
 - 阻断：
   - 当前策略卡仍不足以面向用户确认
-  - 策略确认尚未完成
-  - evidence gap 已成立且 blocker 未解除
-  - 草案尚未形成
+  - `workflow_pending_user_confirmations` 非空
+  - `workflow_global_blockers` 非空
+  - manuscript draft 或 response draft 尚未形成
   - 一一对应关系尚未稳定
+  - 存在补材文件尚未判定接收/拒收，或接收补材尚未完成落地映射
 - 禁止：
   - 未确认时执行改稿
   - 证据缺口未关闭时标记完成
   - 静默切换 active comment
-  - 只形成方案、不形成草案就标记完成
+  - 只形成方案、不形成数据库中的正式草案真源就标记完成
 
 ### `stage_6`
 

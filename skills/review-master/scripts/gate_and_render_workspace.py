@@ -240,6 +240,22 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY comment_id, action_order, location_order
         """,
     )
+    strategy_action_manuscript_drafts = fetch_all(
+        connection,
+        """
+        SELECT comment_id, action_order, location_order, draft_text, rationale
+        FROM strategy_action_manuscript_drafts
+        ORDER BY comment_id, action_order, location_order
+        """,
+    )
+    comment_response_drafts = fetch_all(
+        connection,
+        """
+        SELECT comment_id, draft_text, rationale
+        FROM comment_response_drafts
+        ORDER BY comment_id
+        """,
+    )
     response_links = fetch_all(
         connection,
         """
@@ -321,12 +337,22 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY round_id, file_path, comment_id, action_order, location_order
         """,
     )
+    comment_blockers = fetch_all(
+        connection,
+        """
+        SELECT comment_id, blocker_order, message
+        FROM comment_blockers
+        ORDER BY comment_id, blocker_order
+        """,
+    )
     return {
         "raw_thread_links": raw_thread_links,
         "atomic_source_spans": atomic_source_spans,
         "target_locations": target_locations,
         "analysis_links": analysis_links,
         "strategy_action_locations": strategy_action_locations,
+        "strategy_action_manuscript_drafts": strategy_action_manuscript_drafts,
+        "comment_response_drafts": comment_response_drafts,
         "response_links": response_links,
         "style_profiles": style_profiles,
         "style_rules": style_rules,
@@ -338,6 +364,7 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         "export_artifacts": export_artifacts,
         "supplement_intake_items": supplement_intake_items,
         "supplement_landing_links": supplement_landing_links,
+        "comment_blockers": comment_blockers,
     }
 
 
@@ -363,6 +390,9 @@ def validate_database_content(
     dict[str, list[str]],
     dict[str, list[str]],
     dict[tuple[str, int], list[int]],
+    dict[tuple[str, int, int], sqlite3.Row],
+    dict[str, sqlite3.Row],
+    dict[str, list[str]],
     dict[str, list[str]],
     dict[str, sqlite3.Row],
     dict[str, int],
@@ -488,7 +518,7 @@ def validate_database_content(
     completion_rows = fetch_all(
         connection,
         """
-        SELECT comment_id, manuscript_change_done, response_section_done, evidence_gap_closed,
+        SELECT comment_id, manuscript_draft_done, response_draft_done, evidence_gap_closed,
                user_strategy_confirmed, one_to_one_link_checked, export_ready
         FROM comment_completion_status
         ORDER BY comment_id
@@ -498,8 +528,8 @@ def validate_database_content(
     for row in completion_rows:
         comment_id = str(row["comment_id"])
         for field in (
-            "manuscript_change_done",
-            "response_section_done",
+            "manuscript_draft_done",
+            "response_draft_done",
             "evidence_gap_closed",
             "user_strategy_confirmed",
             "one_to_one_link_checked",
@@ -509,7 +539,7 @@ def validate_database_content(
             if value not in ALLOWED_YES_NO:
                 add_issue(format_errors, "comment_completion_status", "invalid_enum", f"{field}='{value}' is not allowed", path=db_path, comment_id=comment_id)
         if str(row["export_ready"]) == "yes":
-            for field in ("manuscript_change_done", "response_section_done", "one_to_one_link_checked"):
+            for field in ("manuscript_draft_done", "response_draft_done", "one_to_one_link_checked"):
                 if str(row[field]) != "yes":
                     add_issue(
                         format_errors,
@@ -527,7 +557,10 @@ def validate_database_content(
     comment_to_analysis_ids: dict[str, list[str]] = defaultdict(list)
     comment_to_action_ids: dict[str, list[str]] = defaultdict(list)
     action_location_orders: dict[tuple[str, int], list[int]] = defaultdict(list)
+    manuscript_draft_map: dict[tuple[str, int, int], sqlite3.Row] = {}
+    response_draft_map: dict[str, sqlite3.Row] = {}
     thread_to_resolution_comment_ids: dict[str, list[str]] = defaultdict(list)
+    comment_blocker_map: dict[str, list[str]] = defaultdict(list)
     style_profile_map: dict[str, sqlite3.Row] = {}
     style_rule_count_by_target: dict[str, int] = defaultdict(int)
     action_variant_labels: dict[tuple[str, int, int], set[str]] = defaultdict(set)
@@ -602,6 +635,61 @@ def validate_database_content(
             comment_id=comment_id,
             value=str(row["target_location"]),
         )
+
+    for row in support["strategy_action_manuscript_drafts"]:
+        comment_id = str(row["comment_id"])
+        action_order = int(row["action_order"])
+        location_order = int(row["location_order"])
+        manuscript_draft_map[(comment_id, action_order, location_order)] = row
+        if not str(row["draft_text"]).strip():
+            add_issue(
+                format_errors,
+                "strategy_action_manuscript_drafts",
+                "missing_required_field",
+                "draft_text must be non-empty",
+                path=db_path,
+                comment_id=comment_id,
+            )
+        if not str(row["rationale"]).strip():
+            add_issue(
+                format_errors,
+                "strategy_action_manuscript_drafts",
+                "missing_required_field",
+                "rationale must be non-empty",
+                path=db_path,
+                comment_id=comment_id,
+            )
+        if location_order not in action_location_orders.get((comment_id, action_order), []):
+            add_issue(
+                format_errors,
+                "strategy_action_manuscript_drafts",
+                "invalid_action_location_reference",
+                f"draft references ({comment_id}, action {action_order}, location {location_order}) which is missing in strategy_action_target_locations",
+                path=db_path,
+                comment_id=comment_id,
+            )
+
+    for row in support["comment_response_drafts"]:
+        comment_id = str(row["comment_id"])
+        response_draft_map[comment_id] = row
+        if not str(row["draft_text"]).strip():
+            add_issue(
+                format_errors,
+                "comment_response_drafts",
+                "missing_required_field",
+                "draft_text must be non-empty",
+                path=db_path,
+                comment_id=comment_id,
+            )
+        if not str(row["rationale"]).strip():
+            add_issue(
+                format_errors,
+                "comment_response_drafts",
+                "missing_required_field",
+                "rationale must be non-empty",
+                path=db_path,
+                comment_id=comment_id,
+            )
 
     evidence_rows = fetch_all(
         connection,
@@ -697,6 +785,19 @@ def validate_database_content(
                     f"landing link references ({comment_id}, action {action_order}, location {location_order}) "
                     "which is missing in strategy_action_target_locations"
                 ),
+                path=db_path,
+                comment_id=comment_id,
+            )
+
+    for row in support["comment_blockers"]:
+        comment_id = str(row["comment_id"])
+        comment_blocker_map[comment_id].append(str(row["message"]))
+        if not str(row["message"]).strip():
+            add_issue(
+                format_errors,
+                "comment_blockers",
+                "missing_required_field",
+                "message must be non-empty",
                 path=db_path,
                 comment_id=comment_id,
             )
@@ -808,7 +909,10 @@ def validate_database_content(
         dict(comment_to_analysis_ids),
         dict(comment_to_action_ids),
         {key: sorted(set(value)) for key, value in action_location_orders.items()},
+        manuscript_draft_map,
+        response_draft_map,
         dict(thread_to_resolution_comment_ids),
+        dict(comment_blocker_map),
         style_profile_map,
         dict(style_rule_count_by_target),
         dict(action_variant_labels),
@@ -835,6 +939,8 @@ def validate_dependencies(
     comment_to_target_locations: dict[str, list[str]],
     comment_to_analysis_ids: dict[str, list[str]],
     action_location_orders: dict[tuple[str, int], list[int]],
+    manuscript_draft_map: dict[tuple[str, int, int], sqlite3.Row],
+    response_draft_map: dict[str, sqlite3.Row],
     thread_to_resolution_comment_ids: dict[str, list[str]],
     comment_to_action_ids: dict[str, list[str]],
     style_profile_map: dict[str, sqlite3.Row],
@@ -912,6 +1018,30 @@ def validate_dependencies(
                 path=db_path,
                 comment_id=active_comment_id,
             )
+        completion_row = completion_map.get(active_comment_id)
+        if completion_row is not None:
+            if str(completion_row["manuscript_draft_done"]) == "yes":
+                for action_order_text in comment_to_action_ids.get(active_comment_id, []):
+                    action_order = int(action_order_text)
+                    for location_order in action_location_orders.get((active_comment_id, action_order), []):
+                        if (active_comment_id, action_order, location_order) not in manuscript_draft_map:
+                            add_issue(
+                                dependency_errors,
+                                "strategy_action_manuscript_drafts",
+                                "missing_draft_row",
+                                f"{active_comment_id} action {action_order} location {location_order} has no manuscript draft row",
+                                path=db_path,
+                                comment_id=active_comment_id,
+                            )
+            if str(completion_row["response_draft_done"]) == "yes" and active_comment_id not in response_draft_map:
+                add_issue(
+                    dependency_errors,
+                    "comment_response_drafts",
+                    "missing_comment_id",
+                    f"comment_response_drafts is missing comment_id '{active_comment_id}'",
+                    path=db_path,
+                    comment_id=active_comment_id,
+                )
 
     if stage_number >= 6:
         for profile_target in ("manuscript", "response_letter"):
@@ -1046,6 +1176,7 @@ def validate_consistency(
     completion_map: dict[str, sqlite3.Row],
     thread_to_comment_ids: dict[str, list[str]],
     thread_to_resolution_comment_ids: dict[str, list[str]],
+    comment_blocker_map: dict[str, list[str]],
     style_profile_map: dict[str, sqlite3.Row],
     style_rule_count_by_target: dict[str, int],
     action_variant_labels: dict[tuple[str, int, int], set[str]],
@@ -1293,7 +1424,10 @@ def build_repair_sequence(
         "atomic_comment_target_locations": "recipe_stage4_upsert_atomic_workboard",
         "atomic_comment_analysis_links": "recipe_stage4_upsert_atomic_workboard",
         "strategy_cards": "recipe_stage5_upsert_strategy_card",
+        "strategy_action_manuscript_drafts": "recipe_stage5_replace_manuscript_drafts",
+        "comment_response_drafts": "recipe_stage5_upsert_response_draft",
         "comment_completion_status": "recipe_stage5_upsert_completion_status",
+        "comment_blockers": "recipe_stage5_replace_comment_blockers",
         "response_thread_resolution_links": "recipe_stage6_upsert_response_thread_rows",
         "style_profiles": "recipe_stage6_upsert_style_profiles",
         "style_profile_rules": "recipe_stage6_upsert_style_profiles",
@@ -1320,7 +1454,10 @@ def build_repair_sequence(
         "atomic_comment_target_locations": ["review-master.db", ATOMIC_WORKBOARD_MD],
         "atomic_comment_analysis_links": ["review-master.db", ATOMIC_WORKBOARD_MD],
         "strategy_cards": ["review-master.db", STRATEGY_CARD_DIR],
+        "strategy_action_manuscript_drafts": ["review-master.db", STRATEGY_CARD_DIR],
+        "comment_response_drafts": ["review-master.db", STRATEGY_CARD_DIR],
         "comment_completion_status": ["review-master.db", FINAL_CHECKLIST_MD],
+        "comment_blockers": ["review-master.db", STRATEGY_CARD_DIR],
         "response_thread_resolution_links": ["review-master.db", RESPONSE_LETTER_OUTLINE_MD, RESPONSE_TABLE_PREVIEW_MD],
         "style_profiles": ["review-master.db", STYLE_PROFILE_MD],
         "style_profile_rules": ["review-master.db", STYLE_PROFILE_MD],
@@ -1347,7 +1484,10 @@ def build_repair_sequence(
         "atomic_comment_target_locations": "先在 review-master.db 中修正 atomic_comment_target_locations 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
         "atomic_comment_analysis_links": "先在 review-master.db 中修正 atomic_comment_analysis_links 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
         "strategy_cards": "先在 review-master.db 中修正 strategy_cards、strategy_card_actions、strategy_action_target_locations、strategy_card_evidence_items 或 strategy_card_pending_confirmations 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
+        "strategy_action_manuscript_drafts": "先在 review-master.db 中修正 strategy_action_manuscript_drafts，再重新运行 gate-and-render 核心脚本并重渲染策略卡视图。",
+        "comment_response_drafts": "先在 review-master.db 中修正 comment_response_drafts，再重新运行 gate-and-render 核心脚本并重渲染策略卡视图。",
         "comment_completion_status": "先在 review-master.db 中修正 comment_completion_status 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
+        "comment_blockers": "先在 review-master.db 中修正 comment_blockers，再重新运行 gate-and-render 核心脚本并重渲染策略卡视图。",
         "response_thread_resolution_links": "先在 review-master.db 中修正 response_thread_resolution_links 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
         "style_profiles": "先在 review-master.db 中修正 style_profiles 与 style_profile_rules，再重新运行 gate-and-render 核心脚本并重渲染视图。",
         "style_profile_rules": "先在 review-master.db 中修正 style_profiles 与 style_profile_rules，再重新运行 gate-and-render 核心脚本并重渲染视图。",
@@ -1494,6 +1634,7 @@ def build_blocked_actions(
     workflow_state: sqlite3.Row | None,
     pending: list[str],
     blockers: list[str],
+    comment_blocker_map: dict[str, list[str]],
     completion_map: dict[str, sqlite3.Row],
     export_artifact_map: dict[str, sqlite3.Row],
 ) -> list[dict[str, Any]]:
@@ -1532,7 +1673,7 @@ def build_blocked_actions(
                     recipe_id=None,
                 )
             )
-        if blockers:
+        if blockers or comment_blocker_map.get(active_comment_id):
             blocked.append(
                 make_action(
                     "blocked_complete_active_comment",
@@ -1571,6 +1712,7 @@ def build_stage_actions(
     workflow_state: sqlite3.Row | None,
     pending: list[str],
     blockers: list[str],
+    comment_blocker_map: dict[str, list[str]],
     atomic_map: dict[str, sqlite3.Row],
     atomic_state_map: dict[str, sqlite3.Row],
     strategy_map: dict[str, sqlite3.Row],
@@ -1682,15 +1824,46 @@ def build_stage_actions(
                 )
             ]
         if active_comment_id:
-            return [
-                make_action(
-                    "advance_active_comment",
-                    f"继续围绕 {active_comment_id} 更新 review-master.db 中的策略、动作位置、证据、补材接收落地、完成状态和 workflow_state，然后重新运行 gate-and-render 核心脚本。",
-                    "当前 active comment 已具备继续推进条件。",
-                    ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_INTAKE_PLAN_MD],
-                    recipe_id="recipe_stage5_upsert_completion_status",
+            other_comment = next(
+                (
+                    comment_id
+                    for comment_id, row in atomic_state_map.items()
+                    if comment_id != active_comment_id and str(row["status"]) != "done"
+                ),
+                None,
+            )
+            actions = []
+            if comment_blocker_map.get(active_comment_id):
+                actions.append(
+                    make_action(
+                        "resolve_blockers",
+                        f"先为 {active_comment_id} 关闭 comment-scoped blocker，并补齐当前条目的证据或补材落地，然后重新运行 gate-and-render 核心脚本。",
+                        "当前 active comment 仍有局部 blocker，不能标记完成，但不阻断切换到其他 comment。",
+                        ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_INTAKE_PLAN_MD],
+                        recipe_id="recipe_stage5_replace_comment_blockers",
+                    )
                 )
-            ]
+            else:
+                actions.append(
+                    make_action(
+                        "advance_active_comment",
+                        f"继续围绕 {active_comment_id} 更新 review-master.db 中的策略、动作位置、草案、证据、补材接收落地、完成状态和 workflow_state，然后重新运行 gate-and-render 核心脚本。",
+                        "当前 active comment 已具备继续推进条件。",
+                        ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_INTAKE_PLAN_MD],
+                        recipe_id="recipe_stage5_upsert_completion_status",
+                    )
+                )
+            if other_comment is not None:
+                actions.append(
+                    make_action(
+                        "set_active_comment",
+                        f"如需改变当前焦点，可把 {other_comment}（或任一非 done comment）写入 workflow_state.active_comment_id，再重新运行 gate-and-render 核心脚本。",
+                        "Stage 5 允许显式切换 active comment；切换不会清空已写入的策略、草案和 blocker 状态。",
+                        ["review-master.db", ATOMIC_WORKBOARD_MD, STRATEGY_CARD_DIR],
+                        recipe_id="recipe_stage5_set_active_comment",
+                    )
+                )
+            return actions
         next_comment = next((comment_id for comment_id, row in atomic_state_map.items() if str(row["status"]) == "ready"), None)
         return [
             make_action(
@@ -1825,6 +1998,7 @@ def build_instruction_payload(
     resume_brief: sqlite3.Row | None,
     pending: list[str],
     blockers: list[str],
+    comment_blocker_map: dict[str, list[str]],
     resume_open_loops: list[str],
     resume_recent_decisions: list[str],
     resume_must_not_forget: list[str],
@@ -1848,7 +2022,7 @@ def build_instruction_payload(
 ) -> dict[str, Any]:
     repair_sequence = build_repair_sequence(format_errors, dependency_errors, consistency_errors)
     current_state = build_current_state(workflow_state, pending, blockers, bool(repair_sequence))
-    blocked_actions = build_blocked_actions(workflow_state, pending, blockers, completion_map, export_artifact_map)
+    blocked_actions = build_blocked_actions(workflow_state, pending, blockers, comment_blocker_map, completion_map, export_artifact_map)
     if repair_sequence:
         allowed_next_actions = repair_sequence
         recommended_next_action = repair_sequence[0]
@@ -1857,6 +2031,7 @@ def build_instruction_payload(
             workflow_state,
             pending,
             blockers,
+            comment_blocker_map,
             atomic_map,
             atomic_state_map,
             strategy_map,
@@ -1935,7 +2110,10 @@ def main() -> int:
     comment_to_analysis_ids: dict[str, list[str]] = {}
     comment_to_action_ids: dict[str, list[str]] = {}
     action_location_orders: dict[tuple[str, int], list[int]] = {}
+    manuscript_draft_map: dict[tuple[str, int, int], sqlite3.Row] = {}
+    response_draft_map: dict[str, sqlite3.Row] = {}
     thread_to_resolution_comment_ids: dict[str, list[str]] = {}
+    comment_blocker_map: dict[str, list[str]] = {}
     style_profile_map: dict[str, sqlite3.Row] = {}
     style_rule_count_by_target: dict[str, int] = {}
     action_variant_labels: dict[tuple[str, int, int], set[str]] = {}
@@ -1967,7 +2145,10 @@ def main() -> int:
                 comment_to_analysis_ids,
                 comment_to_action_ids,
                 action_location_orders,
+                manuscript_draft_map,
+                response_draft_map,
                 thread_to_resolution_comment_ids,
+                comment_blocker_map,
                 style_profile_map,
                 style_rule_count_by_target,
                 action_variant_labels,
@@ -1999,6 +2180,8 @@ def main() -> int:
             comment_to_target_locations,
             comment_to_analysis_ids,
             action_location_orders,
+            manuscript_draft_map,
+            response_draft_map,
             thread_to_resolution_comment_ids,
             comment_to_action_ids,
             style_profile_map,
@@ -2028,6 +2211,7 @@ def main() -> int:
             completion_map,
             thread_to_comment_ids,
             thread_to_resolution_comment_ids,
+            comment_blocker_map,
             style_profile_map,
             style_rule_count_by_target,
             action_variant_labels,
@@ -2043,6 +2227,7 @@ def main() -> int:
         resume_brief,
         pending,
         blockers,
+        comment_blocker_map,
         resume_open_loops,
         resume_recent_decisions,
         resume_must_not_forget,
