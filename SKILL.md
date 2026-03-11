@@ -453,6 +453,9 @@ conda run --no-capture-output -n DataProcessing python -u \
 - 写入 `strategy_card_pending_confirmations`
 - 写入 `supplement_intake_items`
 - 写入 `supplement_landing_links`
+- 写入 `strategy_action_manuscript_drafts`
+- 写入 `comment_response_drafts`
+- 写入 `comment_blockers`
 - 写入 `comment_completion_status`
 - 若需补材或澄清，写入 `workflow_global_blockers`
 - 更新 `resume_brief`
@@ -464,13 +467,13 @@ conda run --no-capture-output -n DataProcessing python -u \
 
 - Stage 5 以 `active_comment_id` 为唯一执行焦点，不按原始 reviewer thread 直接推进
 - 每条 atomic item 都应形成 `response-strategy-cards/{comment_id}.md`
-- 默认必须先完成逐条策略确认，再进入稿件修改草案和 response 段落草案
+- 默认必须先完成逐条策略确认，再进入 manuscript draft 和 response draft
 - Stage 4 的总确认不能替代 Stage 5 的局部执行确认
 - 若存在 evidence gap，应显式进入 blocker 路径，请求补材或澄清
 - 每轮补材必须形成文件级接收判定（accepted/rejected + rationale）
 - 被接收的补材必须映射到 `comment_id/action_order/location_order`，并在 `supplement-intake-plan.md` 可追溯
-- 只有当策略卡、证据判断、稿件修改草案、response 段落草案以及一一对应检查都完成后，当前条目才允许标记完成
-- 当前条目闭环后，才允许切换到下一条 atomic item
+- 只有当策略卡、证据判断、manuscript draft、response draft 以及一一对应检查都完成后，当前条目才允许标记完成
+- 只要没有 `workflow_global_blockers`，Stage 5 就允许显式 `set_active_comment` 切换焦点
 
 阻断条件：
 
@@ -484,10 +487,10 @@ conda run --no-capture-output -n DataProcessing python -u \
 完成定义：
 
 - 当前 atomic item 的策略、证据、确认与完成状态已闭环
-- 稿件修改草案与 response 段落草案都已落地
+- manuscript draft 与 response draft 都已落地到正式真源表
 - 一一对应检查通过
 - `comment_completion_status` 已更新为可完成态
-- `gate-and-render` 允许继续推进当前条目或切换下一条目
+- `gate-and-render` 允许继续推进当前条目或显式切换下一条目
 
 脚本：
 

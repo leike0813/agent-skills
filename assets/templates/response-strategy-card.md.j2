@@ -34,6 +34,25 @@
 |  |  |  |  |
 {% endfor %}
 
+## Manuscript Drafts
+
+| Action ID | Location | Target Location | Draft Text | Rationale |
+| --- | --- | --- | --- | --- |
+{% for row in actions -%}
+{% for draft in row.draft_rows -%}
+| A{{ row.action_order }} | L{{ draft.location_order }} | {{ draft.target_location }} | {{ draft.draft_text or '' }} | {{ draft.rationale or '' }} |
+{% else -%}
+| A{{ row.action_order }} |  |  |  |  |
+{% endfor %}
+{% else -%}
+|  |  |  |  |  |
+{% endfor %}
+
+## Response Draft
+
+- Draft text: {{ response_draft.draft_text or '' }}
+- Rationale: {{ response_draft.rationale or '' }}
+
 ## Required Evidence
 
 | Evidence ID | Required Material | Available Now (`yes/no`) | Gap Note |
@@ -47,6 +66,14 @@
 ## Pending Confirmations
 
 {% for item in pending_confirmations -%}
+- {{ item }}
+{% else -%}
+- None
+{% endfor %}
+
+## Comment Blockers
+
+{% for item in comment_blockers -%}
 - {{ item }}
 {% else -%}
 - None

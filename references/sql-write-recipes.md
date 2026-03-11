@@ -199,6 +199,7 @@
 - 写后门槛：
   - `gate-and-render` 必须反映新的 `active_comment_id`
   - 若当前 item 仍需确认或存在 blocker，不得假设可直接执行
+  - 切换不会清空旧 comment 已写入的策略、草案或 blocker 数据
 
 ## `recipe_stage5_upsert_strategy_card`
 
@@ -329,7 +330,7 @@
   5. 更新 `resume_brief` 与 `resume_open_loops`
 - 进入这条 recipe 之前应先确认：
   - 当前 item 已形成可被用户评审的策略卡
-  - 正准备进入稿件修改草案或 response 草案
+  - 正准备进入 manuscript draft 或 response draft
 - 写后门槛：
   - 用户待确认事项已显式展示
   - 在确认完成前，不得进入真正的草案执行
@@ -337,7 +338,7 @@
 ## `recipe_stage5_set_blockers`
 
 - 适用阶段：`stage_5`
-- 何时使用：出现证据缺口、用户补材缺失或其他全局阻塞时
+- 何时使用：出现真正阻断整个 Stage 5 的全局问题时
 - 必须更新的表：
   - `workflow_global_blockers`
   - `workflow_state`
@@ -353,16 +354,79 @@
   6. 更新 `resume_open_loops`
   7. 视情况更新 `resume_must_not_forget`
 - 进入这条 recipe 之前应先确认：
-  - 当前 item 的 blocker 已稳定识别
-  - blocker 不是暂时的措辞问题，而是真正阻碍草案执行的问题
+  - 该 blocker 确实属于阶段级阻断，而不是某条 comment 的局部 blocker
+  - blocker 不是暂时的措辞问题，而是真正阻碍整个 Stage 5 的问题
 - 写后门槛：
   - blocker 已对用户可见
-  - 在 blocker 解除前，不得把当前条目标记完成
+  - 在 blocker 解除前，不得继续执行 Stage 5 的任何 comment
+
+## `recipe_stage5_replace_comment_blockers`
+
+- 适用阶段：`stage_5`
+- 何时使用：当前 active comment 需要局部 blocker，但不应阻断整个 Stage 5 时
+- 必须更新的表：
+  - `comment_blockers`
+  - `resume_brief`
+  - `resume_open_loops`
+  - 视情况更新 `resume_must_not_forget`
+- 推荐 SQL 顺序：
+  1. `PRAGMA foreign_keys = ON`
+  2. `DELETE FROM comment_blockers WHERE comment_id = ?`
+  3. 为该 comment 批量插入新的 blocker 列表
+  4. `UPDATE resume_brief ...`
+  5. 更新 `resume_open_loops`
+  6. 视情况更新 `resume_must_not_forget`
+- 进入这条 recipe 之前应先确认：
+  - blocker 只阻断当前 comment 的完成
+  - 其他 comment 在无全局 blocker 时仍可继续处理
+- 写后门槛：
+  - 当前 comment 不得被标记完成
+  - `gate-and-render` 仍允许显式 `set_active_comment`
+
+## `recipe_stage5_replace_manuscript_drafts`
+
+- 适用阶段：`stage_5`
+- 何时使用：需要为当前 comment 的 action/location 写入或替换 manuscript draft 真源时
+- 必须更新的表：
+  - `strategy_action_manuscript_drafts`
+  - `resume_brief`
+  - 视情况更新 `resume_recent_decisions`
+- 推荐 SQL 顺序：
+  1. `PRAGMA foreign_keys = ON`
+  2. `DELETE FROM strategy_action_manuscript_drafts WHERE comment_id = ?`
+  3. 按 `(comment_id, action_order, location_order)` 批量插入新的 draft 行
+  4. `UPDATE resume_brief ...`
+  5. 视情况更新 `resume_recent_decisions`
+- 进入这条 recipe 之前应先确认：
+  - 当前 comment 的 `strategy_card_actions` 与 `strategy_action_target_locations` 已稳定
+  - 这些文本只是 Stage 5 草案，不是 Stage 6 最终落稿版本
+- 写后门槛：
+  - 当前 comment 每个需要的 action/location 都已有 manuscript draft 行
+  - 之后才允许把 `manuscript_draft_done` 置为 `yes`
+
+## `recipe_stage5_upsert_response_draft`
+
+- 适用阶段：`stage_5`
+- 何时使用：需要为当前 comment 写入或更新 response draft 真源时
+- 必须更新的表：
+  - `comment_response_drafts`
+  - `resume_brief`
+  - 视情况更新 `resume_recent_decisions`
+- 推荐 SQL 顺序：
+  1. `PRAGMA foreign_keys = ON`
+  2. `INSERT ... ON CONFLICT(comment_id) DO UPDATE` 到 `comment_response_drafts`
+  3. `UPDATE resume_brief ...`
+  4. 视情况更新 `resume_recent_decisions`
+- 进入这条 recipe 之前应先确认：
+  - 当前 comment 的策略、证据和 manuscript draft 方向已经足以支撑回复草案
+- 写后门槛：
+  - 当前 comment 已有 response draft 真源
+  - 之后才允许把 `response_draft_done` 置为 `yes`
 
 ## `recipe_stage5_upsert_completion_status`
 
 - 适用阶段：`stage_5`
-- 何时使用：某条 atomic item 的修改、回复段落、证据和一一对应检查推进后
+- 何时使用：某条 atomic item 的草案、证据和一一对应检查推进后
 - 必须更新的表：
   - `comment_completion_status`
   - `workflow_state`
@@ -379,8 +443,8 @@
 - 进入这条 recipe 之前应先确认：
   - 策略卡完成
   - 证据判断完成
-  - 稿件修改草案完成
-  - response 段落草案完成
+  - manuscript draft 完成
+  - response draft 完成
   - 一一对应检查通过
 - 写后门槛：
   - 当前条目才可视为可完成态

@@ -18,6 +18,7 @@
 
 - Agent 负责语义理解、学术判断、策略制定、意见映射和用户交互
 - 脚本只负责确定性且可验证的工作：workspace 初始化、数据库读写辅助、状态门禁检查、恢复包输出和只读视图重渲染
+- Stage 5 的 manuscript draft 与 response draft 由 Agent 写入正式真源表，Stage 6 再继续做最终成文和导出
 
 ## Workflow Discipline
 
@@ -26,7 +27,7 @@
 - 有 `pending_user_confirmations` 时先请求确认
 - 有 `global_blockers` 时先请求补材或澄清
 - 每轮补材都要形成文件级 intake 判定；`accepted` 补材必须有落地映射
-- `active_comment_id` 非空时，不得静默切换 comment
+- `active_comment_id` 允许显式切换，但不得静默切换 comment
 - 不满足导出门禁时，禁止导出 marked manuscript 之后的任何最终文件
 - Stage 6 manuscript 导出必须先写实 `export_patch_sets` 与 `export_patches`
 - marked manuscript 必须是完整稿件

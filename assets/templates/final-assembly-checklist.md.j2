@@ -4,10 +4,10 @@
 
 ## Atomic Completion Table
 
-| `comment_id` | Source Reviewers | Source Threads | `status` | `priority` | `evidence_gap` | Target Locations | `manuscript_change_done` | `response_section_done` | `one_to_one_link_checked` | `export_ready` |
+| `comment_id` | Source Reviewers | Source Threads | `status` | `priority` | `evidence_gap` | Target Locations | `manuscript_draft_done` | `response_draft_done` | `one_to_one_link_checked` | `export_ready` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 {% for row in atomic_rows -%}
-| {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.status or '' }} | {{ row.priority or '' }} | {{ row.evidence_gap or '' }} | {{ row.target_locations or '' }} | {{ row.manuscript_change_done or '' }} | {{ row.response_section_done or '' }} | {{ row.one_to_one_link_checked or '' }} | {{ row.export_ready or '' }} |
+| {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.status or '' }} | {{ row.priority or '' }} | {{ row.evidence_gap or '' }} | {{ row.target_locations or '' }} | {{ row.manuscript_draft_done or '' }} | {{ row.response_draft_done or '' }} | {{ row.one_to_one_link_checked or '' }} | {{ row.export_ready or '' }} |
 {% else -%}
 |  |  |  |  |  |  |  |  |  |  |  |
 {% endfor %}

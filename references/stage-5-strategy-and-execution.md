@@ -9,9 +9,9 @@
 ## 目标
 
 - 围绕当前 `active_comment_id` 的 canonical atomic item 形成可执行策略
-- 在进入草案执行前完成逐条策略确认
-- 对 evidence gap、blocker、补材和完成条件做严格门禁
-- 让每条 atomic item 在进入 Stage 6 前都具备可追溯的策略、草案和一一对应关系
+- 在进入 Stage 6 前，先把该条的 manuscript draft、response draft、证据与确认闭环写入数据库
+- 把局部 blocker 留在 comment 作用域，而不是把整个 Stage 5 都锁死
+- 允许用户显式切换当前焦点 comment，但禁止静默切换
 
 ## 进入条件
 
@@ -22,8 +22,6 @@
 - Stage 4 默认确认门禁已通过
 - `gate-and-render` 核心脚本已允许进入 `stage_5`
 - 当前准备处理的 `comment_id` 已在 workboard 中具备足够 planning 信息
-
-若 Stage 4 的待确认事项尚未清空，或 planning 仍为空壳，则不得进入 Stage 5。
 
 ## 必读材料
 
@@ -44,13 +42,20 @@
 
 ## 子流程
 
-### 1. 锁定 active item
+### 1. 锁定或切换 active item
 
-- 在 `workflow_state.active_comment_id` 中锁定当前 `comment_id`
-- 只有当以下任一条件成立时，才允许切换：
-  - 当前 item 已完成
-  - 当前 item 已明确 blocked，且暂停理由已写入
-  - 用户明确要求改变处理顺序
+- 在 `workflow_state.active_comment_id` 中显式锁定当前 `comment_id`
+- Stage 5 允许显式切换到任一非 `done` comment，但必须通过写库更新 `active_comment_id` 后再重跑 `gate-and-render`
+- 切换时不得清空前一条 comment 的：
+  - `strategy_cards`
+  - `strategy_card_actions`
+  - `strategy_action_target_locations`
+  - `strategy_card_evidence_items`
+  - `supplement_*`
+  - `strategy_action_manuscript_drafts`
+  - `comment_response_drafts`
+  - `comment_blockers`
+  - `comment_completion_status`
 
 禁止静默切换 `active_comment_id`。
 
@@ -82,7 +87,7 @@ Stage 5 默认要求逐条策略确认。
 
 - Stage 4 的总确认只说明 workboard 可接受
 - 它不能替代当前 item 的局部执行确认
-- 在进入稿件修改草案和 response 段落草案前，必须先让用户确认：
+- 在进入 manuscript draft 与 response draft 前，必须先让用户确认：
   - 当前立场是否可接受
   - 当前修改动作是否合适
   - 当前证据方案是否足够
@@ -100,25 +105,38 @@ Stage 5 默认要求逐条策略确认。
 - 本轮存在补材文件尚未给出接收/拒收判定
 - 本轮存在 accepted 补材但未完成落地映射
 
-一旦 blocker 成立：
+comment-scoped blocker 的处理规则：
 
-- 必须写入 `workflow_global_blockers`
-- 必须更新 `resume_brief` 与 `resume_open_loops`
-- 不得把当前 item 标记为完成
-- 必须先请求补材、澄清或确认
+- 写入 `comment_blockers`
+- 该 comment 不得标记为完成
+- 仍允许显式切换到其他非 `done` comment
 
-### 5. 形成草案
+global blocker 的处理规则：
+
+- 写入 `workflow_global_blockers`
+- 整个 Stage 5 进入 blocked
+- 不得切换 comment
+
+### 5. 形成 Stage 5 草案真源
 
 在策略确认完成且 blocker 已解除后，才允许形成：
 
-- 稿件修改草案
-- response 段落草案
+- `strategy_action_manuscript_drafts`
+  - 以 `comment_id + action_order + location_order` 为粒度
+  - 保存当前条目的 manuscript 草案与简短 rationale
+- `comment_response_drafts`
+  - 以 `comment_id` 为粒度
+  - 保存当前条目的 response 草案与简短 rationale
 
-形成草案时必须保证：
+这些草案是 Stage 5 真源，不是 Stage 6 的最终导出文本。
 
-- 修改动作和位置能落到当前 atomic item
-- response 段落直接服务当前 atomic item
-- 若一条动作对应多个位置，必须在 `strategy_action_target_locations` 中明确
+Stage 6 会在这些草案基础上继续完成：
+
+- style profile
+- manuscript final-copy variants
+- selected variants
+- thread-level response rows
+- export patches
 
 ### 6. 写入完成状态
 
@@ -126,9 +144,18 @@ Stage 5 默认要求逐条策略确认。
 
 - 策略卡完成
 - 证据判断完成
-- 稿件修改草案完成
-- response 段落草案完成
+- `manuscript_draft_done = yes`
+- `response_draft_done = yes`
 - 一一对应检查通过
+
+其中：
+
+- `manuscript_draft_done = yes`
+  - 只表示当前 comment 需要的 `strategy_action_manuscript_drafts` 已形成
+- `response_draft_done = yes`
+  - 只表示当前 comment 的 `comment_response_drafts` 已形成
+
+它们都不表示 Stage 6 的最终文案已导出。
 
 ## 最低必须明确的策略卡内容
 
@@ -140,6 +167,8 @@ Stage 5 默认要求逐条策略确认。
 - 需要时的 `strategy_action_target_locations`
 - 证据条目
 - 待确认事项
+- manuscript draft
+- response draft
 
 如果这些内容不足，说明该 item 仍停留在 planning 草图阶段，不能视为 Stage 5 可执行。
 
@@ -149,7 +178,7 @@ Stage 5 默认要求逐条策略确认。
 
 - reviewer 明确要求新增实验、数据、图表、统计或外部证据
 - 当前已有证据不足以支撑打算采用的回复立场
-- 不补材就无法形成可信的 response 段落草案
+- 不补材就无法形成可信的 response draft
 
 ### 默认不应淡化 blocker 的情形
 
@@ -165,8 +194,8 @@ Stage 5 默认要求逐条策略确认。
 
 Stage 5 的一一对应检查至少要回答：
 
-- 当前 response 段落草案是否直接回应当前 atomic item
-- 当前稿件修改草案是否确实支撑当前 response 段落
+- 当前 response draft 是否直接回应当前 atomic item
+- 当前 manuscript drafts 是否确实支撑当前 response draft
 - 当前草案是否错把别的 item 的修改混到本条里
 - 当前 item 的 thread-level 回映是否在 Stage 6 中可聚合
 
@@ -186,7 +215,7 @@ Stage 5 的一一对应检查至少要回答：
 - 未确认就执行该条
 - 证据缺口未关闭就标记完成
 - 静默切换 `active_comment_id`
-- 只写策略立场、不形成草案就标记完成
+- 只写策略立场、不形成数据库中的正式草案真源就标记完成
 - 把 Stage 4 总确认误当成 Stage 5 逐条执行确认
 
 ## 用户可读视图
@@ -203,11 +232,11 @@ Stage 5 的一一对应检查至少要回答：
 
 - 策略卡完成
 - 证据判断完成
-- 稿件修改草案完成
-- response 段落草案完成
+- manuscript draft 已形成
+- response draft 已形成
 - 一一对应检查通过
 - `comment_completion_status` 已更新为可完成态
-- `gate-and-render` 核心脚本允许继续推进当前条目或切换下一条目
+- `gate-and-render` 核心脚本允许继续推进当前条目或显式切换下一条目
 
 ## 与 Stage 6 的边界
 
@@ -215,12 +244,13 @@ Stage 5 到这里为止，必须已经完成：
 
 - 策略、立场与证据判断
 - 修改方向与草案边界
-- 稿件修改草案与 response 段落草案
+- manuscript draft 与 response draft
 
-Stage 5 不负责最终成文润色，也不负责给 response letter 做 action-level 的三版本选择。
+Stage 5 不负责：
 
-Stage 6 只负责：
+- 最终成文润色
+- final-copy variants 三选一
+- thread-level 最终 row 组装
+- marked / clean manuscript 导出
 
-- 把 Stage 5 已确认的方案转成最终稿里真正落下去的 manuscript 文案
-- 让用户对每个 action 的每个 target location 的最终落稿文本做三选一
-- 在此基础上组装 thread-level 的最终 response rows
+这些工作都留给 Stage 6。

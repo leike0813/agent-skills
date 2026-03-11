@@ -79,18 +79,21 @@ REPAIR_PRIORITY = {
     "atomic_comment_target_locations": 9,
     "atomic_comment_analysis_links": 10,
     "strategy_cards": 11,
-    "comment_completion_status": 12,
-    "response_thread_resolution_links": 13,
-    "style_profiles": 14,
-    "style_profile_rules": 15,
-    "action_copy_variants": 16,
-    "selected_action_copy_variants": 17,
-    "response_thread_rows": 18,
-    "export_patch_sets": 19,
-    "export_patches": 20,
-    "export_artifacts": 21,
-    "supplement_intake_items": 22,
-    "supplement_landing_links": 23,
+    "strategy_action_manuscript_drafts": 12,
+    "comment_response_drafts": 13,
+    "comment_completion_status": 14,
+    "comment_blockers": 15,
+    "response_thread_resolution_links": 16,
+    "style_profiles": 17,
+    "style_profile_rules": 18,
+    "action_copy_variants": 19,
+    "selected_action_copy_variants": 20,
+    "response_thread_rows": 21,
+    "export_patch_sets": 22,
+    "export_patches": 23,
+    "export_artifacts": 24,
+    "supplement_intake_items": 25,
+    "supplement_landing_links": 26,
 }
 
 
@@ -405,6 +408,27 @@ def build_strategy_action_location_index(connection: sqlite3.Connection) -> dict
     for row in rows:
         key = (str(row["comment_id"]), int(row["action_order"]))
         index[key].append(str(row["target_location"]))
+    return dict(index)
+
+
+def build_strategy_action_target_detail_index(connection: sqlite3.Connection) -> dict[tuple[str, int], list[dict[str, Any]]]:
+    rows = fetch_all(
+        connection,
+        """
+        SELECT comment_id, action_order, location_order, target_location
+        FROM strategy_action_target_locations
+        ORDER BY comment_id, action_order, location_order
+        """,
+    )
+    index: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        key = (str(row["comment_id"]), int(row["action_order"]))
+        index[key].append(
+            {
+                "location_order": int(row["location_order"]),
+                "target_location": str(row["target_location"]),
+            }
+        )
     return dict(index)
 
 
@@ -967,7 +991,7 @@ def build_final_checklist_context(connection: sqlite3.Connection) -> dict[str, A
         connection,
         """
         SELECT ac.comment_id, ac.comment_order, acs.status, acs.priority, acs.evidence_gap,
-               ccs.manuscript_change_done, ccs.response_section_done, ccs.one_to_one_link_checked, ccs.export_ready
+               ccs.manuscript_draft_done, ccs.response_draft_done, ccs.one_to_one_link_checked, ccs.export_ready
         FROM atomic_comments ac
         LEFT JOIN atomic_comment_state acs ON acs.comment_id = ac.comment_id
         LEFT JOIN comment_completion_status ccs ON ccs.comment_id = ac.comment_id
@@ -990,8 +1014,8 @@ def build_final_checklist_context(connection: sqlite3.Connection) -> dict[str, A
                 "priority": str(row["priority"] or ""),
                 "evidence_gap": str(row["evidence_gap"] or ""),
                 "target_locations": join_ordered(target_index.get(comment_id, [])),
-                "manuscript_change_done": str(row["manuscript_change_done"] or ""),
-                "response_section_done": str(row["response_section_done"] or ""),
+                "manuscript_draft_done": str(row["manuscript_draft_done"] or ""),
+                "response_draft_done": str(row["response_draft_done"] or ""),
                 "one_to_one_link_checked": str(row["one_to_one_link_checked"] or ""),
                 "export_ready": export_ready,
             }
@@ -1064,7 +1088,7 @@ def build_strategy_card_context(connection: sqlite3.Connection, comment_id: str)
         SELECT ac.comment_id, ac.canonical_summary, ac.required_action,
                acs.status, acs.priority, acs.evidence_gap,
                sc.proposed_stance, sc.stance_rationale,
-               ccs.manuscript_change_done, ccs.response_section_done, ccs.evidence_gap_closed,
+               ccs.manuscript_draft_done, ccs.response_draft_done, ccs.evidence_gap_closed,
                ccs.user_strategy_confirmed
         FROM atomic_comments ac
         LEFT JOIN atomic_comment_state acs ON acs.comment_id = ac.comment_id
@@ -1077,6 +1101,7 @@ def build_strategy_card_context(connection: sqlite3.Connection, comment_id: str)
     if header is None:
         raise ValueError(f"unknown comment_id: {comment_id}")
     action_location_index = build_strategy_action_location_index(connection)
+    action_target_detail_index = build_strategy_action_target_detail_index(connection)
     actions = fetch_all(
         connection,
         """
@@ -1107,13 +1132,58 @@ def build_strategy_card_context(connection: sqlite3.Connection, comment_id: str)
         """,
         (comment_id,),
     )
+    draft_rows = fetch_all(
+        connection,
+        """
+        SELECT comment_id, action_order, location_order, draft_text, rationale
+        FROM strategy_action_manuscript_drafts
+        WHERE comment_id = ?
+        ORDER BY action_order, location_order
+        """,
+        (comment_id,),
+    )
+    response_draft = fetch_one(
+        connection,
+        """
+        SELECT draft_text, rationale
+        FROM comment_response_drafts
+        WHERE comment_id = ?
+        """,
+        (comment_id,),
+    )
+    blocker_rows = fetch_all(
+        connection,
+        """
+        SELECT blocker_order, message
+        FROM comment_blockers
+        WHERE comment_id = ?
+        ORDER BY blocker_order
+        """,
+        (comment_id,),
+    )
     source = source_index.get(comment_id, {"reviewers": [], "thread_ids": []})
+    draft_index = {
+        (str(row["comment_id"]), int(row["action_order"]), int(row["location_order"])): {
+            "draft_text": str(row["draft_text"]),
+            "rationale": str(row["rationale"]),
+        }
+        for row in draft_rows
+    }
     action_payload = [
         {
             "action_order": int(row["action_order"]),
             "manuscript_change": str(row["manuscript_change"]),
             "target_locations": join_ordered(action_location_index.get((comment_id, int(row["action_order"])), [])),
             "expected_response_letter_effect": str(row["expected_response_letter_effect"]),
+            "draft_rows": [
+                {
+                    "location_order": int(location["location_order"]),
+                    "target_location": str(location["target_location"]),
+                    "draft_text": draft_index.get((comment_id, int(row["action_order"]), int(location["location_order"])), {}).get("draft_text", ""),
+                    "rationale": draft_index.get((comment_id, int(row["action_order"]), int(location["location_order"])), {}).get("rationale", ""),
+                }
+                for location in action_target_detail_index.get((comment_id, int(row["action_order"])), [])
+            ],
         }
         for row in actions
     ]
@@ -1126,9 +1196,14 @@ def build_strategy_card_context(connection: sqlite3.Connection, comment_id: str)
         "actions": action_payload,
         "evidence_rows": [dict(row) for row in evidence_rows],
         "pending_confirmations": [str(row["message"]) for row in confirmations],
+        "response_draft": {
+            "draft_text": str(response_draft["draft_text"]) if response_draft is not None else "",
+            "rationale": str(response_draft["rationale"]) if response_draft is not None else "",
+        },
+        "comment_blockers": [str(row["message"]) for row in blocker_rows],
         "completion_lines": [
-            {"label": "稿件修改已执行", "checked": str(header["manuscript_change_done"] or "no") == "yes"},
-            {"label": "对应 response 段落已生成", "checked": str(header["response_section_done"] or "no") == "yes"},
+            {"label": "稿件修改草案已形成", "checked": str(header["manuscript_draft_done"] or "no") == "yes"},
+            {"label": "对应 response 草案已形成", "checked": str(header["response_draft_done"] or "no") == "yes"},
             {"label": "证据缺口已关闭", "checked": str(header["evidence_gap_closed"] or "no") == "yes"},
             {"label": "用户已确认该条策略", "checked": str(header["user_strategy_confirmed"] or "no") == "yes"},
         ],
