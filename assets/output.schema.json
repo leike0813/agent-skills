@@ -4,20 +4,17 @@
         "digest_path": {
             "type": "string",
             "x-type": "artifact",
-            "x-role": "digest",
-            "x-filename": "digest.md"
+            "x-role": "digest"
         },
         "references_path": {
             "type": "string",
             "x-type": "artifact",
-            "x-role": "references",
-            "x-filename": "references.json"
+            "x-role": "references"
         },
         "citation_analysis_path": {
             "type": "string",
             "x-type": "artifact",
-            "x-role": "citation-analysis",
-            "x-filename": "citation_analysis.json"
+            "x-role": "citation-analysis"
         },
         "provenance": {
             "type": "object",
