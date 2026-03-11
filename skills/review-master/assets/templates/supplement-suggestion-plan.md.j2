@@ -1,0 +1,28 @@
+# {{ msg("view.supplement_suggestion.title") }}
+
+{{ msg("view.supplement_suggestion.intro") }}
+
+{% if active_group -%}
+## {{ msg("view.supplement_suggestion.active_focus") }}: `{{ active_group.comment_id }}` 
+
+- {{ msg("view.supplement_suggestion.canonical_summary") }}: {{ active_group.canonical_summary }}
+- {{ msg("view.supplement_suggestion.required_action") }}: {{ active_group.required_action }}
+
+{% endif -%}
+{% if comment_groups -%}
+{% for group in comment_groups -%}
+## `{{ group.comment_id }}`{% if group.is_active %} {{ msg("view.supplement_suggestion.active_badge") }}{% endif %}
+
+- {{ msg("view.supplement_suggestion.canonical_summary") }}: {{ group.canonical_summary }}
+- {{ msg("view.supplement_suggestion.required_action") }}: {{ group.required_action }}
+
+| {{ msg("view.supplement_suggestion.suggestion_id") }} | {{ msg("view.supplement_suggestion.request_summary") }} | {{ msg("view.supplement_suggestion.request_recommendation") }} | {{ msg("view.supplement_suggestion.status") }} | {{ msg("view.supplement_suggestion.linked_intake_files") }} |
+| --- | --- | --- | --- | --- |
+{% for item in group["items"] -%}
+| S{{ item.suggestion_order }} | {{ item.request_summary }} | {{ item.request_recommendation }} | `{{ item.status }}` | {% if item.intake_links %}{% for link in item.intake_links %}`{{ link.round_id }}` / `{{ link.file_path }}`: {{ link.link_note }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}{{ msg("view.supplement_suggestion.no_intake_links") }}{% endif %} |
+{% endfor %}
+
+{% endfor -%}
+{% else -%}
+_{{ msg("view.supplement_suggestion.no_records") }}_
+{% endif %}

@@ -4,6 +4,7 @@
 
 - 以阶段化方式推进论文修回，而不是一步到位改稿
 - 用 SQLite 维持运行时唯一真源
+- 显式区分文本语言与工作语言，并在运行时持续遵守它们的边界
 - 把原始 reviewer thread 整理为 canonical atomic item，并在用户确认下逐条闭环
 - 最终 response letter 必须回到原始 `thread_id` 顺序组织，并以 point-to-point 表格输出
 
@@ -23,9 +24,13 @@
 ## Workflow Discipline
 
 - 先恢复，后执行
+- 首次初始化前先确认文本语言与工作语言
 - 每次写库后都必须运行 `gate-and-render` 核心脚本
 - 有 `pending_user_confirmations` 时先请求确认
+- Stage 3 建模完成后必须先展示 `06-review-comment-coverage.md` 并拿到用户确认，确认前不得进入 Stage 4
 - 有 `global_blockers` 时先请求补材或澄清
+- Stage 5 必须先形成策略卡并完成显式确认，确认前不得形成 Stage 5 drafts
+- 进入 Stage 5 后必须形成 `14-supplement-suggestion-plan.md`，先展示全局补材建议 backlog，再处理后续 intake
 - 每轮补材都要形成文件级 intake 判定；`accepted` 补材必须有落地映射
 - `active_comment_id` 允许显式切换，但不得静默切换 comment
 - 不满足导出门禁时，禁止导出 marked manuscript 之后的任何最终文件
@@ -39,8 +44,18 @@
 - 必需输入：`manuscript_source`、`review_comments_source`
 - 可选输入：`editor_letter_source`、`user_notes`
 - 运行时真源：`review-master.db`
-- 只读视图：`agent-resume.md`、`manuscript-structure-summary.md`、`raw-review-thread-list.md`、`atomic-review-comment-list.md`、`thread-to-atomic-mapping.md`、`atomic-comment-workboard.md`、`style-profile.md`、`action-copy-variants.md`、`response-letter-outline.md`、`export-patch-plan.md`、`response-letter-table-preview.md`、`response-letter-table-preview.tex`、`supplement-intake-plan.md`、`final-assembly-checklist.md`、`response-strategy-cards/{comment_id}.md`
+- 语言真源：`runtime_language_context`
+- workspace 本地化覆盖层：`runtime-localization/`
+- 只读视图：`01-agent-resume.md`、`02-manuscript-structure-summary.md`、`03-raw-review-thread-list.md`、`04-atomic-review-comment-list.md`、`05-thread-to-atomic-mapping.md`、`06-review-comment-coverage.md`、`07-atomic-comment-workboard.md`、`08-style-profile.md`、`09-action-copy-variants.md`、`10-response-letter-outline.md`、`11-export-patch-plan.md`、`12-response-letter-table-preview.md`、`13-response-letter-table-preview.tex`、`14-supplement-suggestion-plan.md`、`15-supplement-intake-plan.md`、`16-final-assembly-checklist.md`、`response-strategy-cards/{comment_id}.md`
 - 最终输出：`marked_manuscript`、`clean_manuscript`、`response_markdown`、`response_latex`
+
+## Language Rules
+
+- 文本语言默认以 manuscript 语言为准；review comments 若不同语言，仍以 manuscript 语言为准
+- 工作语言默认从当前 prompt 语言推断，并在 Stage 1 向用户确认
+- reviewer / editor 原文与原稿摘录保持原语言
+- Stage 3-5 的 normalized summary、canonical summary、strategy card、workboard、resume、gate 输出和 Stage 5 drafts 使用工作语言
+- Stage 6 的 manuscript final copy、response rows 与最终导出产物使用文本语言
 
 ## Six Stages
 

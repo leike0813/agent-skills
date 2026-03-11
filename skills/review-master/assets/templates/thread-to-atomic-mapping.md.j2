@@ -1,14 +1,14 @@
-# Thread to Atomic Mapping
+# {{ msg("view.thread_mapping.title") }}
 
-这是原始审稿意见块到 canonical atomic 意见的映射视图。数据库真源是 `raw_thread_atomic_links` 与 `atomic_comment_source_spans`。用户和 Agent 都应通过它确认拆分、合并与去重是否合理。
+{{ msg("view.thread_mapping.intro") }}
 
 {% for thread in threads -%}
 ## {{ thread.thread_id }} ({{ thread.reviewer_id }})
 
-- Normalized summary: {{ thread.normalized_summary }}
-- Original text: {{ thread.original_text }}
+- {{ msg("view.thread_mapping.normalized_summary") }}: {{ thread.normalized_summary }}
+- {{ msg("view.thread_mapping.original_text") }}: {{ thread.original_text }}
 
-| Link Order | `comment_id` | Canonical Summary | Source Span | Note |
+| {{ msg("view.thread_mapping.link_order") }} | `comment_id` | {{ msg("view.atomic_comments.canonical_summary") }} | {{ msg("view.thread_mapping.source_span") }} | {{ msg("view.thread_mapping.note") }} |
 | --- | --- | --- | --- | --- |
 {% for item in thread.linked_items -%}
 | {{ item.link_order }} | {{ item.comment_id }} | {{ item.canonical_summary }} | {{ item.excerpt_text or '' }} | {{ item.note or '' }} |
@@ -17,7 +17,7 @@
 {% endfor %}
 
 {% else -%}
-## No Threads
+## {{ msg("view.thread_mapping.no_threads") }}
 
-No mapping data available.
+{{ msg("view.thread_mapping.no_mapping_data") }}
 {% endfor %}

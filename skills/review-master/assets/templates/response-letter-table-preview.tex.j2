@@ -8,29 +8,29 @@
 \usepackage{hyperref}
 \usepackage{xcolor}
 
-\title{Point-to-Point Response Letter}
-\author{review-master Export}
+\title{ {{ msg("view.response_table_preview.tex.title", target="document") }} }
+\author{ {{ msg("view.response_table_preview.tex.author", target="document") }} }
 \date{}
 
 \begin{document}
 \maketitle
 
-\section*{Point-to-Point Response Letter}
-% 这是从 review-master.db 渲染出的最终 Response Letter LaTeX 预览。
+\section*{ {{ msg("view.response_table_preview.tex.section_title", target="document") }} }
+% This LaTeX preview is rendered from review-master.db.
 
 {% for group in reviewer_groups -%}
 \subsection*{ {{ group.heading_tex }} }
 \begin{longtable}{|p{0.22\textwidth}|p{0.20\textwidth}|p{0.24\textwidth}|p{0.24\textwidth}|}
 \hline
-\textbf{原始意见} & \textbf{修改位置/范围} & \textbf{关键修改片段} & \textbf{回复说明} \\
+\textbf{ {{ msg("view.response_table_preview.column.original_comment", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.modification_scope", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.key_revision_excerpt", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.response_explanation", target="document") }} } \\
 \hline
 \endfirsthead
 \hline
-\textbf{原始意见} & \textbf{修改位置/范围} & \textbf{关键修改片段} & \textbf{回复说明} \\
+\textbf{ {{ msg("view.response_table_preview.column.original_comment", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.modification_scope", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.key_revision_excerpt", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.response_explanation", target="document") }} } \\
 \hline
 \endhead
 {% for row in group.rows -%}
-\textbf{Comment:} {{ row.original_comment_tex }} & \texttt{ {{ row.modification_scope_tex }} } & {\color{blue}\ttfamily {{ row.key_revision_excerpt_tex }}} & {{ row.response_explanation_tex }} \\
+\textbf{ {{ msg("view.response_table_preview.tex.comment_prefix", target="document") }} } {{ row.original_comment_tex }} & \texttt{ {{ row.modification_scope_tex }} } & {\color{blue}\ttfamily {{ row.key_revision_excerpt_tex }}} & {{ row.response_explanation_tex }} \\
 \hline
 {% else -%}
  &  &  &  \\
@@ -39,7 +39,7 @@
 \end{longtable}
 
 {% else -%}
-\textit{No final response rows available.}
+\textit{ {{ msg("view.response_table_preview.no_row_data", target="document") }} }
 {% endfor %}
 
 \end{document}

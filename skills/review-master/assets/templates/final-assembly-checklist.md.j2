@@ -1,10 +1,10 @@
-# Final Assembly Checklist
+# {{ msg("view.final_checklist.title") }}
 
-这是从 `review-master.db` 渲染出的最终闭环视图。数据库真源是 `comment_completion_status`、`response_thread_resolution_links`、`response_thread_rows`、`export_artifacts`、`raw_review_threads` 和 `atomic_comments`。导出前既要检查 canonical atomic item 是否闭环，也要检查原始 reviewer 线程是否已被最终 row 覆盖，以及 marked/clean 双阶段导出状态是否就绪。
+{{ msg("view.final_checklist.intro") }}
 
-## Atomic Completion Table
+## {{ msg("view.final_checklist.atomic_completion_table") }}
 
-| `comment_id` | Source Reviewers | Source Threads | `status` | `priority` | `evidence_gap` | Target Locations | `manuscript_draft_done` | `response_draft_done` | `one_to_one_link_checked` | `export_ready` |
+| `comment_id` | {{ msg("table.source_reviewers") }} | {{ msg("table.source_threads") }} | `status` | `priority` | `evidence_gap` | {{ msg("table.target_locations") }} | `manuscript_draft_done` | `response_draft_done` | `one_to_one_link_checked` | `export_ready` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 {% for row in atomic_rows -%}
 | {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.status or '' }} | {{ row.priority or '' }} | {{ row.evidence_gap or '' }} | {{ row.target_locations or '' }} | {{ row.manuscript_draft_done or '' }} | {{ row.response_draft_done or '' }} | {{ row.one_to_one_link_checked or '' }} | {{ row.export_ready or '' }} |
@@ -12,9 +12,9 @@
 |  |  |  |  |  |  |  |  |  |  |  |
 {% endfor %}
 
-## Thread Coverage Table
+## {{ msg("view.final_checklist.thread_coverage_table") }}
 
-| `thread_id` | `reviewer_id` | Linked Atomic Comments | Response Link Covered (`yes/no`) | Final Row Ready (`yes/no`) | Linked Atomic Export Ready (`yes/no`) | Thread Export Ready (`yes/no`) |
+| `thread_id` | `reviewer_id` | {{ msg("view.raw_threads.linked_atomic_comments") }} | {{ msg("view.final_checklist.response_link_covered") }} | {{ msg("view.final_checklist.final_row_ready") }} | {{ msg("view.final_checklist.linked_atomic_export_ready") }} | {{ msg("view.final_checklist.thread_export_ready") }} |
 | --- | --- | --- | --- | --- | --- | --- |
 {% for row in thread_rows -%}
 | {{ row.thread_id }} | {{ row.reviewer_id }} | {{ row.linked_comment_ids or '' }} | {{ row.response_outline_ready }} | {{ row.response_row_ready }} | {{ row.linked_atomic_export_ready }} | {{ row.thread_export_ready }} |
@@ -22,9 +22,9 @@
 |  |  |  |  |  |  |  |
 {% endfor %}
 
-## Export Artifact Table
+## {{ msg("view.final_checklist.export_artifact_table") }}
 
-| Artifact | Status | Output Path |
+| {{ msg("view.final_checklist.artifact") }} | {{ msg("view.final_checklist.status") }} | {{ msg("view.final_checklist.output_path") }} |
 | --- | --- | --- |
 {% for row in export_rows -%}
 | {{ row.artifact_name }} | {{ row.artifact_status }} | {{ row.output_path or '' }} |

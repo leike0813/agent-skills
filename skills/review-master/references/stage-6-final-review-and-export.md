@@ -11,6 +11,7 @@
 - 在最终导出前，先把 Stage 5 草案提升为与用户原文风格一致的最终文案
 - 让最终 Response Letter 回到原始 `thread_id` 索引层，并采用固定 4 列 point-to-point 表格结构
 - 先导出 marked manuscript，再在最终确认后导出 clean manuscript 与双格式 Response Letter
+- 让最终 manuscript 与 response letter 严格使用文本语言
 
 ## 子步骤
 
@@ -65,6 +66,8 @@
 
 若某个 action 的某个 target location 还没有达到“3 个 manuscript 最终文案版本”，不得进入 row-level 组装。
 
+这里的最终文案必须使用文本语言，而不是继续保留 Stage 5 的工作语言草案。
+
 ### Stage 6C：thread-level response row 组装
 
 最终 Response Letter 仍然以原始 `thread_id` 为正式索引。
@@ -90,6 +93,8 @@
 不得把 Response Letter 理解成“从 response-side 文案版本中挑一个”。
 
 不得直接按 `comment_id` 顺序输出最终 Response Letter。
+
+`response_thread_rows` 与最终导出的 Markdown / LaTeX response letter 固定使用文本语言。
 
 ### Stage 6D：marked manuscript 导出
 
@@ -157,13 +162,13 @@ Markdown 与 LaTeX 版本统一采用 4 列固定表头：
 
 Stage 6 至少要同时查看：
 
-- `style-profile.md`
-- `action-copy-variants.md`
-- `response-letter-outline.md`
-- `export-patch-plan.md`
-- `response-letter-table-preview.md`
-- `response-letter-table-preview.tex`
-- `final-assembly-checklist.md`
+- `08-style-profile.md`
+- `09-action-copy-variants.md`
+- `10-response-letter-outline.md`
+- `11-export-patch-plan.md`
+- `12-response-letter-table-preview.md`
+- `13-response-letter-table-preview.tex`
+- `16-final-assembly-checklist.md`
 
 ## 何时必须向用户提问
 

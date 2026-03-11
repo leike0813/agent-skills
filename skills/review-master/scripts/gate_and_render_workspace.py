@@ -8,21 +8,25 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from runtime_localization import LocalizationBundle, fetch_runtime_language_context, load_localization_bundle
 from workspace_db import (
     AGENT_RESUME_MD,
     ACTION_COPY_VARIANTS_MD,
     ALLOWED_EVIDENCE_GAP,
     ALLOWED_ARTIFACT_STATUS,
+    ALLOWED_COVERAGE_STATUS,
     ALLOWED_LOCATION_ROLE,
     ALLOWED_PRIORITY,
     ALLOWED_PROFILE_TARGET,
     ALLOWED_RESPONSE_ROLE,
     ALLOWED_RESUME_STATUS,
+    ALLOWED_SOURCE_KIND,
     ALLOWED_SOURCE_TYPE,
     ALLOWED_STAGE,
     ALLOWED_STAGE_GATE,
     ALLOWED_STATUS,
     ALLOWED_SUPPLEMENT_DECISION,
+    ALLOWED_SUPPLEMENT_SUGGESTION_STATUS,
     ALLOWED_VARIANT_LABEL,
     ALLOWED_YES_NO,
     ATOMIC_COMMENTS_MD,
@@ -33,7 +37,9 @@ from workspace_db import (
     MANUSCRIPT_SUMMARY_MD,
     RAW_REVIEW_THREADS_MD,
     REPAIR_PRIORITY,
+    REVIEW_COMMENT_COVERAGE_MD,
     RESPONSE_LETTER_OUTLINE_MD,
+    SUPPLEMENT_SUGGESTION_PLAN_MD,
     SUPPLEMENT_INTAKE_PLAN_MD,
     RESPONSE_TABLE_PREVIEW_MD,
     RESPONSE_TABLE_PREVIEW_TEX,
@@ -43,6 +49,7 @@ from workspace_db import (
     THREAD_TO_ATOMIC_MAPPING_MD,
     artifact_paths,
     connect_db,
+    ensure_runtime_schema_compatibility,
     fetch_all,
     fetch_one,
     load_runtime_digest,
@@ -134,6 +141,10 @@ def build_presence_report(artifact_root: Path) -> tuple[dict[str, dict[str, Any]
             "path": str(paths["thread_to_atomic_mapping_md"]),
             "status": "present" if paths["thread_to_atomic_mapping_md"].exists() else "missing",
         },
+        "review_comment_coverage_view": {
+            "path": str(paths["review_comment_coverage_md"]),
+            "status": "present" if paths["review_comment_coverage_md"].exists() else "missing",
+        },
         "atomic_workboard_view": {
             "path": str(paths["atomic_workboard_md"]),
             "status": "present" if paths["atomic_workboard_md"].exists() else "missing",
@@ -162,6 +173,10 @@ def build_presence_report(artifact_root: Path) -> tuple[dict[str, dict[str, Any]
             "path": str(paths["response_table_preview_tex"]),
             "status": "present" if paths["response_table_preview_tex"].exists() else "missing",
         },
+        "supplement_suggestion_plan_view": {
+            "path": str(paths["supplement_suggestion_plan_md"]),
+            "status": "present" if paths["supplement_suggestion_plan_md"].exists() else "missing",
+        },
         "supplement_intake_plan_view": {
             "path": str(paths["supplement_intake_plan_md"]),
             "status": "present" if paths["supplement_intake_plan_md"].exists() else "missing",
@@ -174,6 +189,18 @@ def build_presence_report(artifact_root: Path) -> tuple[dict[str, dict[str, Any]
             "path": str(paths["strategy_card_dir"]),
             "status": "present" if paths["strategy_card_dir"].exists() else "missing",
             "count": len(list(paths["strategy_card_dir"].glob("*.md"))) if paths["strategy_card_dir"].exists() else 0,
+        },
+        "runtime_localization": {
+            "path": str(paths["localization_root"]),
+            "status": "present" if paths["localization_root"].exists() else "missing",
+        },
+        "working_messages": {
+            "path": str(paths["localization_working_messages"]),
+            "status": "present" if paths["localization_working_messages"].exists() else "missing",
+        },
+        "document_messages": {
+            "path": str(paths["localization_document_messages"]),
+            "status": "present" if paths["localization_document_messages"].exists() else "missing",
         },
     }
     return presence, paths
@@ -211,10 +238,38 @@ def validate_target_location(
         )
 
 
+def normalize_newlines(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
     raw_thread_links = fetch_all(
         connection,
         "SELECT thread_id, comment_id, link_order FROM raw_thread_atomic_links ORDER BY thread_id, link_order, comment_id",
+    )
+    review_comment_source_documents = fetch_all(
+        connection,
+        """
+        SELECT source_document_id, source_kind, document_order, source_label, source_path, original_text
+        FROM review_comment_source_documents
+        ORDER BY document_order, source_document_id
+        """,
+    )
+    review_comment_coverage_segments = fetch_all(
+        connection,
+        """
+        SELECT source_document_id, segment_order, coverage_status, segment_text, thread_id
+        FROM review_comment_coverage_segments
+        ORDER BY source_document_id, segment_order
+        """,
+    )
+    review_comment_coverage_segment_comment_links = fetch_all(
+        connection,
+        """
+        SELECT source_document_id, segment_order, link_order, comment_id
+        FROM review_comment_coverage_segment_comment_links
+        ORDER BY source_document_id, segment_order, link_order
+        """,
     )
     atomic_source_spans = fetch_all(
         connection,
@@ -329,6 +384,22 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY round_id, file_path
         """,
     )
+    supplement_suggestion_items = fetch_all(
+        connection,
+        """
+        SELECT comment_id, suggestion_order, analysis_order, request_summary, request_recommendation, status
+        FROM supplement_suggestion_items
+        ORDER BY comment_id, suggestion_order
+        """,
+    )
+    supplement_suggestion_intake_links = fetch_all(
+        connection,
+        """
+        SELECT comment_id, suggestion_order, round_id, file_path, link_note
+        FROM supplement_suggestion_intake_links
+        ORDER BY comment_id, suggestion_order, round_id, file_path
+        """,
+    )
     supplement_landing_links = fetch_all(
         connection,
         """
@@ -347,6 +418,9 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
     )
     return {
         "raw_thread_links": raw_thread_links,
+        "review_comment_source_documents": review_comment_source_documents,
+        "review_comment_coverage_segments": review_comment_coverage_segments,
+        "review_comment_coverage_segment_comment_links": review_comment_coverage_segment_comment_links,
         "atomic_source_spans": atomic_source_spans,
         "target_locations": target_locations,
         "analysis_links": analysis_links,
@@ -362,6 +436,8 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         "export_patch_sets": export_patch_sets,
         "export_patches": export_patches,
         "export_artifacts": export_artifacts,
+        "supplement_suggestion_items": supplement_suggestion_items,
+        "supplement_suggestion_intake_links": supplement_suggestion_intake_links,
         "supplement_intake_items": supplement_intake_items,
         "supplement_landing_links": supplement_landing_links,
         "comment_blockers": comment_blockers,
@@ -371,39 +447,7 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
 def validate_database_content(
     connection: sqlite3.Connection,
     db_path: Path,
-) -> tuple[
-    sqlite3.Row | None,
-    sqlite3.Row | None,
-    list[str],
-    list[str],
-    list[str],
-    list[str],
-    list[str],
-    dict[str, sqlite3.Row],
-    dict[str, sqlite3.Row],
-    dict[str, sqlite3.Row],
-    dict[str, sqlite3.Row],
-    dict[str, sqlite3.Row],
-    dict[str, list[str]],
-    dict[str, list[str]],
-    dict[str, list[str]],
-    dict[str, list[str]],
-    dict[str, list[str]],
-    dict[tuple[str, int], list[int]],
-    dict[tuple[str, int, int], sqlite3.Row],
-    dict[str, sqlite3.Row],
-    dict[str, list[str]],
-    dict[str, list[str]],
-    dict[str, sqlite3.Row],
-    dict[str, int],
-    dict[tuple[str, int, int], set[str]],
-    dict[tuple[str, int, int], str],
-    dict[str, sqlite3.Row],
-    dict[str, sqlite3.Row],
-    dict[str, int],
-    dict[str, sqlite3.Row],
-    list[dict[str, Any]],
-]:
+) -> tuple[Any, ...]:
     format_errors: list[dict[str, Any]] = []
     workflow_rows = fetch_all(connection, "SELECT id, current_stage, stage_gate, active_comment_id, next_action FROM workflow_state ORDER BY id")
     workflow_state = workflow_rows[0] if workflow_rows else None
@@ -440,6 +484,111 @@ def validate_database_content(
     resume_open_loops = [str(row["message"]) for row in fetch_all(connection, "SELECT message FROM resume_open_loops ORDER BY position")]
     resume_recent_decisions = [str(row["message"]) for row in fetch_all(connection, "SELECT message FROM resume_recent_decisions ORDER BY position")]
     resume_must_not_forget = [str(row["message"]) for row in fetch_all(connection, "SELECT message FROM resume_must_not_forget ORDER BY position")]
+
+    support = load_supporting_maps(connection)
+    review_comment_source_document_map = {
+        str(row["source_document_id"]): row for row in support["review_comment_source_documents"]
+    }
+    review_comment_coverage_segment_map: dict[tuple[str, int], sqlite3.Row] = {}
+    coverage_segment_to_comment_ids: dict[tuple[str, int], list[str]] = defaultdict(list)
+    thread_to_coverage_segment_keys: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for row in support["review_comment_source_documents"]:
+        source_document_id = str(row["source_document_id"])
+        if str(row["source_kind"]) not in ALLOWED_SOURCE_KIND:
+            add_issue(
+                format_errors,
+                "review_comment_source_documents",
+                "invalid_enum",
+                f"source_kind='{row['source_kind']}' is not allowed",
+                path=db_path,
+            )
+        for field in ("source_label", "source_path", "original_text"):
+            if not str(row[field]).strip():
+                add_issue(
+                    format_errors,
+                    "review_comment_source_documents",
+                    "missing_required_field",
+                    f"{field} must be non-empty",
+                    path=db_path,
+                )
+        if source_document_id.count(" ") > 0:
+            add_issue(
+                format_errors,
+                "review_comment_source_documents",
+                "invalid_identifier",
+                f"source_document_id '{source_document_id}' must not contain spaces",
+                path=db_path,
+            )
+    for row in support["review_comment_coverage_segments"]:
+        source_document_id = str(row["source_document_id"])
+        segment_order = int(row["segment_order"])
+        segment_key = (source_document_id, segment_order)
+        review_comment_coverage_segment_map[segment_key] = row
+        coverage_status = str(row["coverage_status"])
+        if coverage_status not in ALLOWED_COVERAGE_STATUS:
+            add_issue(
+                format_errors,
+                "review_comment_coverage_segments",
+                "invalid_enum",
+                f"coverage_status='{coverage_status}' is not allowed",
+                path=db_path,
+            )
+        if str(row["segment_text"]) == "":
+            add_issue(
+                format_errors,
+                "review_comment_coverage_segments",
+                "missing_required_field",
+                "segment_text must be non-empty",
+                path=db_path,
+            )
+        thread_id = str(row["thread_id"] or "")
+        if coverage_status == "covered":
+            if not thread_id:
+                add_issue(
+                    format_errors,
+                    "review_comment_coverage_segments",
+                    "missing_required_field",
+                    "covered segments must reference thread_id",
+                    path=db_path,
+                )
+            else:
+                thread_to_coverage_segment_keys[thread_id].append(segment_key)
+        if coverage_status == "uncovered" and thread_id:
+            add_issue(
+                format_errors,
+                "review_comment_coverage_segments",
+                "invalid_thread_reference",
+                "uncovered segments must not reference thread_id",
+                path=db_path,
+                thread_id=thread_id,
+            )
+    for row in support["review_comment_coverage_segment_comment_links"]:
+        segment_key = (str(row["source_document_id"]), int(row["segment_order"]))
+        coverage_segment_to_comment_ids[segment_key].append(str(row["comment_id"]))
+    for source_document_id, row in review_comment_source_document_map.items():
+        segment_rows = [
+            review_comment_coverage_segment_map[key]
+            for key in sorted(review_comment_coverage_segment_map)
+            if key[0] == source_document_id
+        ]
+        if not segment_rows:
+            add_issue(
+                format_errors,
+                "review_comment_coverage_segments",
+                "missing_segments",
+                f"source document '{source_document_id}' has no coverage segments",
+                path=db_path,
+            )
+            continue
+        reconstructed = "".join(str(segment_row["segment_text"]) for segment_row in segment_rows)
+        if normalize_newlines(reconstructed) != normalize_newlines(str(row["original_text"])):
+            add_issue(
+                format_errors,
+                "review_comment_coverage_segments",
+                "mismatched_document_reconstruction",
+                f"coverage segments for source document '{source_document_id}' do not reconstruct original_text",
+                path=db_path,
+            )
 
     raw_thread_rows = fetch_all(
         connection,
@@ -550,7 +699,6 @@ def validate_database_content(
                         comment_id=comment_id,
                     )
 
-    support = load_supporting_maps(connection)
     thread_to_comment_ids: dict[str, list[str]] = defaultdict(list)
     comment_to_thread_ids: dict[str, list[str]] = defaultdict(list)
     comment_to_target_locations: dict[str, list[str]] = defaultdict(list)
@@ -569,12 +717,49 @@ def validate_database_content(
     export_patch_set_map: dict[str, sqlite3.Row] = {}
     export_patch_count_map: dict[str, int] = {}
     export_artifact_map: dict[str, sqlite3.Row] = {}
+    supplement_suggestion_map: dict[tuple[str, int], sqlite3.Row] = {}
+    supplement_suggestion_count_by_comment: dict[str, int] = defaultdict(int)
 
     for row in support["raw_thread_links"]:
         thread_id = str(row["thread_id"])
         comment_id = str(row["comment_id"])
         thread_to_comment_ids[thread_id].append(comment_id)
         comment_to_thread_ids[comment_id].append(thread_id)
+
+    for segment_key, segment_row in review_comment_coverage_segment_map.items():
+        if str(segment_row["coverage_status"]) != "covered":
+            continue
+        thread_id = str(segment_row["thread_id"])
+        linked_comment_ids = coverage_segment_to_comment_ids.get(segment_key, [])
+        if not linked_comment_ids:
+            add_issue(
+                format_errors,
+                "review_comment_coverage_segment_comment_links",
+                "missing_comment_links",
+                (
+                    "covered segment "
+                    f"({segment_key[0]}, {segment_key[1]}) has no linked canonical atomic comments"
+                ),
+                path=db_path,
+                thread_id=thread_id,
+            )
+            continue
+        valid_comment_ids = set(thread_to_comment_ids.get(thread_id, []))
+        for comment_id in linked_comment_ids:
+            if comment_id not in valid_comment_ids:
+                add_issue(
+                    format_errors,
+                    "review_comment_coverage_segment_comment_links",
+                    "invalid_comment_link",
+                    (
+                        "covered segment "
+                        f"({segment_key[0]}, {segment_key[1]}) links comment '{comment_id}' "
+                        f"which is not mapped from thread '{thread_id}'"
+                    ),
+                    path=db_path,
+                    thread_id=thread_id,
+                    comment_id=comment_id,
+                )
 
     for row in support["atomic_source_spans"]:
         comment_id = str(row["comment_id"])
@@ -890,6 +1075,66 @@ def validate_database_content(
         if str(row["artifact_status"]) not in ALLOWED_ARTIFACT_STATUS:
             add_issue(format_errors, "export_artifacts", "invalid_enum", f"artifact_status='{row['artifact_status']}' is not allowed", path=db_path)
 
+    for row in support["supplement_suggestion_items"]:
+        comment_id = str(row["comment_id"])
+        suggestion_order = int(row["suggestion_order"])
+        supplement_suggestion_map[(comment_id, suggestion_order)] = row
+        supplement_suggestion_count_by_comment[comment_id] += 1
+        if not str(row["request_summary"]).strip():
+            add_issue(
+                format_errors,
+                "supplement_suggestion_items",
+                "missing_required_field",
+                "request_summary must be non-empty",
+                path=db_path,
+                comment_id=comment_id,
+            )
+        if not str(row["request_recommendation"]).strip():
+            add_issue(
+                format_errors,
+                "supplement_suggestion_items",
+                "missing_required_field",
+                "request_recommendation must be non-empty",
+                path=db_path,
+                comment_id=comment_id,
+            )
+        if str(row["status"]) not in ALLOWED_SUPPLEMENT_SUGGESTION_STATUS:
+            add_issue(
+                format_errors,
+                "supplement_suggestion_items",
+                "invalid_enum",
+                f"status='{row['status']}' is not allowed",
+                path=db_path,
+                comment_id=comment_id,
+            )
+
+    for row in support["supplement_suggestion_intake_links"]:
+        comment_id = str(row["comment_id"])
+        suggestion_order = int(row["suggestion_order"])
+        round_id = str(row["round_id"])
+        file_path = str(row["file_path"])
+        if (comment_id, suggestion_order) not in supplement_suggestion_map:
+            add_issue(
+                format_errors,
+                "supplement_suggestion_intake_links",
+                "missing_parent_suggestion",
+                (
+                    "supplement suggestion intake link "
+                    f"({comment_id}, S{suggestion_order}, {round_id}, {file_path}) has no parent suggestion item"
+                ),
+                path=db_path,
+                comment_id=comment_id,
+            )
+        if not str(row["link_note"]).strip():
+            add_issue(
+                format_errors,
+                "supplement_suggestion_intake_links",
+                "missing_required_field",
+                "link_note must be non-empty",
+                path=db_path,
+                comment_id=comment_id,
+            )
+
     return (
         workflow_state,
         resume_brief,
@@ -898,6 +1143,10 @@ def validate_database_content(
         resume_open_loops,
         resume_recent_decisions,
         resume_must_not_forget,
+        review_comment_source_document_map,
+        review_comment_coverage_segment_map,
+        dict(coverage_segment_to_comment_ids),
+        dict(thread_to_coverage_segment_keys),
         raw_thread_map,
         atomic_map,
         atomic_state_map,
@@ -921,6 +1170,8 @@ def validate_database_content(
         export_patch_set_map,
         export_patch_count_map,
         export_artifact_map,
+        supplement_suggestion_map,
+        dict(supplement_suggestion_count_by_comment),
         format_errors,
     )
 
@@ -929,6 +1180,10 @@ def validate_dependencies(
     db_path: Path,
     stage_number: int,
     active_comment_id: str | None,
+    review_comment_source_document_map: dict[str, sqlite3.Row],
+    review_comment_coverage_segment_map: dict[tuple[str, int], sqlite3.Row],
+    coverage_segment_to_comment_ids: dict[tuple[str, int], list[str]],
+    thread_to_coverage_segment_keys: dict[str, list[tuple[str, int]]],
     raw_thread_map: dict[str, sqlite3.Row],
     atomic_map: dict[str, sqlite3.Row],
     atomic_state_map: dict[str, sqlite3.Row],
@@ -951,12 +1206,29 @@ def validate_dependencies(
     export_patch_set_map: dict[str, sqlite3.Row],
     export_patch_count_map: dict[str, int],
     export_artifact_map: dict[str, sqlite3.Row],
+    supplement_suggestion_count_by_comment: dict[str, int],
 ) -> list[dict[str, Any]]:
     dependency_errors: list[dict[str, Any]] = []
     raw_thread_ids = set(raw_thread_map)
     atomic_ids = set(atomic_map)
 
     if stage_number >= 3:
+        if not review_comment_source_document_map:
+            add_issue(
+                dependency_errors,
+                "review_comment_source_documents",
+                "missing_source_documents",
+                "stage_3 or later requires review_comment_source_documents",
+                path=db_path,
+            )
+        if not review_comment_coverage_segment_map:
+            add_issue(
+                dependency_errors,
+                "review_comment_coverage_segments",
+                "missing_coverage_segments",
+                "stage_3 or later requires review_comment_coverage_segments",
+                path=db_path,
+            )
         for thread_id in sorted(raw_thread_ids):
             if not thread_to_comment_ids.get(thread_id):
                 add_issue(
@@ -964,6 +1236,15 @@ def validate_dependencies(
                     "raw_thread_atomic_links",
                     "missing_thread_links",
                     f"raw_review_thread '{thread_id}' has no linked canonical atomic comments",
+                    path=db_path,
+                    thread_id=thread_id,
+                )
+            if not thread_to_coverage_segment_keys.get(thread_id):
+                add_issue(
+                    dependency_errors,
+                    "review_comment_coverage_segments",
+                    "missing_thread_coverage",
+                    f"raw_review_thread '{thread_id}' has no covered segment in review-comment coverage truth",
                     path=db_path,
                     thread_id=thread_id,
                 )
@@ -977,6 +1258,22 @@ def validate_dependencies(
                     path=db_path,
                     comment_id=comment_id,
                 )
+        for segment_key, row in sorted(review_comment_coverage_segment_map.items()):
+            if str(row["coverage_status"]) != "covered":
+                continue
+            comment_ids = coverage_segment_to_comment_ids.get(segment_key, [])
+            if not comment_ids:
+                add_issue(
+                    dependency_errors,
+                    "review_comment_coverage_segment_comment_links",
+                    "missing_segment_comment_links",
+                    (
+                        "covered segment "
+                        f"({segment_key[0]}, {segment_key[1]}) must link at least one canonical atomic comment"
+                    ),
+                    path=db_path,
+                    thread_id=str(row["thread_id"]),
+                )
 
     if stage_number >= 4:
         for comment_id in sorted(atomic_ids):
@@ -986,6 +1283,22 @@ def validate_dependencies(
                     "atomic_comment_state",
                     "missing_comment_id",
                     f"atomic_comment_state is missing comment_id '{comment_id}'",
+                    path=db_path,
+                    comment_id=comment_id,
+                )
+    if stage_number >= 5:
+        for comment_id, row in sorted(atomic_state_map.items()):
+            if str(row["evidence_gap"]) != "yes":
+                continue
+            if supplement_suggestion_count_by_comment.get(comment_id, 0) == 0:
+                add_issue(
+                    dependency_errors,
+                    "supplement_suggestion_items",
+                    "missing_supplement_suggestions",
+                    (
+                        f"comment '{comment_id}' has evidence_gap=yes but no supplement suggestion rows; "
+                        "Stage 5 must expose at least one suggestion item"
+                    ),
                     path=db_path,
                     comment_id=comment_id,
                 )
@@ -1169,6 +1482,8 @@ def validate_consistency(
     resume_open_loops: list[str],
     resume_recent_decisions: list[str],
     resume_must_not_forget: list[str],
+    review_comment_source_document_map: dict[str, sqlite3.Row],
+    review_comment_coverage_segment_map: dict[tuple[str, int], sqlite3.Row],
     raw_thread_map: dict[str, sqlite3.Row],
     atomic_map: dict[str, sqlite3.Row],
     atomic_state_map: dict[str, sqlite3.Row],
@@ -1185,6 +1500,9 @@ def validate_consistency(
     export_patch_set_map: dict[str, sqlite3.Row],
     export_patch_count_map: dict[str, int],
     export_artifact_map: dict[str, sqlite3.Row],
+    supplement_suggestion_count_by_comment: dict[str, int],
+    manuscript_draft_map: dict[tuple[str, int, int], sqlite3.Row],
+    response_draft_map: dict[str, sqlite3.Row],
 ) -> list[dict[str, Any]]:
     consistency_errors: list[dict[str, Any]] = []
     if workflow_state is None:
@@ -1254,6 +1572,22 @@ def validate_consistency(
             add_issue(consistency_errors, "workflow_state", "stage_gate_without_authored_prerequisites", "stage_3 is ready but raw_review_threads is empty", path=db_path)
         if not atomic_map:
             add_issue(consistency_errors, "workflow_state", "stage_gate_without_authored_prerequisites", "stage_3 is ready but atomic_comments is empty", path=db_path)
+        if not review_comment_source_document_map:
+            add_issue(
+                consistency_errors,
+                "workflow_state",
+                "stage_gate_without_authored_prerequisites",
+                "stage_3 is ready but review_comment_source_documents is empty",
+                path=db_path,
+            )
+        if not review_comment_coverage_segment_map:
+            add_issue(
+                consistency_errors,
+                "workflow_state",
+                "stage_gate_without_authored_prerequisites",
+                "stage_3 is ready but review_comment_coverage_segments is empty",
+                path=db_path,
+            )
     if current_stage == "stage_4":
         if not atomic_state_map:
             add_issue(consistency_errors, "workflow_state", "stage_gate_without_authored_prerequisites", "stage_4 is ready but atomic_comment_state is empty", path=db_path)
@@ -1262,6 +1596,39 @@ def validate_consistency(
             add_issue(consistency_errors, "workflow_state", "missing_active_comment", "stage_5 requires active_comment_id", path=db_path)
         if active_comment_id and active_comment_id not in strategy_map and not pending and not blockers:
             add_issue(consistency_errors, "workflow_state", "stage_gate_without_authored_prerequisites", "stage_5 is ready but active comment has no strategy card", path=db_path, comment_id=active_comment_id)
+        if active_comment_id:
+            completion_row = completion_map.get(active_comment_id)
+            if completion_row is not None and str(completion_row["user_strategy_confirmed"]) != "yes":
+                add_issue(
+                    consistency_errors,
+                    "workflow_state",
+                    "stage_gate_without_confirmed_strategy",
+                    "stage_5 cannot be ready for draft authoring or advancement while active strategy is unconfirmed",
+                    path=db_path,
+                    comment_id=active_comment_id,
+                )
+            if completion_row is not None and str(completion_row["user_strategy_confirmed"]) != "yes":
+                has_manuscript_drafts = any(key[0] == active_comment_id for key in manuscript_draft_map)
+                has_response_draft = active_comment_id in response_draft_map
+                if has_manuscript_drafts or has_response_draft:
+                    add_issue(
+                        consistency_errors,
+                        "comment_completion_status",
+                        "stale_stage5_drafts_before_confirmation",
+                        "unconfirmed strategy must not retain Stage 5 drafts",
+                        path=db_path,
+                        comment_id=active_comment_id,
+                    )
+        for comment_id, row in sorted(atomic_state_map.items()):
+            if str(row["evidence_gap"]) == "yes" and supplement_suggestion_count_by_comment.get(comment_id, 0) == 0:
+                add_issue(
+                    consistency_errors,
+                    "workflow_state",
+                    "stage_gate_without_supplement_suggestions",
+                    f"stage_5 is missing supplement suggestions for evidence-gap comment '{comment_id}'",
+                    path=db_path,
+                    comment_id=comment_id,
+                )
         with connect_db(db_path) as connection:
             intake_rows = fetch_all(
                 connection,
@@ -1402,6 +1769,7 @@ def build_repair_sequence(
     format_errors: list[dict[str, Any]],
     dependency_errors: list[dict[str, Any]],
     consistency_errors: list[dict[str, Any]],
+    localization: LocalizationBundle,
 ) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str | None], list[str]] = {}
     for issue in [*format_errors, *dependency_errors, *consistency_errors]:
@@ -1420,12 +1788,15 @@ def build_repair_sequence(
         "raw_review_threads": "recipe_stage3_replace_threaded_atomic_model",
         "atomic_comments": "recipe_stage3_replace_threaded_atomic_model",
         "raw_thread_atomic_links": "recipe_stage3_replace_threaded_atomic_model",
+        "review_comment_source_documents": "recipe_stage3_replace_threaded_atomic_model",
+        "review_comment_coverage_segments": "recipe_stage3_replace_threaded_atomic_model",
+        "review_comment_coverage_segment_comment_links": "recipe_stage3_replace_threaded_atomic_model",
         "atomic_comment_state": "recipe_stage4_upsert_atomic_workboard",
         "atomic_comment_target_locations": "recipe_stage4_upsert_atomic_workboard",
         "atomic_comment_analysis_links": "recipe_stage4_upsert_atomic_workboard",
         "strategy_cards": "recipe_stage5_upsert_strategy_card",
-        "strategy_action_manuscript_drafts": "recipe_stage5_replace_manuscript_drafts",
-        "comment_response_drafts": "recipe_stage5_upsert_response_draft",
+        "strategy_action_manuscript_drafts": "recipe_stage5_replace_execution_drafts",
+        "comment_response_drafts": "recipe_stage5_replace_execution_drafts",
         "comment_completion_status": "recipe_stage5_upsert_completion_status",
         "comment_blockers": "recipe_stage5_replace_comment_blockers",
         "response_thread_resolution_links": "recipe_stage6_upsert_response_thread_rows",
@@ -1437,6 +1808,8 @@ def build_repair_sequence(
         "export_patch_sets": "recipe_stage6_replace_export_patches",
         "export_patches": "recipe_stage6_replace_export_patches",
         "export_artifacts": "recipe_stage6_export_marked_manuscript",
+        "supplement_suggestion_items": "recipe_stage5_replace_supplement_suggestions",
+        "supplement_suggestion_intake_links": "recipe_stage5_replace_supplement_suggestions",
         "supplement_intake_items": "recipe_stage5_replace_supplement_intake_and_landing",
         "supplement_landing_links": "recipe_stage5_replace_supplement_intake_and_landing",
     }
@@ -1467,45 +1840,52 @@ def build_repair_sequence(
         "export_patch_sets": ["review-master.db", EXPORT_PATCH_PLAN_MD],
         "export_patches": ["review-master.db", EXPORT_PATCH_PLAN_MD],
         "export_artifacts": ["review-master.db", FINAL_CHECKLIST_MD],
+        "supplement_suggestion_items": ["review-master.db", SUPPLEMENT_SUGGESTION_PLAN_MD],
+        "supplement_suggestion_intake_links": ["review-master.db", SUPPLEMENT_SUGGESTION_PLAN_MD],
         "supplement_intake_items": ["review-master.db", SUPPLEMENT_INTAKE_PLAN_MD],
         "supplement_landing_links": ["review-master.db", SUPPLEMENT_INTAKE_PLAN_MD],
     }
     instruction_map = {
-        "workflow_state": "先在 review-master.db 中修正 workflow_state、pending confirmations 或 blockers 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "resume_brief": "先在 review-master.db 中修正 resume_brief 的恢复摘要，再重新运行 gate-and-render 核心脚本并重渲染 agent-resume.md。",
-        "resume_open_loops": "先在 review-master.db 中修正 resume_open_loops，再重新运行 gate-and-render 核心脚本并重渲染 agent-resume.md。",
-        "resume_recent_decisions": "先在 review-master.db 中修正 resume_recent_decisions，再重新运行 gate-and-render 核心脚本并重渲染 agent-resume.md。",
-        "resume_must_not_forget": "先在 review-master.db 中修正 resume_must_not_forget，再重新运行 gate-and-render 核心脚本并重渲染 agent-resume.md。",
-        "manuscript_summary": "先在 review-master.db 中修正 manuscript_summary、manuscript_sections 或 manuscript_claims 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "raw_review_threads": "先在 review-master.db 中修正 raw_review_threads 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "atomic_comments": "先在 review-master.db 中修正 canonical atomic comments 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "raw_thread_atomic_links": "先在 review-master.db 中修正 raw_thread_atomic_links 或 atomic_comment_source_spans 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "atomic_comment_state": "先在 review-master.db 中修正 atomic_comment_state 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "atomic_comment_target_locations": "先在 review-master.db 中修正 atomic_comment_target_locations 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "atomic_comment_analysis_links": "先在 review-master.db 中修正 atomic_comment_analysis_links 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "strategy_cards": "先在 review-master.db 中修正 strategy_cards、strategy_card_actions、strategy_action_target_locations、strategy_card_evidence_items 或 strategy_card_pending_confirmations 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "strategy_action_manuscript_drafts": "先在 review-master.db 中修正 strategy_action_manuscript_drafts，再重新运行 gate-and-render 核心脚本并重渲染策略卡视图。",
-        "comment_response_drafts": "先在 review-master.db 中修正 comment_response_drafts，再重新运行 gate-and-render 核心脚本并重渲染策略卡视图。",
-        "comment_completion_status": "先在 review-master.db 中修正 comment_completion_status 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "comment_blockers": "先在 review-master.db 中修正 comment_blockers，再重新运行 gate-and-render 核心脚本并重渲染策略卡视图。",
-        "response_thread_resolution_links": "先在 review-master.db 中修正 response_thread_resolution_links 相关记录，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "style_profiles": "先在 review-master.db 中修正 style_profiles 与 style_profile_rules，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "style_profile_rules": "先在 review-master.db 中修正 style_profiles 与 style_profile_rules，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "action_copy_variants": "先在 review-master.db 中修正 action_copy_variants，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "selected_action_copy_variants": "先在 review-master.db 中修正 selected_action_copy_variants，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "response_thread_rows": "先在 review-master.db 中修正 response_thread_rows，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "export_patch_sets": "先在 review-master.db 中修正 export_patch_sets，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "export_patches": "先在 review-master.db 中修正 export_patches，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "export_artifacts": "先在 review-master.db 中修正 export_artifacts，再重新运行 gate-and-render 核心脚本并重渲染视图。",
-        "supplement_intake_items": "先在 review-master.db 中修正 supplement_intake_items，再重新运行 gate-and-render 核心脚本并重渲染补材接收与落地方案视图。",
-        "supplement_landing_links": "先在 review-master.db 中修正 supplement_landing_links，再重新运行 gate-and-render 核心脚本并重渲染补材接收与落地方案视图。",
+        "workflow_state": localization.msg("gate.repair.workflow_state"),
+        "resume_brief": localization.msg("gate.repair.resume_brief"),
+        "resume_open_loops": localization.msg("gate.repair.resume_open_loops"),
+        "resume_recent_decisions": localization.msg("gate.repair.resume_recent_decisions"),
+        "resume_must_not_forget": localization.msg("gate.repair.resume_must_not_forget"),
+        "manuscript_summary": localization.msg("gate.repair.manuscript_summary"),
+        "raw_review_threads": localization.msg("gate.repair.raw_review_threads"),
+        "atomic_comments": localization.msg("gate.repair.atomic_comments"),
+        "raw_thread_atomic_links": localization.msg("gate.repair.raw_thread_atomic_links"),
+        "atomic_comment_state": localization.msg("gate.repair.atomic_comment_state"),
+        "atomic_comment_target_locations": localization.msg("gate.repair.atomic_comment_target_locations"),
+        "atomic_comment_analysis_links": localization.msg("gate.repair.atomic_comment_analysis_links"),
+        "strategy_cards": localization.msg("gate.repair.strategy_cards"),
+        "strategy_action_manuscript_drafts": localization.msg("gate.repair.strategy_action_manuscript_drafts"),
+        "comment_response_drafts": localization.msg("gate.repair.comment_response_drafts"),
+        "comment_completion_status": localization.msg("gate.repair.comment_completion_status"),
+        "comment_blockers": localization.msg("gate.repair.comment_blockers"),
+        "response_thread_resolution_links": localization.msg("gate.repair.response_thread_resolution_links"),
+        "style_profiles": localization.msg("gate.repair.style_profiles"),
+        "style_profile_rules": localization.msg("gate.repair.style_profile_rules"),
+        "action_copy_variants": localization.msg("gate.repair.action_copy_variants"),
+        "selected_action_copy_variants": localization.msg("gate.repair.selected_action_copy_variants"),
+        "response_thread_rows": localization.msg("gate.repair.response_thread_rows"),
+        "export_patch_sets": localization.msg("gate.repair.export_patch_sets"),
+        "export_patches": localization.msg("gate.repair.export_patches"),
+        "export_artifacts": localization.msg("gate.repair.export_artifacts"),
+        "supplement_suggestion_items": localization.msg("gate.repair.supplement_suggestion_items"),
+        "supplement_suggestion_intake_links": localization.msg("gate.repair.supplement_suggestion_intake_links"),
+        "supplement_intake_items": localization.msg("gate.repair.supplement_intake_items"),
+        "supplement_landing_links": localization.msg("gate.repair.supplement_landing_links"),
     }
     for index, ((artifact, _comment_id), details) in enumerate(ordered, start=1):
         repairs.append(
             make_action(
                 f"repair_{index:02d}",
-                f"{instruction_map.get(artifact, '先修复 review-master.db 中的问题，再重新运行 gate-and-render 核心脚本。')} 问题包括：{'; '.join(details)}。",
-                "修复顺序采用先上游后下游；先修数据库真源，再观察重渲染视图。",
+                (
+                    f"{instruction_map.get(artifact, localization.msg('gate.repair.default'))} "
+                    f"{localization.msg('gate.repair.summary_suffix', details='; '.join(details))}"
+                ),
+                localization.msg("gate.repair.rationale"),
                 target_map.get(artifact, ["review-master.db"]),
                 recipe_id=recipe_map.get(artifact),
             )
@@ -1518,6 +1898,7 @@ def build_current_state(
     pending: list[str],
     blockers: list[str],
     has_validation_issues: bool,
+    localization: LocalizationBundle,
 ) -> dict[str, Any]:
     if workflow_state is None:
         return {
@@ -1527,7 +1908,7 @@ def build_current_state(
             "has_pending_user_confirmations": bool(pending),
             "has_global_blockers": bool(blockers),
             "has_validation_issues": has_validation_issues,
-            "summary": "review-master.db 中缺少合法的 workflow_state，必须先修复数据库状态表。",
+            "summary": localization.msg("gate.current_state.missing_workflow_summary"),
         }
     return {
         "current_stage": str(workflow_state["current_stage"]),
@@ -1536,11 +1917,11 @@ def build_current_state(
         "has_pending_user_confirmations": bool(pending),
         "has_global_blockers": bool(blockers),
         "has_validation_issues": has_validation_issues,
-        "summary": (
-            f"当前处于 {workflow_state['current_stage']}，gate={workflow_state['stage_gate']}，"
-            f"active_comment_id={workflow_state['active_comment_id']!r}，"
-            f"pending_user_confirmations={len(pending)}，global_blockers={len(blockers)}，"
-            f"validation_issues={'yes' if has_validation_issues else 'no'}。"
+        "summary": localization.msg(
+            "current_state.summary",
+            current_stage=str(workflow_state["current_stage"]),
+            stage_gate=str(workflow_state["stage_gate"]),
+            active_comment_id=repr(workflow_state["active_comment_id"]),
         ),
     }
 
@@ -1555,6 +1936,8 @@ def build_resume_packet(
     resume_must_not_forget: list[str],
     current_state: dict[str, Any],
     recommended_next_action: dict[str, Any],
+    localization: LocalizationBundle,
+    runtime_language_context: dict[str, str],
 ) -> dict[str, Any]:
     runtime_digest = load_runtime_digest()
     base_packet = {
@@ -1564,14 +1947,15 @@ def build_resume_packet(
         "stage_gate": current_state["stage_gate"],
         "active_comment_id": current_state["active_comment_id"],
         "current_state_summary": current_state["summary"],
-        "current_objective": "Bootstrap a new review-master workspace and establish the first actionable state.",
-        "current_focus": "No historical execution exists yet. Confirm inputs, initialize the workspace, and prepare to enter the first authored step.",
-        "why_paused": "This workspace is new. The resume system is active, but there is no prior history to recover.",
+        "current_objective": localization.msg("bootstrap.resume.current_objective"),
+        "current_focus": localization.msg("bootstrap.resume.current_focus"),
+        "why_paused": localization.msg("bootstrap.resume.why_paused"),
         "next_operator_action": recommended_next_action["instruction"],
         "open_loops": list(resume_open_loops),
         "recent_decisions": list(resume_recent_decisions),
         "must_not_forget": list(resume_must_not_forget),
         "runtime_digest": runtime_digest,
+        "language_context": runtime_language_context,
     }
     if resume_brief is not None:
         resume_status = str(resume_brief["resume_status"])
@@ -1587,19 +1971,19 @@ def build_resume_packet(
         )
     if not base_packet["open_loops"]:
         if pending:
-            base_packet["open_loops"] = [f"Resolve pending confirmation: {message}" for message in pending]
+            base_packet["open_loops"] = [localization.msg("gate.allowed.request_pending_confirmation.reason") + f": {message}" for message in pending]
         elif blockers:
-            base_packet["open_loops"] = [f"Resolve blocker: {message}" for message in blockers]
+            base_packet["open_loops"] = [localization.msg("gate.allowed.resolve_global_blockers.reason") + f": {message}" for message in blockers]
     if workflow_state is None:
         base_packet["resume_status"] = "blocked"
         base_packet["is_bootstrap"] = False
-        base_packet["why_paused"] = "The workspace cannot resume safely because workflow_state is invalid or missing."
+        base_packet["why_paused"] = localization.msg("gate.blocked.missing_workflow.reason")
 
     resume_read_order = [
-        "instruction_payload.resume_packet",
+        localization.msg("resume.read_order.instruction_payload"),
         AGENT_RESUME_MD,
-        "当前阶段主视图",
-        "当前阶段参考文档",
+        localization.msg("resume.read_order.stage_view"),
+        localization.msg("resume.read_order.stage_reference"),
     ]
     packet = build_default_resume_packet_for_emit(base_packet, resume_read_order, recommended_next_action["action_id"])
     return packet
@@ -1627,6 +2011,7 @@ def build_default_resume_packet_for_emit(
         "runtime_digest": str(packet["runtime_digest"]),
         "resume_read_order": resume_read_order,
         "next_action_anchor": next_action_anchor,
+        "language_context": dict(packet.get("language_context", {})),
     }
 
 
@@ -1637,13 +2022,14 @@ def build_blocked_actions(
     comment_blocker_map: dict[str, list[str]],
     completion_map: dict[str, sqlite3.Row],
     export_artifact_map: dict[str, sqlite3.Row],
+    localization: LocalizationBundle,
 ) -> list[dict[str, Any]]:
     if workflow_state is None:
         return [
             make_action(
                 "blocked_until_db_state_fixed",
-                "禁止继续推进。先修复 review-master.db 中的 workflow_state，再重新运行 gate-and-render 核心脚本。",
-                "没有合法的数据库状态表，状态机无法运行。",
+                localization.msg("gate.blocked.missing_workflow.instruction"),
+                localization.msg("gate.blocked.missing_workflow.reason"),
                 ["review-master.db"],
                 recipe_id="recipe_stage1_set_entry_state",
             )
@@ -1652,12 +2038,22 @@ def build_blocked_actions(
     current_stage = str(workflow_state["current_stage"])
     active_comment_id = str(workflow_state["active_comment_id"]) if workflow_state["active_comment_id"] is not None else None
     blocked: list[dict[str, Any]] = []
+    if current_stage == "stage_3" and pending:
+        blocked.append(
+            make_action(
+                "blocked_enter_stage_4",
+                localization.msg("gate.blocked.stage3_pending.instruction"),
+                localization.msg("gate.blocked.stage3_pending.reason"),
+                ["review-master.db", REVIEW_COMMENT_COVERAGE_MD, THREAD_TO_ATOMIC_MAPPING_MD],
+                recipe_id="recipe_stage3_clear_coverage_confirmation",
+            )
+        )
     if current_stage == "stage_4" and pending:
         blocked.append(
             make_action(
                 "blocked_enter_stage_5",
-                "禁止进入阶段五执行。先让用户确认 atomic-comment-workboard.md 中的处理顺序、合并策略和锁定约束。",
-                "阶段四还有待确认事项。",
+                localization.msg("gate.blocked.stage4_pending.instruction"),
+                localization.msg("gate.blocked.stage4_pending.reason"),
                 ["review-master.db", ATOMIC_WORKBOARD_MD],
                 recipe_id="recipe_stage4_set_pending_confirmations",
             )
@@ -1667,9 +2063,9 @@ def build_blocked_actions(
             blocked.append(
                 make_action(
                     "blocked_execute_active_comment",
-                    f"禁止执行 {active_comment_id} 的改稿。先关闭该条策略相关的待确认事项。",
-                    "active comment 还有待确认项。",
-                    ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md"],
+                    localization.msg("gate.blocked.active_comment_pending.instruction", active_comment_id=active_comment_id),
+                    localization.msg("gate.blocked.active_comment_pending.reason"),
+                    ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_SUGGESTION_PLAN_MD],
                     recipe_id=None,
                 )
             )
@@ -1677,8 +2073,8 @@ def build_blocked_actions(
             blocked.append(
                 make_action(
                     "blocked_complete_active_comment",
-                    f"禁止把 {active_comment_id} 标记为完成。先关闭数据库状态中的 blocker 或证据缺口，并补齐补材接收与落地映射。",
-                    "当前仍有 blocker。",
+                    localization.msg("gate.blocked.active_comment_blocker.instruction", active_comment_id=active_comment_id),
+                    localization.msg("gate.blocked.active_comment_blocker.reason"),
                     ["review-master.db", SUPPLEMENT_INTAKE_PLAN_MD],
                     recipe_id="recipe_stage5_set_blockers",
                 )
@@ -1688,8 +2084,8 @@ def build_blocked_actions(
         blocked.append(
             make_action(
                 "blocked_final_export",
-                "禁止导出 clean manuscript 和最终 Response Letter。",
-                "最终导出门禁尚未全部满足。",
+                localization.msg("gate.blocked.stage6_final_export.instruction"),
+                localization.msg("gate.blocked.stage6_final_export.reason"),
                 ["review-master.db", FINAL_CHECKLIST_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
                 recipe_id="recipe_stage6_export_clean_manuscript",
             )
@@ -1699,8 +2095,8 @@ def build_blocked_actions(
         blocked.append(
             make_action(
                 "blocked_clean_export_before_marked_review",
-                "禁止进入 clean manuscript 与最终 Response Letter 导出。先导出 marked manuscript，并完成该轮用户复核。",
-                "Stage 6 采用双阶段导出，marked manuscript 是 clean export 的前置条件。",
+                localization.msg("gate.blocked.stage6_marked_first.instruction"),
+                localization.msg("gate.blocked.stage6_marked_first.reason"),
                 ["review-master.db", FINAL_CHECKLIST_MD],
                 recipe_id="recipe_stage6_export_marked_manuscript",
             )
@@ -1719,6 +2115,8 @@ def build_stage_actions(
     completion_map: dict[str, sqlite3.Row],
     comment_to_action_ids: dict[str, list[str]],
     action_location_orders: dict[tuple[str, int], list[int]],
+    manuscript_draft_map: dict[tuple[str, int, int], sqlite3.Row],
+    response_draft_map: dict[str, sqlite3.Row],
     style_profile_map: dict[str, sqlite3.Row],
     style_rule_count_by_target: dict[str, int],
     action_variant_labels: dict[tuple[str, int, int], set[str]],
@@ -1727,13 +2125,14 @@ def build_stage_actions(
     export_patch_set_map: dict[str, sqlite3.Row],
     export_patch_count_map: dict[str, int],
     export_artifact_map: dict[str, sqlite3.Row],
+    localization: LocalizationBundle,
 ) -> list[dict[str, Any]]:
     if workflow_state is None:
         return [
             make_action(
                 "repair_workflow_state",
-                "先在 review-master.db 中创建或修复 workflow_state 的唯一行，再重新运行 gate-and-render 核心脚本。",
-                "没有合法 workflow_state 时，agent 无法安全判断阶段门禁。",
+                localization.msg("gate.blocked.missing_workflow.instruction"),
+                localization.msg("gate.blocked.missing_workflow.reason"),
                 ["review-master.db"],
                 recipe_id="recipe_stage1_set_entry_state",
             )
@@ -1742,21 +2141,41 @@ def build_stage_actions(
     current_stage = str(workflow_state["current_stage"])
     active_comment_id = str(workflow_state["active_comment_id"]) if workflow_state["active_comment_id"] is not None else None
     if pending:
+        if current_stage == "stage_3":
+            return [
+                make_action(
+                    "request_stage3_coverage_confirmation",
+                    localization.msg("gate.allowed.request_stage3_coverage_confirmation.instruction"),
+                    localization.msg("gate.allowed.request_stage3_coverage_confirmation.reason"),
+                    ["review-master.db", REVIEW_COMMENT_COVERAGE_MD, RAW_REVIEW_THREADS_MD, THREAD_TO_ATOMIC_MAPPING_MD],
+                    recipe_id="recipe_stage3_clear_coverage_confirmation",
+                )
+            ]
         if current_stage == "stage_4":
             return [
                 make_action(
                     "request_stage4_confirmation",
-                    "向用户展示 atomic-comment-workboard.md 和 thread-to-atomic-mapping.md，并请求确认原始意见块到 canonical atomic item 的拆分、合并、优先级与处理顺序。",
-                    "阶段四还有 pending_user_confirmations。",
+                    localization.msg("gate.allowed.stage4_request_confirmation.instruction"),
+                    localization.msg("gate.allowed.stage4_request_confirmation.reason"),
                     ["review-master.db", ATOMIC_WORKBOARD_MD, THREAD_TO_ATOMIC_MAPPING_MD],
                     recipe_id="recipe_stage4_set_pending_confirmations",
+                )
+            ]
+        if current_stage == "stage_5" and active_comment_id:
+            return [
+                make_action(
+                    "request_pending_confirmation",
+                    localization.msg("gate.allowed.request_pending_confirmation.instruction"),
+                    localization.msg("gate.allowed.request_pending_confirmation.reason"),
+                    ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_SUGGESTION_PLAN_MD],
+                    recipe_id="recipe_stage5_confirm_strategy",
                 )
             ]
         return [
             make_action(
                 "request_pending_confirmation",
-                "先处理 review-master.db 中记录的待确认事项，确认后再继续当前阶段。",
-                "状态机要求先完成用户确认。",
+                localization.msg("gate.allowed.request_pending_confirmation.instruction"),
+                localization.msg("gate.allowed.request_pending_confirmation.reason"),
                 ["review-master.db"],
                 recipe_id=None,
             )
@@ -1765,8 +2184,8 @@ def build_stage_actions(
         return [
             make_action(
                 "resolve_blockers",
-                "先根据 review-master.db 中的 blockers 请求补材、澄清或额外输入，并在补材接收后写实 supplement intake/landing，再关闭 blocker 继续。",
-                "当前存在 global_blockers。",
+                localization.msg("gate.allowed.resolve_global_blockers.instruction"),
+                localization.msg("gate.allowed.resolve_global_blockers.reason"),
                 ["review-master.db", SUPPLEMENT_INTAKE_PLAN_MD],
                 recipe_id="recipe_stage5_set_blockers",
             )
@@ -1775,8 +2194,8 @@ def build_stage_actions(
         return [
             make_action(
                 "enter_stage_2",
-                "进入阶段二，在 review-master.db 中填充 manuscript_summary、manuscript_sections 和 manuscript_claims，然后重新运行 gate-and-render 核心脚本并重渲染视图。",
-                "阶段一已就绪，下一步是建立结构摘要真源数据。",
+                localization.msg("gate.allowed.enter_stage_2.instruction"),
+                localization.msg("gate.allowed.enter_stage_2.reason"),
                 ["review-master.db", MANUSCRIPT_SUMMARY_MD],
                 recipe_id="recipe_stage2_upsert_manuscript_summary",
             )
@@ -1785,8 +2204,8 @@ def build_stage_actions(
         return [
             make_action(
                 "enter_stage_3",
-                "进入阶段三，在 review-master.db 中先写入 raw_review_threads，再写 canonical atomic comments 及其映射关系，完成后重新运行 gate-and-render 核心脚本。",
-                "阶段二已就绪，下一步是形成原始意见块与 canonical atomic item 的双层真源数据。",
+                localization.msg("gate.allowed.enter_stage_3.instruction"),
+                localization.msg("gate.allowed.enter_stage_3.reason"),
                 ["review-master.db", RAW_REVIEW_THREADS_MD, ATOMIC_COMMENTS_MD, THREAD_TO_ATOMIC_MAPPING_MD],
                 recipe_id="recipe_stage3_replace_threaded_atomic_model",
             )
@@ -1795,8 +2214,8 @@ def build_stage_actions(
         return [
             make_action(
                 "enter_stage_4",
-                "进入阶段四，在 review-master.db 中写入 atomic_comment_state、atomic_comment_target_locations 和 atomic_comment_analysis_links，再重新运行 gate-and-render 核心脚本。",
-                "阶段三已就绪，下一步是形成 atomic item 级 workboard。",
+                localization.msg("gate.allowed.enter_stage_4.instruction"),
+                localization.msg("gate.allowed.enter_stage_4.reason"),
                 ["review-master.db", ATOMIC_WORKBOARD_MD],
                 recipe_id="recipe_stage4_upsert_atomic_workboard",
             )
@@ -1806,9 +2225,9 @@ def build_stage_actions(
         return [
             make_action(
                 "enter_stage_5",
-                f"把 {ready_comment or '下一条 ready atomic comment'} 写入 workflow_state.active_comment_id，并在 review-master.db 中写入对应 strategy_cards 数据后再重新运行 gate-and-render 核心脚本。",
-                "阶段四已确认，下一步是锁定 active comment 并准备逐条策略卡。",
-                ["review-master.db", STRATEGY_CARD_DIR],
+                localization.msg("gate.allowed.enter_stage_5.instruction", ready_comment=ready_comment or "next ready atomic comment"),
+                localization.msg("gate.allowed.enter_stage_5.reason"),
+                ["review-master.db", STRATEGY_CARD_DIR, SUPPLEMENT_SUGGESTION_PLAN_MD],
                 recipe_id="recipe_stage5_set_active_comment",
             )
         ]
@@ -1817,13 +2236,18 @@ def build_stage_actions(
             return [
                 make_action(
                     "author_strategy_card",
-                    f"先为 {active_comment_id} 在 review-master.db 中补齐 strategy_cards 与 strategy_card_actions，再重新运行 gate-and-render 核心脚本。",
-                    "阶段五已有 active comment，但缺少对应策略卡真源数据。",
-                    ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md"],
+                    localization.msg("gate.allowed.author_strategy_card.instruction", active_comment_id=active_comment_id),
+                    localization.msg("gate.allowed.author_strategy_card.reason"),
+                    ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_SUGGESTION_PLAN_MD],
                     recipe_id="recipe_stage5_upsert_strategy_card",
                 )
             ]
         if active_comment_id:
+            completion_row = completion_map.get(active_comment_id)
+            strategy_confirmed = completion_row is not None and str(completion_row["user_strategy_confirmed"]) == "yes"
+            has_manuscript_drafts = any(key[0] == active_comment_id for key in manuscript_draft_map)
+            has_response_draft = active_comment_id in response_draft_map
+            has_stage5_drafts = has_manuscript_drafts and has_response_draft
             other_comment = next(
                 (
                     comment_id
@@ -1833,13 +2257,33 @@ def build_stage_actions(
                 None,
             )
             actions = []
-            if comment_blocker_map.get(active_comment_id):
+            if not strategy_confirmed:
+                actions.append(
+                    make_action(
+                        "request_pending_confirmation",
+                        localization.msg("gate.allowed.request_pending_confirmation.instruction"),
+                        localization.msg("gate.allowed.request_pending_confirmation.reason"),
+                        ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_SUGGESTION_PLAN_MD],
+                        recipe_id="recipe_stage5_confirm_strategy",
+                    )
+                )
+            elif not has_stage5_drafts:
+                actions.append(
+                    make_action(
+                        "author_comment_drafts",
+                        localization.msg("gate.allowed.author_comment_drafts.instruction", active_comment_id=active_comment_id),
+                        localization.msg("gate.allowed.author_comment_drafts.reason"),
+                        ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_SUGGESTION_PLAN_MD],
+                        recipe_id="recipe_stage5_replace_execution_drafts",
+                    )
+                )
+            elif comment_blocker_map.get(active_comment_id):
                 actions.append(
                     make_action(
                         "resolve_blockers",
-                        f"先为 {active_comment_id} 关闭 comment-scoped blocker，并补齐当前条目的证据或补材落地，然后重新运行 gate-and-render 核心脚本。",
-                        "当前 active comment 仍有局部 blocker，不能标记完成，但不阻断切换到其他 comment。",
-                        ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_INTAKE_PLAN_MD],
+                        localization.msg("gate.allowed.resolve_comment_blockers.instruction", active_comment_id=active_comment_id),
+                        localization.msg("gate.allowed.resolve_comment_blockers.reason"),
+                        ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_SUGGESTION_PLAN_MD, SUPPLEMENT_INTAKE_PLAN_MD],
                         recipe_id="recipe_stage5_replace_comment_blockers",
                     )
                 )
@@ -1847,9 +2291,9 @@ def build_stage_actions(
                 actions.append(
                     make_action(
                         "advance_active_comment",
-                        f"继续围绕 {active_comment_id} 更新 review-master.db 中的策略、动作位置、草案、证据、补材接收落地、完成状态和 workflow_state，然后重新运行 gate-and-render 核心脚本。",
-                        "当前 active comment 已具备继续推进条件。",
-                        ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_INTAKE_PLAN_MD],
+                        localization.msg("gate.allowed.advance_active_comment.instruction", active_comment_id=active_comment_id),
+                        localization.msg("gate.allowed.advance_active_comment.reason"),
+                        ["review-master.db", f"{STRATEGY_CARD_DIR}/{active_comment_id}.md", SUPPLEMENT_SUGGESTION_PLAN_MD, SUPPLEMENT_INTAKE_PLAN_MD],
                         recipe_id="recipe_stage5_upsert_completion_status",
                     )
                 )
@@ -1857,8 +2301,8 @@ def build_stage_actions(
                 actions.append(
                     make_action(
                         "set_active_comment",
-                        f"如需改变当前焦点，可把 {other_comment}（或任一非 done comment）写入 workflow_state.active_comment_id，再重新运行 gate-and-render 核心脚本。",
-                        "Stage 5 允许显式切换 active comment；切换不会清空已写入的策略、草案和 blocker 状态。",
+                        localization.msg("gate.allowed.set_active_comment.instruction", other_comment=other_comment),
+                        localization.msg("gate.allowed.set_active_comment.reason"),
                         ["review-master.db", ATOMIC_WORKBOARD_MD, STRATEGY_CARD_DIR],
                         recipe_id="recipe_stage5_set_active_comment",
                     )
@@ -1868,8 +2312,8 @@ def build_stage_actions(
         return [
             make_action(
                 "set_active_comment",
-                f"把 {next_comment or '下一条 ready atomic comment'} 写入 workflow_state.active_comment_id，并开始为它准备策略卡。",
-                "阶段五没有 active comment，下一步应锁定一条 ready atomic comment。",
+                localization.msg("gate.allowed.set_next_active_comment.instruction", next_comment=next_comment or "next ready atomic comment"),
+                localization.msg("gate.allowed.set_next_active_comment.reason"),
                 ["review-master.db"],
                 recipe_id="recipe_stage5_set_active_comment",
             )
@@ -1884,8 +2328,8 @@ def build_stage_actions(
             return [
                 make_action(
                     "author_style_profiles",
-                    "先在 review-master.db 中完成 manuscript 与 response_letter 的全局风格画像，并写入去 AI 化规则，再重新运行 gate-and-render 核心脚本。",
-                    "Stage 6A 还未完成，后续文案版本生成没有风格约束基线。",
+                    localization.msg("gate.allowed.stage6_style_profile.instruction"),
+                    localization.msg("gate.allowed.stage6_style_profile.reason"),
                     ["review-master.db", STYLE_PROFILE_MD],
                     recipe_id="recipe_stage6_upsert_style_profiles",
                 )
@@ -1899,8 +2343,8 @@ def build_stage_actions(
                         return [
                             make_action(
                                 "generate_action_copy_variants",
-                                "先在 review-master.db 中为每个修改点的每个 target location 生成 3 个 manuscript 最终落稿文本版本，再重新运行 gate-and-render 核心脚本。",
-                                "Stage 6B 尚未完成；每个 action-location 都必须达到 3 个 manuscript 最终落稿文本版本。",
+                                localization.msg("gate.allowed.stage6_generate_variants.instruction"),
+                                localization.msg("gate.allowed.stage6_generate_variants.reason"),
                                 ["review-master.db", ACTION_COPY_VARIANTS_MD],
                                 recipe_id="recipe_stage6_replace_action_copy_variants",
                             )
@@ -1913,8 +2357,8 @@ def build_stage_actions(
                         return [
                             make_action(
                                 "request_variant_selection",
-                                "向用户展示 action-copy-variants.md，请其为每个 action 的每个 target location 选定一个 manuscript 最终落稿文本；选择写入数据库后再重新运行 gate-and-render 核心脚本。",
-                                "Stage 6C 之前必须先完成位置级 manuscript 最终文案选择。",
+                                localization.msg("gate.allowed.stage6_select_variants.instruction"),
+                                localization.msg("gate.allowed.stage6_select_variants.reason"),
                                 ["review-master.db", ACTION_COPY_VARIANTS_MD],
                                 recipe_id="recipe_stage6_select_action_copy_variants",
                             )
@@ -1923,8 +2367,8 @@ def build_stage_actions(
             return [
                 make_action(
                     "assemble_response_thread_rows",
-                    "先在 review-master.db 中建立 response_thread_resolution_links 与 response_thread_rows，把 Stage 5 已确认的策略/草案与已选中的 manuscript 文案聚合为 thread-level 4 列表格行，再重新运行 gate-and-render 核心脚本。",
-                    "Stage 6C 尚未完成；最终 Response Letter 还没有 row-level 真源。",
+                    localization.msg("gate.allowed.stage6_build_rows.instruction"),
+                    localization.msg("gate.allowed.stage6_build_rows.reason"),
                     ["review-master.db", RESPONSE_LETTER_OUTLINE_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
                     recipe_id="recipe_stage6_upsert_response_thread_rows",
                 )
@@ -1942,8 +2386,8 @@ def build_stage_actions(
             return [
                 make_action(
                     "prepare_export_patches",
-                    "先在 review-master.db 中建立 export_patch_sets 与 export_patches，把每个修改位置的显式原文锚点、marked_text 和 clean_text 写实，再重新运行 gate-and-render 核心脚本。",
-                    "Stage 6D/6E 的完整导出必须基于可执行的 export patch 真源，而不能依赖手工拼接完整稿件。",
+                    localization.msg("gate.allowed.stage6_build_patch_sets.instruction"),
+                    localization.msg("gate.allowed.stage6_build_patch_sets.reason"),
                     ["review-master.db", EXPORT_PATCH_PLAN_MD],
                     recipe_id="recipe_stage6_replace_export_patches",
                 )
@@ -1953,8 +2397,8 @@ def build_stage_actions(
             return [
                 make_action(
                     "export_marked_manuscript",
-                    "先调用 export_manuscript_variants.py 基于 marked patch set 导出完整的 marked manuscript，并在 review-master.db 中记录其输出路径和状态，然后重新运行 gate-and-render 核心脚本。",
-                    "Stage 6D 尚未完成；clean export 之前必须先完成完整 marked manuscript 导出与复核。",
+                    localization.msg("gate.allowed.stage6_export_marked.instruction"),
+                    localization.msg("gate.allowed.stage6_export_marked.reason"),
                     ["review-master.db", EXPORT_PATCH_PLAN_MD, FINAL_CHECKLIST_MD],
                     recipe_id="recipe_stage6_export_marked_manuscript",
                 )
@@ -1967,8 +2411,8 @@ def build_stage_actions(
             return [
                 make_action(
                     "final_review_and_clean_export",
-                    "向用户展示完整 marked manuscript 和最终 Response Letter 预览做最终复核；若用户确认无误，再调用 export_manuscript_variants.py 基于 clean patch set 导出 clean manuscript，并写入 Markdown/LaTeX Response Letter 的最终输出路径和状态。",
-                    "Stage 6E 尚未完成；最终 clean manuscript 与双格式 Response Letter 仍未全部落地。",
+                    localization.msg("gate.allowed.stage6_export_clean.instruction"),
+                    localization.msg("gate.allowed.stage6_export_clean.reason"),
                     ["review-master.db", EXPORT_PATCH_PLAN_MD, FINAL_CHECKLIST_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
                     recipe_id="recipe_stage6_export_clean_manuscript",
                 )
@@ -1976,8 +2420,8 @@ def build_stage_actions(
         return [
             make_action(
                 "stage_6_completed",
-                "Stage 6 已闭环。保持导出产物不变，如需新增修改，应回到数据库真源更新后再重新运行 gate-and-render 核心脚本。",
-                "所有 Stage 6 产物都已导出。",
+                localization.msg("gate.allowed.stage6_completed.instruction"),
+                localization.msg("gate.allowed.stage6_completed.reason"),
                 ["review-master.db", EXPORT_PATCH_PLAN_MD, FINAL_CHECKLIST_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
                 recipe_id="recipe_stage6_export_clean_manuscript",
             )
@@ -1985,8 +2429,8 @@ def build_stage_actions(
     return [
         make_action(
             "inspect_state_machine",
-            "当前状态无法匹配既定状态机。先检查 review-master.db 中的 workflow_state 相关记录。",
-            "状态机无法识别当前阶段。",
+            localization.msg("gate.allowed.unknown_state.instruction"),
+            localization.msg("gate.allowed.unknown_state.reason"),
             ["review-master.db"],
             recipe_id="recipe_stage1_set_entry_state",
         )
@@ -2008,6 +2452,8 @@ def build_instruction_payload(
     completion_map: dict[str, sqlite3.Row],
     comment_to_action_ids: dict[str, list[str]],
     action_location_orders: dict[tuple[str, int], list[int]],
+    manuscript_draft_map: dict[tuple[str, int, int], sqlite3.Row],
+    response_draft_map: dict[str, sqlite3.Row],
     style_profile_map: dict[str, sqlite3.Row],
     style_rule_count_by_target: dict[str, int],
     action_variant_labels: dict[tuple[str, int, int], set[str]],
@@ -2019,10 +2465,20 @@ def build_instruction_payload(
     format_errors: list[dict[str, Any]],
     dependency_errors: list[dict[str, Any]],
     consistency_errors: list[dict[str, Any]],
+    localization: LocalizationBundle,
+    runtime_language_context: dict[str, str],
 ) -> dict[str, Any]:
-    repair_sequence = build_repair_sequence(format_errors, dependency_errors, consistency_errors)
-    current_state = build_current_state(workflow_state, pending, blockers, bool(repair_sequence))
-    blocked_actions = build_blocked_actions(workflow_state, pending, blockers, comment_blocker_map, completion_map, export_artifact_map)
+    repair_sequence = build_repair_sequence(format_errors, dependency_errors, consistency_errors, localization)
+    current_state = build_current_state(workflow_state, pending, blockers, bool(repair_sequence), localization)
+    blocked_actions = build_blocked_actions(
+        workflow_state,
+        pending,
+        blockers,
+        comment_blocker_map,
+        completion_map,
+        export_artifact_map,
+        localization,
+    )
     if repair_sequence:
         allowed_next_actions = repair_sequence
         recommended_next_action = repair_sequence[0]
@@ -2038,6 +2494,8 @@ def build_instruction_payload(
             completion_map,
             comment_to_action_ids,
             action_location_orders,
+            manuscript_draft_map,
+            response_draft_map,
             style_profile_map,
             style_rule_count_by_target,
             action_variant_labels,
@@ -2046,6 +2504,7 @@ def build_instruction_payload(
             export_patch_set_map,
             export_patch_count_map,
             export_artifact_map,
+            localization,
         )
         recommended_next_action = allowed_next_actions[0]
     resume_packet = build_resume_packet(
@@ -2058,6 +2517,8 @@ def build_instruction_payload(
         resume_must_not_forget,
         current_state,
         recommended_next_action,
+        localization,
+        runtime_language_context,
     )
     return {
         "current_state": current_state,
@@ -2099,6 +2560,10 @@ def main() -> int:
     resume_open_loops: list[str] = []
     resume_recent_decisions: list[str] = []
     resume_must_not_forget: list[str] = []
+    review_comment_source_document_map: dict[str, sqlite3.Row] = {}
+    review_comment_coverage_segment_map: dict[tuple[str, int], sqlite3.Row] = {}
+    coverage_segment_to_comment_ids: dict[tuple[str, int], list[str]] = {}
+    thread_to_coverage_segment_keys: dict[str, list[tuple[str, int]]] = {}
     raw_thread_map: dict[str, sqlite3.Row] = {}
     atomic_map: dict[str, sqlite3.Row] = {}
     atomic_state_map: dict[str, sqlite3.Row] = {}
@@ -2122,10 +2587,22 @@ def main() -> int:
     export_patch_set_map: dict[str, sqlite3.Row] = {}
     export_patch_count_map: dict[str, int] = {}
     export_artifact_map: dict[str, sqlite3.Row] = {}
+    runtime_language_context = {
+        "document_language": "en",
+        "working_language": "en",
+        "manuscript_detected_language": "",
+        "review_comments_detected_language": "",
+        "prompt_detected_language": "",
+        "document_language_source": "",
+        "working_language_source": "",
+        "languages_confirmed": "no",
+    }
 
     try:
         with connect_db(db_path) as connection:
+            ensure_runtime_schema_compatibility(connection)
             validate_schema(connection, db_path, format_errors)
+            runtime_language_context = fetch_runtime_language_context(connection)
             (
                 workflow_state,
                 resume_brief,
@@ -2134,6 +2611,10 @@ def main() -> int:
                 resume_open_loops,
                 resume_recent_decisions,
                 resume_must_not_forget,
+                review_comment_source_document_map,
+                review_comment_coverage_segment_map,
+                coverage_segment_to_comment_ids,
+                thread_to_coverage_segment_keys,
                 raw_thread_map,
                 atomic_map,
                 atomic_state_map,
@@ -2157,11 +2638,18 @@ def main() -> int:
                 export_patch_set_map,
                 export_patch_count_map,
                 export_artifact_map,
+                supplement_suggestion_map,
+                supplement_suggestion_count_by_comment,
                 content_errors,
             ) = validate_database_content(connection, db_path)
             format_errors.extend(content_errors)
     except sqlite3.DatabaseError as exc:
         return emit({"status": "error", "error": f"sqlite error: {exc}"}, exit_code=1)
+
+    localization = load_localization_bundle(
+        artifact_root,
+        runtime_context=runtime_language_context,
+    )
 
     stage_num = workflow_stage_number(workflow_state)
     active_comment_id = str(workflow_state["active_comment_id"]) if workflow_state is not None and workflow_state["active_comment_id"] is not None else None
@@ -2170,6 +2658,10 @@ def main() -> int:
             db_path,
             stage_num,
             active_comment_id,
+            review_comment_source_document_map,
+            review_comment_coverage_segment_map,
+            coverage_segment_to_comment_ids,
+            thread_to_coverage_segment_keys,
             raw_thread_map,
             atomic_map,
             atomic_state_map,
@@ -2192,6 +2684,7 @@ def main() -> int:
             export_patch_set_map,
             export_patch_count_map,
             export_artifact_map,
+            supplement_suggestion_count_by_comment,
         )
     )
     consistency_errors.extend(
@@ -2204,6 +2697,8 @@ def main() -> int:
             resume_open_loops,
             resume_recent_decisions,
             resume_must_not_forget,
+            review_comment_source_document_map,
+            review_comment_coverage_segment_map,
             raw_thread_map,
             atomic_map,
             atomic_state_map,
@@ -2220,6 +2715,9 @@ def main() -> int:
             export_patch_set_map,
             export_patch_count_map,
             export_artifact_map,
+            supplement_suggestion_count_by_comment,
+            manuscript_draft_map,
+            response_draft_map,
         )
     )
     instruction_payload = build_instruction_payload(
@@ -2237,6 +2735,8 @@ def main() -> int:
         completion_map,
         comment_to_action_ids,
         action_location_orders,
+        manuscript_draft_map,
+        response_draft_map,
         style_profile_map,
         style_rule_count_by_target,
         action_variant_labels,
@@ -2248,6 +2748,8 @@ def main() -> int:
         format_errors,
         dependency_errors,
         consistency_errors,
+        localization,
+        runtime_language_context,
     )
     resume_render_context = {
         "resume_status": instruction_payload["resume_packet"]["resume_status"],
@@ -2266,6 +2768,7 @@ def main() -> int:
         "runtime_digest": instruction_payload["resume_packet"]["runtime_digest"],
         "resume_read_order": instruction_payload["resume_packet"]["resume_read_order"],
         "next_action_anchor": instruction_payload["resume_packet"]["next_action_anchor"],
+        "language_context": instruction_payload["resume_packet"]["language_context"],
     }
     try:
         render_workspace(db_path, artifact_root, resume_context=resume_render_context)

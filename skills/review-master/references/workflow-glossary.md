@@ -26,19 +26,20 @@
 
 ### 只读渲染视图
 
-- `agent-resume.md`
-- `manuscript-structure-summary.md`
-- `raw-review-thread-list.md`
-- `atomic-review-comment-list.md`
-- `thread-to-atomic-mapping.md`
-- `atomic-comment-workboard.md`
-- `style-profile.md`
-- `action-copy-variants.md`
-- `response-letter-outline.md`
-- `export-patch-plan.md`
-- `response-letter-table-preview.md`
-- `response-letter-table-preview.tex`
-- `final-assembly-checklist.md`
+- `01-agent-resume.md`
+- `02-manuscript-structure-summary.md`
+- `03-raw-review-thread-list.md`
+- `04-atomic-review-comment-list.md`
+- `05-thread-to-atomic-mapping.md`
+- `07-atomic-comment-workboard.md`
+- `08-style-profile.md`
+- `09-action-copy-variants.md`
+- `10-response-letter-outline.md`
+- `11-export-patch-plan.md`
+- `12-response-letter-table-preview.md`
+- `13-response-letter-table-preview.tex`
+- `14-supplement-suggestion-plan.md`
+- `16-final-assembly-checklist.md`
 - `response-strategy-cards/{comment_id}.md`
 
 ### 最终导出产物
@@ -84,6 +85,7 @@
 
 - `set_active_comment`
 - `author_strategy_card`
+- `author_comment_drafts`
 - `advance_active_comment`
 - `resolve_blockers`
 

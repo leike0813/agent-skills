@@ -1,0 +1,2 @@
+catalog_source: assets/localization/messages/en.json
+note: Package-level source messages are resolved from the default English catalog at runtime and copied into each workspace-local source-messages.yaml during bootstrap.

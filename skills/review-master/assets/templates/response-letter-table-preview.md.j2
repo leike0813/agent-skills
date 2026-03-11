@@ -1,11 +1,11 @@
-# Response Letter Table Preview
+# {{ msg("view.response_table_preview.title", target="document") }}
 
-这是从 `review-master.db` 渲染出的最终 Response Letter Markdown 预览。数据库真源是 `response_thread_rows`。最终输出必须保持一条原始 reviewer thread 对应一条 point-to-point 表格行。
+{{ msg("view.response_table_preview.intro", target="document") }}
 
 {% for group in reviewer_groups -%}
 ## {{ group.heading }}
 
-| 原始意见 | 修改位置/范围 | 关键修改片段 | 回复说明 |
+| {{ msg("view.response_table_preview.column.original_comment", target="document") }} | {{ msg("view.response_table_preview.column.modification_scope", target="document") }} | {{ msg("view.response_table_preview.column.key_revision_excerpt", target="document") }} | {{ msg("view.response_table_preview.column.response_explanation", target="document") }} |
 | --- | --- | --- | --- |
 {% for row in group.rows -%}
 | {{ row.original_comment }} | {{ row.modification_scope }} | {{ row.key_revision_excerpt }} | {{ row.response_explanation }} |
@@ -14,7 +14,7 @@
 {% endfor %}
 
 {% else -%}
-## No Thread Rows
+## {{ msg("view.response_table_preview.no_rows", target="document") }}
 
-No final response rows available.
+{{ msg("view.response_table_preview.no_row_data", target="document") }}
 {% endfor %}

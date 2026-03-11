@@ -1,18 +1,18 @@
-# Supplement Intake And Landing Plan
+# {{ msg("view.supplement_plan.title") }}
 
-这是从 `review-master.db` 渲染出的 Stage 5 补材接收与落地方案视图。数据库真源是 `supplement_intake_items` 与 `supplement_landing_links`。该视图用于向用户展示每轮补材的接收判定，以及被接收补材将如何落到 canonical atomic action 的具体位置。
+{{ msg("view.supplement_plan.intro") }}
 
 {% if round_groups -%}
 {% for group in round_groups -%}
-## Round: `{{ group.round_id }}`
+## {{ msg("view.supplement_plan.round") }}: `{{ group.round_id }}`
 
-| File | Concern Summary | Decision | Decision Rationale | Landing Targets |
+| {{ msg("view.supplement_plan.file") }} | {{ msg("view.supplement_plan.concern_summary") }} | {{ msg("view.supplement_plan.decision") }} | {{ msg("view.supplement_plan.decision_rationale") }} | {{ msg("view.supplement_plan.landing_targets") }} |
 | --- | --- | --- | --- | --- |
 {% for item in group["items"] -%}
-| `{{ item.file_path }}` | {{ item.concern_summary or "N/A" }} | `{{ item.decision or "pending" }}` | {{ item.decision_rationale or "N/A" }} | {% if item.landing_links %}{% for link in item.landing_links %}`{{ link.comment_id }}` / action {{ link.action_order }} / location {{ link.location_order }}: {{ link.planned_usage_note }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}N/A{% endif %} |
+| `{{ item.file_path }}` | {{ item.concern_summary or msg("common.na") }} | `{{ item.decision or msg("common.pending") }}` | {{ item.decision_rationale or msg("common.na") }} | {% if item.landing_links %}{% for link in item.landing_links %}`{{ link.comment_id }}` / action {{ link.action_order }} / location {{ link.location_order }}: {{ link.planned_usage_note }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}{{ msg("common.na") }}{% endif %} |
 {% endfor %}
 
 {% endfor -%}
 {% else -%}
-_No supplement intake records available._
+_{{ msg("view.supplement_plan.no_records") }}_
 {% endif %}

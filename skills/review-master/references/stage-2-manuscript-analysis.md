@@ -19,8 +19,8 @@
 
 ## 必读材料
 
-- `manuscript-structure-summary.md`
-- `agent-resume.md`
+- `02-manuscript-structure-summary.md`
+- `01-agent-resume.md`
 - `review-master/references/sql-write-recipes.md`
 - `review-master/references/workflow-state-machine.md`
 - `review-master/references/stage-2-manuscript-analysis.md`
@@ -79,7 +79,7 @@
 ### 5. 重新运行 gate-and-render
 
 - 写库完成后，立即运行 `gate-and-render`
-- 确认 `manuscript-structure-summary.md` 已重新渲染
+- 确认 `02-manuscript-structure-summary.md` 已重新渲染
 - 读取新的 `instruction_payload`，确认推荐推进动作是否已稳定指向 Stage 3
 
 ## 何时需要向用户追问
@@ -90,7 +90,7 @@
 
 ## 用户可读视图
 
-- `manuscript-structure-summary.md`
+- `02-manuscript-structure-summary.md`
 
 ## 禁止动作
 
@@ -106,7 +106,7 @@
 - section hierarchy 足以支持后续 location 映射
 - 至少主要 claims 已成型，且能指出主要支撑证据
 - 高风险修改区已识别
-- `manuscript-structure-summary.md` 的内容足以让 Agent 在 Stage 3 中理解 reviewer thread 可能落向哪里
+- `02-manuscript-structure-summary.md` 的内容足以让 Agent 在 Stage 3 中理解 reviewer thread 可能落向哪里
 
 ## 完成标准
 

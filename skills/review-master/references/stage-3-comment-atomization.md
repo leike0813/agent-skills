@@ -11,17 +11,18 @@
 - 先保留 reviewer / editor 的原始条目层
 - 再把这些原始条目整理为内部执行所需的 canonical atomic item
 - 明确原始意见块到 atomic item 的拆分、合并与去重关系
+- 生成一份面向用户审阅的 `06-review-comment-coverage.md`，让用户确认原始审稿意见已被充分覆盖
 
 ## 进入条件
 
 - Stage 2 已完成
-- `manuscript-structure-summary.md` 已足以支撑后续 thread 与 atomic 映射
+- `02-manuscript-structure-summary.md` 已足以支撑后续 thread 与 atomic 映射
 - 最近一次 `gate-and-render` 已返回允许进入 Stage 3 的结果
 
 ## 必读材料
 
-- `manuscript-structure-summary.md`
-- `raw-review-thread-list.md`
+- `02-manuscript-structure-summary.md`
+- `03-raw-review-thread-list.md`
 - `review-master/references/sql-write-recipes.md`
 - `review-master/references/workflow-state-machine.md`
 - `review-master/references/stage-3-comment-atomization.md`
@@ -31,6 +32,7 @@
 ### 1. 先抽 raw review threads
 
 - 优先保留 reviewer / editor 原文中的自然条目边界
+- `raw_review_threads.original_text` 保留原语言
 - 对有明确编号、列表项、bullet 的输入：
   - 先按原始编号或列表项切分
 - 对没有明确编号、但按自然段呈现多条意见的输入：
@@ -51,6 +53,7 @@
 ### 3. 形成 canonical atomic item
 
 - 原子化由 LLM 主导，不由脚本替代
+- `raw_review_threads.normalized_summary`、`atomic_comments.canonical_summary` 与 `atomic_comments.required_action` 使用工作语言
 - 一个 canonical atomic item 必须满足：
   - 可独立回应
   - 可独立制定修改动作
@@ -78,6 +81,7 @@
 - 合并后必须通过 `atomic_comment_source_spans` 保存依据，解释：
   - 某 atomic item 来自哪些原始 thread
   - 为什么这些 thread 被视为同一 canonical item
+- `atomic_comment_source_spans.excerpt_text` 保留原语言，不翻译
 
 ### 5. 建立映射关系
 
@@ -93,9 +97,14 @@
   - `resume_brief`
   - `resume_recent_decisions`
   - `resume_must_not_forget`
+- 同步写入：
+  - `review_comment_source_documents`
+  - `review_comment_coverage_segments`
+  - `review_comment_coverage_segment_comment_links`
 - 写库后立即运行 `gate-and-render`
 - 读取最新的 `instruction_payload`
-- 只有当 gate 明确允许时，才进入 Stage 4
+- 先向用户展示 `06-review-comment-coverage.md`、`03-raw-review-thread-list.md` 和 `05-thread-to-atomic-mapping.md`
+- 只有当用户确认覆盖率审阅结果且 gate 明确允许时，才进入 Stage 4
 
 ## 稳定 ID 规则
 
@@ -113,9 +122,10 @@
 
 ## 用户可读视图
 
-- `raw-review-thread-list.md`
-- `atomic-review-comment-list.md`
-- `thread-to-atomic-mapping.md`
+- `03-raw-review-thread-list.md`
+- `04-atomic-review-comment-list.md`
+- `05-thread-to-atomic-mapping.md`
+- `06-review-comment-coverage.md`
 
 ## 禁止动作
 
@@ -131,4 +141,6 @@
 - 每个 `thread_id` 至少映射到一个 `comment_id`
 - 每个 `comment_id` 至少被一个 `thread_id` 引用
 - `atomic_comment_source_spans` 足以解释每个合并来源
+- `06-review-comment-coverage.md` 已生成，且被覆盖片段能稳定映射到 `thread_id` / `comment_id`
+- 用户已确认 Stage 3 覆盖率审阅结果
 - `gate-and-render` 核心脚本允许进入阶段四

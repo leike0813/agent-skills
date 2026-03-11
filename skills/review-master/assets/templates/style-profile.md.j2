@@ -1,14 +1,14 @@
-# Style Profile
+# {{ msg("view.style_profile.title") }}
 
-这是从 `review-master.db` 渲染出的 Stage 6 全局风格画像视图。数据库真源是 `style_profiles` 与 `style_profile_rules`。Stage 6 必须先完成风格画像，再进入文案版本生成与最终成文。
+{{ msg("view.style_profile.intro") }}
 
 {% for profile in profiles -%}
 ## {{ profile.profile_target }}
 
-- Summary: {{ profile.profile_summary }}
-- Anti-AI Focus: {{ profile.anti_ai_focus }}
+- {{ msg("view.style_profile.summary") }}: {{ profile.profile_summary }}
+- {{ msg("view.style_profile.anti_ai_focus") }}: {{ profile.anti_ai_focus }}
 
-| Rule Order | Rule Type | Rule Text |
+| {{ msg("view.style_profile.rule_order") }} | {{ msg("view.style_profile.rule_type") }} | {{ msg("view.style_profile.rule_text") }} |
 | --- | --- | --- |
 {% for rule in profile.rules -%}
 | {{ rule.rule_order }} | {{ rule.rule_type }} | {{ rule.rule_text }} |
@@ -17,7 +17,7 @@
 {% endfor %}
 
 {% else -%}
-## No Style Profiles
+## {{ msg("view.style_profile.no_profiles") }}
 
-No style profile data available.
+{{ msg("view.style_profile.no_profile_data") }}
 {% endfor %}

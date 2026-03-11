@@ -1,16 +1,16 @@
-# Export Patch Plan
+# {{ msg("view.export_patch_plan.title") }}
 
-这是从 `review-master.db` 渲染出的 Stage 6 导出补丁计划视图。数据库真源是 `export_patch_sets` 与 `export_patches`。导出脚本只负责复制导出副本，并按这里对应的显式锚点执行插入或替换；它不负责语义判断，也不负责生成最终文案。
+{{ msg("view.export_patch_plan.intro") }}
 
 {% for patch_set in patch_sets -%}
 ## {{ patch_set.patch_set_id }}
 
-- Artifact kind: {{ patch_set.artifact_kind }}
-- Source root: {{ patch_set.source_root }}
-- Output root: {{ patch_set.output_root }}
-- Status: {{ patch_set.status }}
+- {{ msg("view.export_patch_plan.artifact_kind") }}: {{ patch_set.artifact_kind }}
+- {{ msg("view.export_patch_plan.source_root") }}: {{ patch_set.source_root }}
+- {{ msg("view.export_patch_plan.output_root") }}: {{ patch_set.output_root }}
+- {{ msg("view.export_patch_plan.status") }}: {{ patch_set.status }}
 
-| Order | Comment | Action | Location | Target File | Operation | Anchor Text | Marked Text | Clean Text | Notes |
+| {{ msg("view.export_patch_plan.order") }} | {{ msg("view.export_patch_plan.comment") }} | {{ msg("view.export_patch_plan.action") }} | {{ msg("view.export_patch_plan.location") }} | {{ msg("view.export_patch_plan.target_file") }} | {{ msg("view.export_patch_plan.operation") }} | {{ msg("view.export_patch_plan.anchor_text") }} | {{ msg("view.export_patch_plan.marked_text") }} | {{ msg("view.export_patch_plan.clean_text") }} | {{ msg("view.export_patch_plan.notes") }} |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 {% for patch in patch_set.patches -%}
 | {{ patch.patch_order }} | {{ patch.comment_id }} | {{ patch.action_order }} | {{ patch.location_order }} | {{ patch.target_file }} | {{ patch.operation }} | {{ patch.anchor_text }} | {{ patch.marked_text }} | {{ patch.clean_text }} | {{ patch.notes }} |
@@ -19,7 +19,7 @@
 {% endfor %}
 
 {% else -%}
-## No Export Patch Sets
+## {{ msg("view.export_patch_plan.no_patch_sets") }}
 
-No Stage 6 export patch truth available.
+{{ msg("view.export_patch_plan.no_patch_data") }}
 {% endfor %}

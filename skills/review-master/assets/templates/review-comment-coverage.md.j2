@@ -1,0 +1,32 @@
+# {{ msg("view.review_comment_coverage.title") }}
+
+{{ msg("view.review_comment_coverage.intro") }}
+
+## {{ msg("view.review_comment_coverage.legend_title") }}
+
+- {{ msg("view.review_comment_coverage.legend_covered") }}
+- {{ msg("view.review_comment_coverage.legend_uncovered") }}
+
+{% for document in documents -%}
+## {{ document.source_label }}
+
+- `source_document_id`: {{ document.source_document_id }}
+- {{ msg("view.review_comment_coverage.source_kind") }}: `{{ document.source_kind }}`
+- {{ msg("view.review_comment_coverage.source_path") }}: `{{ document.source_path }}`
+- {{ msg("view.review_comment_coverage.summary") }}: {{ msg("view.review_comment_coverage.summary_text", covered_segments=document.covered_segments, uncovered_segments=document.uncovered_segments, covered_threads=document.covered_threads) }}
+
+### {{ msg("view.review_comment_coverage.copy_title") }}
+
+```text
+{% for segment in document.segments -%}
+{% if segment.coverage_status == "covered" -%}
+[[covered thread:{{ segment.thread_id }} comments:{{ segment.comment_ids|join(",") }}]]{{ segment.segment_text }}[[/covered]]
+{% else -%}
+{{ segment.segment_text }}
+{% endif -%}
+{% endfor -%}
+```
+
+{% else -%}
+{{ msg("view.review_comment_coverage.no_documents") }}
+{% endfor %}

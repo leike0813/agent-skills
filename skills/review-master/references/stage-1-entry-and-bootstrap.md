@@ -10,6 +10,7 @@
 
 - 明确 `manuscript_source` 的入口形态
 - 明确 `review_comments_source` 及可选输入是否可用
+- 明确文本语言与工作语言，并得到用户确认
 - 初始化运行时数据库与首批只读视图
 - 完成 bootstrap/continuation resume 对齐，让 Agent 在进入实质工作前先知道当前状态、当前焦点和下一步动作
 
@@ -41,17 +42,27 @@
 - 若依赖不齐全，必须问用户是否批准安装
 - 若用户不批准，则数据库仍可继续作为真源，但后续只读 Markdown 视图只能由 Agent 手工拼接
 
-### 2. 统一恢复入口
+### 2. 首次初始化前先确认语言
 
-- 无论是首次调用还是恢复调用，都必须先运行 `gate-and-render` 核心脚本
+- workspace 尚未存在时，先基于 manuscript / review comments / 当前 prompt 判断：
+  - 文本语言
+  - 工作语言
+- 文本语言默认以 manuscript 语言为准
+- 工作语言默认从当前 prompt 语言推断
+- 这两个判断都必须向用户显式确认；若用户覆盖，以用户覆盖为准
+
+### 3. 统一恢复入口
+
+- workspace 已存在时，无论是首次恢复还是跨 Session 恢复，都必须先运行 `gate-and-render` 核心脚本
+- 初始化完 workspace 后，也必须立刻运行一次 `gate-and-render` 核心脚本
 - 先读取：
   - `instruction_payload.resume_packet`
-  - `agent-resume.md`
+  - `01-agent-resume.md`
 - 首次调用时看到的是 bootstrap resume
 - 恢复调用时看到的是 continuation resume
 - 这一步不能绕过
 
-### 3. 核对输入
+### 4. 核对输入
 
 - 检查必需输入是否都存在且可读
 - 吸收可选输入：
@@ -59,7 +70,7 @@
   - `user_notes`
 - 若必需输入缺失，必须立刻向用户提问，不能继续初始化
 
-### 4. 识别 manuscript 入口
+### 5. 识别 manuscript 入口
 
 - `manuscript_source` 是单个 `.tex` 文件时：
   - 一般直接视为主入口
@@ -69,23 +80,27 @@
   - 若工具返回多个候选主入口，必须问用户确认
   - 不允许擅自替用户选择
 
-### 5. 初始化 workspace
+### 6. 初始化 workspace
 
 - 需要调用 `init_artifact_workspace.py`
+- 必须显式传入：
+  - `--document-language`
+  - `--working-language`
 - 初始化只创建运行时真源与只读视图骨架，不执行任何后续阶段分析
 - 初始化后的 workspace 至少应包含：
   - `review-master.db`
-  - `agent-resume.md`
-  - `manuscript-structure-summary.md`
-  - `raw-review-thread-list.md`
-  - `atomic-review-comment-list.md`
-  - `thread-to-atomic-mapping.md`
-  - `atomic-comment-workboard.md`
-  - `response-letter-outline.md`
-  - `final-assembly-checklist.md`
+  - `runtime-localization/`
+  - `01-agent-resume.md`
+  - `02-manuscript-structure-summary.md`
+  - `03-raw-review-thread-list.md`
+  - `04-atomic-review-comment-list.md`
+  - `05-thread-to-atomic-mapping.md`
+  - `07-atomic-comment-workboard.md`
+  - `10-response-letter-outline.md`
+  - `16-final-assembly-checklist.md`
   - `response-strategy-cards/`
 
-### 6. 执行 Stage 1 写库
+### 7. 执行 Stage 1 写库
 
 - 采用 `recipe_stage1_set_entry_state`
 - 最少要更新：
@@ -98,12 +113,12 @@
   - `resume_recent_decisions`
   - `resume_must_not_forget`
 
-### 7. 首次 gate-and-render 对齐
+### 8. 首次 gate-and-render 对齐
 
 - Stage 1 写库后，立即运行 `gate-and-render` 核心脚本
 - 再次读取：
   - `instruction_payload.resume_packet`
-  - `agent-resume.md`
+  - `01-agent-resume.md`
 - 对齐当前状态、当前焦点、当前停顿原因和推荐下一步动作
 
 ## 何时必须向用户提问
@@ -131,7 +146,7 @@
   `conda run --no-capture-output -n DataProcessing python -u review-master/scripts/gate_and_render_workspace.py --artifact-root <ARTIFACT_ROOT>`
 - 运行后先读取：
   - `instruction_payload.resume_packet`
-  - `agent-resume.md`
+  - `01-agent-resume.md`
 
 ## 禁止动作
 

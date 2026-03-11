@@ -86,18 +86,18 @@ Stage 5 特别规则：
 - 从 `assets/templates/` 首次渲染只读 Markdown 视图
 - 创建 bootstrap resume 所需的最小数据库状态
 - 首次渲染的主要视图包括：
-  - `agent-resume.md`
-  - `manuscript-structure-summary.md`
-  - `raw-review-thread-list.md`
-  - `atomic-review-comment-list.md`
-  - `thread-to-atomic-mapping.md`
-  - `atomic-comment-workboard.md`
-  - `style-profile.md`
-  - `action-copy-variants.md`
-  - `response-letter-outline.md`
-  - `response-letter-table-preview.md`
-  - `response-letter-table-preview.tex`
-  - `final-assembly-checklist.md`
+  - `01-agent-resume.md`
+  - `02-manuscript-structure-summary.md`
+  - `03-raw-review-thread-list.md`
+  - `04-atomic-review-comment-list.md`
+  - `05-thread-to-atomic-mapping.md`
+  - `07-atomic-comment-workboard.md`
+  - `08-style-profile.md`
+  - `09-action-copy-variants.md`
+  - `10-response-letter-outline.md`
+  - `12-response-letter-table-preview.md`
+  - `13-response-letter-table-preview.tex`
+  - `16-final-assembly-checklist.md`
 
 何时调用：
 
@@ -118,7 +118,7 @@ Stage 5 特别规则：
 - 从 `assets/templates/` 全量重渲染只读视图
 - 输出 `instruction_payload`
 - 在每次输出中附带 `instruction_payload.resume_packet`
-- 重渲染 `agent-resume.md`
+- 重渲染 `01-agent-resume.md`
 
 Stage 1 / Stage 2 调用时机：
 
@@ -201,13 +201,13 @@ conda run --no-capture-output -n DataProcessing python -u \
   - `export_patches`
   - `export_artifacts`
 - 重渲染：
-  - `style-profile.md`
-  - `action-copy-variants.md`
-  - `response-letter-outline.md`
-  - `export-patch-plan.md`
-  - `response-letter-table-preview.md`
-  - `response-letter-table-preview.tex`
-  - `final-assembly-checklist.md`
+  - `08-style-profile.md`
+  - `09-action-copy-variants.md`
+  - `10-response-letter-outline.md`
+  - `11-export-patch-plan.md`
+  - `12-response-letter-table-preview.md`
+  - `13-response-letter-table-preview.tex`
+  - `16-final-assembly-checklist.md`
 - 输出 Stage 6A-6E 的 ready / blocked 指令
 
 ### Stage 6 不是语义脚本阶段
