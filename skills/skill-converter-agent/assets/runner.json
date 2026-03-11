@@ -19,10 +19,5 @@
             "iflow": "Use skill `skill-converter-agent` to convert a source skill with dual-mode assessment. First resolve source type: directory path (`parameter.source_skill_path`) or zip package (`input.source_skill_package`). Evaluate auto suitability and interactive suitability independently, then derive classification and target execution_modes. Apply conversion in the target directory, run final validator `validate_converted_skill.py`, and always emit converted directory path, conversion report path, and converted zip path.",
             "opencode": "Use skill `skill-converter-agent` to convert a source skill with dual-mode assessment. First resolve source type: directory path (`parameter.source_skill_path`) or zip package (`input.source_skill_package`). Evaluate auto suitability and interactive suitability independently, then derive classification and target execution_modes. Apply conversion in the target directory, run final validator `validate_converted_skill.py`, and always emit converted directory path, conversion report path, and converted zip path."
         }
-    },
-    "schemas": {
-        "input": "assets/input.schema.json",
-        "parameter": "assets/parameter.schema.json",
-        "output": "assets/output.schema.json"
     }
 }
