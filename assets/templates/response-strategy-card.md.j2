@@ -1,32 +1,41 @@
-# Response Strategy Card: {{ header.comment_id }}
+# {{ msg("view.strategy_card.title") }}: {{ header.comment_id }}
 
-这张卡是从数据库渲染出的单 canonical atomic item 只读策略视图。数据库真源包括 `atomic_comments`、`raw_thread_atomic_links`、`atomic_comment_state`、`atomic_comment_target_locations`、`strategy_cards`、`strategy_card_actions`、`strategy_action_target_locations`、`strategy_card_evidence_items`、`strategy_card_pending_confirmations` 和 `comment_completion_status`。一张卡只服务一个 `comment_id`。
+{{ msg("view.strategy_card.intro") }}
 
-## Header
+## {{ msg("view.strategy_card.header") }}
 
-| Field | Value |
+| {{ msg("table.field") }} | {{ msg("table.value") }} |
 | --- | --- |
 | `comment_id` | {{ header.comment_id }} |
-| Source reviewers | {{ header.source_reviewers }} |
-| Source threads | {{ header.source_thread_ids }} |
+| {{ msg("table.source_reviewers") }} | {{ header.source_reviewers }} |
+| {{ msg("table.source_threads") }} | {{ header.source_thread_ids }} |
 | `status` | {{ header.status or '' }} |
 | `priority` | {{ header.priority or '' }} |
 | `evidence_gap` | {{ header.evidence_gap or '' }} |
-| Target locations | {{ header.target_locations or '' }} |
+| {{ msg("table.target_locations") }} | {{ header.target_locations or '' }} |
 
-## Canonical Atomic Item
+## {{ msg("view.strategy_card.canonical_item") }}
 
-- Canonical summary: {{ header.canonical_summary }}
-- Required action: {{ header.required_action }}
+- {{ msg("view.atomic_comments.canonical_summary") }}: {{ header.canonical_summary }}
+- {{ msg("view.strategy_card.required_action") }}: {{ header.required_action }}
 
-## Response Stance
+## {{ msg("view.strategy_card.response_stance") }}
 
-- Proposed stance: {{ header.proposed_stance or '' }}
-- Why this stance is defensible: {{ header.stance_rationale or '' }}
+- {{ msg("view.strategy_card.proposed_stance") }}: {{ header.proposed_stance or '' }}
+- {{ msg("view.strategy_card.why_defensible") }}: {{ header.stance_rationale or '' }}
 
-## Planned Manuscript Actions
+## {{ msg("view.strategy_card.confirmation_status") }}
 
-| Action ID | Manuscript Change | Target Locations | Expected Response-Letter Effect |
+{% if strategy_confirmed -%}
+- {{ msg("view.strategy_card.confirmed_notice") }}
+{% else -%}
+- {{ msg("view.strategy_card.pending_notice") }}
+- {{ msg("view.strategy_card.user_may_modify_notice") }}
+{% endif %}
+
+## {{ msg("view.strategy_card.planned_actions") }}
+
+| {{ msg("view.strategy_card.action_id") }} | {{ msg("view.strategy_card.manuscript_change") }} | {{ msg("table.target_locations") }} | {{ msg("view.strategy_card.expected_response_effect") }} |
 | --- | --- | --- | --- |
 {% for row in actions -%}
 | A{{ row.action_order }} | {{ row.manuscript_change }} | {{ row.target_locations or '' }} | {{ row.expected_response_letter_effect }} |
@@ -34,9 +43,10 @@
 |  |  |  |  |
 {% endfor %}
 
-## Manuscript Drafts
+## {{ msg("view.strategy_card.manuscript_drafts") }}
 
-| Action ID | Location | Target Location | Draft Text | Rationale |
+{% if strategy_confirmed -%}
+| {{ msg("view.strategy_card.action_id") }} | {{ msg("view.strategy_card.location") }} | {{ msg("view.strategy_card.target_location") }} | {{ msg("view.strategy_card.draft_text") }} | {{ msg("view.strategy_card.rationale") }} |
 | --- | --- | --- | --- | --- |
 {% for row in actions -%}
 {% for draft in row.draft_rows -%}
@@ -47,15 +57,22 @@
 {% else -%}
 |  |  |  |  |  |
 {% endfor %}
+{% else -%}
+_{{ msg("view.strategy_card.drafts_locked_until_confirmation") }}_
+{% endif %}
 
-## Response Draft
+## {{ msg("view.strategy_card.response_draft") }}
 
-- Draft text: {{ response_draft.draft_text or '' }}
-- Rationale: {{ response_draft.rationale or '' }}
+{% if strategy_confirmed -%}
+- {{ msg("view.strategy_card.response_draft_text") }}: {{ response_draft.draft_text or '' }}
+- {{ msg("view.strategy_card.response_draft_rationale") }}: {{ response_draft.rationale or '' }}
+{% else -%}
+_{{ msg("view.strategy_card.response_draft_locked_until_confirmation") }}_
+{% endif %}
 
-## Required Evidence
+## {{ msg("view.strategy_card.required_evidence") }}
 
-| Evidence ID | Required Material | Available Now (`yes/no`) | Gap Note |
+| {{ msg("view.strategy_card.evidence_id") }} | {{ msg("view.strategy_card.required_material") }} | {{ msg("view.strategy_card.available_now") }} | {{ msg("view.strategy_card.gap_note") }} |
 | --- | --- | --- | --- |
 {% for row in evidence_rows -%}
 | E{{ row.evidence_order }} | {{ row.required_material }} | {{ row.available_now }} | {{ row.gap_note }} |
@@ -63,23 +80,23 @@
 |  |  |  |  |
 {% endfor %}
 
-## Pending Confirmations
+## {{ msg("view.strategy_card.pending_confirmations") }}
 
 {% for item in pending_confirmations -%}
 - {{ item }}
 {% else -%}
-- None
+- {{ msg("common.none") }}
 {% endfor %}
 
-## Comment Blockers
+## {{ msg("view.strategy_card.comment_blockers") }}
 
 {% for item in comment_blockers -%}
 - {{ item }}
 {% else -%}
-- None
+- {{ msg("common.none") }}
 {% endfor %}
 
-## Completion Definition
+## {{ msg("view.strategy_card.completion_definition") }}
 
 {% for item in completion_lines -%}
 - [{% if item.checked %}x{% else %} {% endif %}] {{ item.label }}

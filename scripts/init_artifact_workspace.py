@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from workspace_db import DB_FILENAME, initialize_database, render_workspace
+from runtime_localization import load_localization_bundle, seed_workspace_localization_overlay
+from workspace_db import DB_FILENAME, connect_db, initialize_database, render_workspace
 
 
 DEFAULT_WORKSPACE_NAME = "review-master-workspace"
@@ -21,6 +22,8 @@ def emit(payload: dict[str, Any], exit_code: int = 0) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Initialize a DB-first runtime artifact workspace for review-master.")
     parser.add_argument("--artifact-root", help="Target workspace path. If omitted, create review-master-workspace with auto-numbering.")
+    parser.add_argument("--document-language", required=True, help="Confirmed document language tag for final manuscript and response outputs.")
+    parser.add_argument("--working-language", required=True, help="Confirmed working language tag for intermediate views and operator-facing instructions.")
     return parser.parse_args()
 
 
@@ -71,17 +74,82 @@ def main() -> int:
         target_root.mkdir(parents=True, exist_ok=True)
         db_path = target_root / DB_FILENAME
         initialize_database(db_path)
+        seed_workspace_localization_overlay(
+            target_root,
+            working_language=str(args.working_language),
+            document_language=str(args.document_language),
+        )
+        localization = load_localization_bundle(
+            target_root,
+            runtime_context={
+                "document_language": str(args.document_language),
+                "working_language": str(args.working_language),
+                "manuscript_detected_language": str(args.document_language),
+                "review_comments_detected_language": str(args.document_language),
+                "prompt_detected_language": str(args.working_language),
+                "document_language_source": "manuscript",
+                "working_language_source": "prompt",
+                "languages_confirmed": "yes",
+            },
+        )
+        with connect_db(db_path) as connection:
+            connection.execute(
+                """
+                UPDATE runtime_language_context
+                SET document_language = ?,
+                    working_language = ?,
+                    manuscript_detected_language = ?,
+                    review_comments_detected_language = ?,
+                    prompt_detected_language = ?,
+                    document_language_source = 'manuscript',
+                    working_language_source = 'prompt',
+                    languages_confirmed = 'yes'
+                WHERE id = 1
+                """,
+                (
+                    str(args.document_language),
+                    str(args.working_language),
+                    str(args.document_language),
+                    str(args.document_language),
+                    str(args.working_language),
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE resume_brief
+                SET current_objective = ?,
+                    current_focus = ?,
+                    why_paused = ?,
+                    next_operator_action = ?
+                WHERE id = 1
+                """,
+                (
+                    localization.msg("bootstrap.resume.current_objective"),
+                    localization.msg("bootstrap.resume.current_focus"),
+                    localization.msg("bootstrap.resume.why_paused"),
+                    localization.msg("bootstrap.resume.next_operator_action"),
+                ),
+            )
+            connection.commit()
         rendered_paths = render_workspace(db_path, target_root)
     except (OSError, RuntimeError) as exc:
         return emit({"status": "error", "error": str(exc)}, exit_code=1)
 
-    created_paths = [str(target_root), str(db_path), *[str(path) for path in rendered_paths], str(target_root / "response-strategy-cards")]
+    created_paths = [
+        str(target_root),
+        str(db_path),
+        str(target_root / "runtime-localization"),
+        *[str(path) for path in rendered_paths],
+        str(target_root / "response-strategy-cards"),
+    ]
     return emit(
         {
             "status": "ok",
             "artifact_root": str(target_root),
             "created_paths": created_paths,
             "warnings": warnings,
+            "document_language": str(args.document_language),
+            "working_language": str(args.working_language),
         }
     )
 

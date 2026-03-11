@@ -1,17 +1,17 @@
-# Manuscript Structure Summary
+# {{ msg("view.manuscript_summary.title") }}
 
-这是从 `review-master.db` 渲染出的全文级只读视图。数据库真源是 `manuscript_summary`、`manuscript_sections` 和 `manuscript_claims`。用户应通过这份视图确认结构理解是否准确；Agent 可以读取它获取辅助信息，但不得直接编辑。
+{{ msg("view.manuscript_summary.intro") }}
 
-## Project Summary
+## {{ msg("view.manuscript_summary.project_summary") }}
 
-| Field | Value |
+| {{ msg("table.field") }} | {{ msg("table.value") }} |
 | --- | --- |
 | `main_entry` | {{ main_entry }} |
 | `project_shape` | {{ project_shape }} |
 
-## Sections
+## {{ msg("view.manuscript_summary.sections") }}
 
-| Section ID | Section Title | Purpose in Manuscript | Key Files or Locations |
+| {{ msg("view.manuscript_summary.section_id") }} | {{ msg("view.manuscript_summary.section_title") }} | {{ msg("view.manuscript_summary.purpose_in_manuscript") }} | {{ msg("view.manuscript_summary.key_files_or_locations") }} |
 | --- | --- | --- | --- |
 {% for row in sections -%}
 | {{ row.section_id }} | {{ row.section_title }} | {{ row.purpose_in_manuscript }} | {{ row.key_files_or_locations }} |
@@ -19,9 +19,9 @@
 |  |  |  |  |
 {% endfor %}
 
-## Core Claims
+## {{ msg("view.manuscript_summary.core_claims") }}
 
-| Claim ID | Core Claim | Main Evidence | Supporting Section IDs | Risk Level |
+| {{ msg("view.manuscript_summary.claim_id") }} | {{ msg("view.manuscript_summary.core_claim") }} | {{ msg("view.manuscript_summary.main_evidence") }} | {{ msg("view.manuscript_summary.supporting_section_ids") }} | {{ msg("view.manuscript_summary.risk_level") }} |
 | --- | --- | --- | --- | --- |
 {% for row in claims -%}
 | {{ row.claim_id }} | {{ row.core_claim }} | {{ row.main_evidence }} | {{ row.supporting_section_ids }} | {{ row.risk_level }} |
@@ -29,11 +29,11 @@
 |  |  |  |  |  |
 {% endfor %}
 
-## High Risk Areas
+## {{ msg("view.manuscript_summary.high_risk_areas") }}
 
-这些区域通常需要更谨慎地改稿或补证据。
+{{ msg("view.manuscript_summary.high_risk_intro") }}
 
-| Zone ID | Description |
+| {{ msg("view.manuscript_summary.zone_id") }} | {{ msg("view.manuscript_summary.description") }} |
 | --- | --- |
 {% for item in risk_areas -%}
 | Z{{ loop.index }} | {{ item }} |

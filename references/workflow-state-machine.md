@@ -11,7 +11,7 @@
 1. 接收用户指令或恢复进入
 2. 先运行 `gate-and-render` 核心脚本
 3. 读取 `instruction_payload.resume_packet`
-4. 读取 `agent-resume.md`
+4. 读取 `01-agent-resume.md`
 5. 按 `resume_read_order` 恢复当前视图与阶段文档
 6. 更新 `review-master.db`
 7. 再次运行 `gate-and-render` 核心脚本
@@ -22,8 +22,10 @@
 ## 全局规则
 
 - 运行时唯一真源是 `review-master.db`
+- `runtime_language_context` 是文本语言与工作语言的唯一真源
 - `workflow_state` 只保存在数据库中
-- 首次调用和跨 Session 恢复都先走恢复协议，不允许绕开
+- workspace 尚未初始化时，先确认文本语言与工作语言，再初始化 workspace
+- workspace 已初始化后，首次调用和跨 Session 恢复都先走恢复协议，不允许绕开
 - `workflow_pending_user_confirmations` 非空时，必须先完成用户确认
 - `workflow_global_blockers` 非空时，必须先请求补材、澄清或额外输入
 - `active_comment_id` 非空时，不得静默切换到别的 comment
@@ -34,16 +36,20 @@
 
 - 允许：
   - 确认运行环境
-  - 读取 bootstrap/continuation resume
   - 核对输入
+  - 确认文本语言与工作语言
   - 确认主入口
   - 初始化 workspace
+  - 初始化 `runtime_language_context` 与 `runtime-localization/`
+  - 读取 bootstrap/continuation resume
   - 写 `recipe_stage1_set_entry_state`
 - 推荐：
+  - 先确认语言，再初始化 workspace
   - 入口明确且无阻断时进入阶段二
   - 若主入口不唯一或缺输入，则先请求用户确认
 - 阻断：
   - 缺少必需输入
+  - 文本语言或工作语言尚未确认
   - manuscript 主入口不唯一
   - 运行环境不满足且用户尚未批准安装
 - 禁止：
@@ -75,18 +81,25 @@
   - 写入 `atomic_comments`
   - 写入 `raw_thread_atomic_links`
   - 写入 `atomic_comment_source_spans`
+  - 写入 `review_comment_source_documents`
+  - 写入 `review_comment_coverage_segments`
+  - 写入 `review_comment_coverage_segment_comment_links`
+  - 写入 `workflow_pending_user_confirmations`
   - 更新 `resume_brief`、`resume_recent_decisions`、`resume_must_not_forget`
 - 推荐：
   - 先稳定 raw thread 边界
   - 再做 canonical atomic 建模
-  - 关系闭环后进入阶段四
+  - 再生成 `06-review-comment-coverage.md`
+  - 先请求用户确认 Stage 3 覆盖率，再进入阶段四
 - 阻断：
   - raw thread 边界不稳定
   - 是否合并存在高风险歧义
   - 存在未映射 thread 或孤立 atomic item
+  - `workflow_pending_user_confirmations` 非空
 - 禁止：
   - 跳过 raw thread 层直接写 atomic
   - 为减少工作量而激进合并
+  - 在用户未确认 Stage 3 覆盖率前进入 Stage 4
   - 跳过阶段四直接逐条执行
 
 ### `stage_4`
@@ -118,6 +131,8 @@
   - 写入 `strategy_action_target_locations`
   - 写入 `strategy_card_evidence_items`
   - 写入 `strategy_card_pending_confirmations`
+  - 写入 `supplement_suggestion_items`
+  - 写入 `supplement_suggestion_intake_links`
   - 写入 `supplement_intake_items`
   - 写入 `supplement_landing_links`
   - 写入 `strategy_action_manuscript_drafts`
@@ -127,14 +142,17 @@
   - 仅在真正的阶段级阻断下写入 `workflow_global_blockers`
 - 推荐：
   - 先锁定 `active_comment_id`
+  - 若存在 `evidence_gap = yes` 的 comment，先形成 `14-supplement-suggestion-plan.md`
   - 缺策略卡先补策略卡
   - 先完成逐条策略确认，再写 Stage 5 draft 真源
+  - 若策略语义被修改，必须重开确认并清空旧的 Stage 5 drafts
   - 当前 comment 有局部 blocker 时优先解决它，但用户仍可显式切到别的 comment
   - 只有 manuscript draft、response draft 与一一对应关系都落地后，才把该条 comment 记为完成
 - 阻断：
   - 当前策略卡仍不足以面向用户确认
   - `workflow_pending_user_confirmations` 非空
   - `workflow_global_blockers` 非空
+  - 当前策略未显式确认
   - manuscript draft 或 response draft 尚未形成
   - 一一对应关系尚未稳定
   - 存在补材文件尚未判定接收/拒收，或接收补材尚未完成落地映射

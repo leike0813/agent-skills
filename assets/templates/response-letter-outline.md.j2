@@ -1,6 +1,6 @@
-# Response Letter Outline
+# {{ msg("view.response_outline.title") }}
 
-这是从 `review-master.db` 渲染出的 Stage 6 预组装视图。数据库真源是 `raw_review_threads`、`response_thread_resolution_links`、`selected_action_copy_variants`、`response_thread_rows`、`atomic_comments`、`strategy_card_actions` 和 `strategy_action_target_locations`。最终 response letter 必须按原始 `thread_id` 顺序组织，而不是按 canonical atomic item 直接展开。这里的 thread-level row 来自 Stage 5 已确认的策略/草案、Stage 6 在各个 target location 上已选中的 manuscript 最终落稿文本，以及 thread-level 聚合；它不是从 response-side variants 中选出来的。
+{{ msg("view.response_outline.intro") }}
 
 {% for group in reviewer_groups -%}
 ## {{ group.heading }}
@@ -8,11 +8,11 @@
 {% for thread in group.threads -%}
 ### {{ thread.thread_id }}
 
-- Original thread: {{ thread.original_text }}
-- Normalized summary: {{ thread.normalized_summary }}
-- Final row ready: {{ thread.row_ready }}
+- {{ msg("view.response_outline.original_thread") }}: {{ thread.original_text }}
+- {{ msg("view.response_outline.normalized_summary") }}: {{ thread.normalized_summary }}
+- {{ msg("view.response_outline.final_row_ready") }}: {{ thread.row_ready }}
 
-| Response Order | Role | `comment_id` | Canonical Summary | Selected Manuscript Copy Summary |
+| {{ msg("view.response_outline.response_order") }} | {{ msg("view.response_outline.role") }} | `comment_id` | {{ msg("view.atomic_comments.canonical_summary") }} | {{ msg("view.response_outline.selected_copy_summary") }} |
 | --- | --- | --- | --- | --- |
 {% for item in thread.resolutions -%}
 | {{ item.response_order }} | {{ item.response_role }} | {{ item.comment_id }} | {{ item.canonical_summary }} | {{ item.selected_copy_summary }} |
@@ -21,16 +21,16 @@
 {% endfor %}
 
 {% if thread.row_ready == "yes" -%}
-#### Final Row Preview
+#### {{ msg("view.response_outline.final_row_preview") }}
 
-| 原始意见 | 修改位置/范围 | 关键修改片段 | 回复说明 |
+| {{ msg("view.response_table_preview.column.original_comment", target="document") }} | {{ msg("view.response_table_preview.column.modification_scope", target="document") }} | {{ msg("view.response_table_preview.column.key_revision_excerpt", target="document") }} | {{ msg("view.response_table_preview.column.response_explanation", target="document") }} |
 | --- | --- | --- | --- |
 | {{ thread.final_row.original_comment }} | {{ thread.final_row.modification_scope }} | {{ thread.final_row.key_revision_excerpt }} | {{ thread.final_row.response_explanation }} |
 {% endif %}
 
 {% endfor -%}
 {% else -%}
-## No Response Threads
+## {{ msg("view.response_outline.no_threads") }}
 
-No response outline data available.
+{{ msg("view.response_outline.no_outline_data") }}
 {% endfor %}

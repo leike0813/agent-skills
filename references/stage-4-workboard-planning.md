@@ -20,9 +20,9 @@
 
 ## 必读材料
 
-- `thread-to-atomic-mapping.md`
-- `atomic-review-comment-list.md`
-- `manuscript-structure-summary.md`
+- `05-thread-to-atomic-mapping.md`
+- `04-atomic-review-comment-list.md`
+- `02-manuscript-structure-summary.md`
 - `review-master/references/sql-write-recipes.md`
 - `review-master/references/workflow-state-machine.md`
 - `review-master/references/stage-4-workboard-planning.md`
@@ -83,7 +83,7 @@
   1. 建立完整 atomic workboard
   2. 写入 `workflow_pending_user_confirmations`
   3. 运行 `gate-and-render`
-  4. 向用户展示 `atomic-comment-workboard.md` 与 `thread-to-atomic-mapping.md`
+  4. 向用户展示 `07-atomic-comment-workboard.md` 与 `05-thread-to-atomic-mapping.md`
   5. 用户确认后再清空待确认项并进入 Stage 5
 - `user_confirmation_needed` 应默认倾向于 `yes`，除非已经没有实质不确定性
 
@@ -113,8 +113,8 @@
 
 ## 用户可读视图
 
-- `atomic-comment-workboard.md`
-- `thread-to-atomic-mapping.md`
+- `07-atomic-comment-workboard.md`
+- `05-thread-to-atomic-mapping.md`
 
 ## 禁止动作
 

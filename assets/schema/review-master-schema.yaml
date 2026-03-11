@@ -31,6 +31,12 @@ enums:
   source_type:
     - reviewer_comment
     - editor_comment
+  source_kind:
+    - review_comments_source
+    - editor_letter_source
+  coverage_status:
+    - covered
+    - uncovered
   location_role:
     - primary
     - supporting
@@ -69,8 +75,15 @@ enums:
     - ""
     - accepted
     - rejected
+  supplement_suggestion_status:
+    - provisional
+    - confirmed
+    - linked
+    - satisfied
+    - dismissed
 
 required_tables:
+  - runtime_language_context
   - manuscript_summary
   - manuscript_sections
   - manuscript_claims
@@ -78,6 +91,9 @@ required_tables:
   - atomic_comments
   - raw_thread_atomic_links
   - atomic_comment_source_spans
+  - review_comment_source_documents
+  - review_comment_coverage_segments
+  - review_comment_coverage_segment_comment_links
   - atomic_comment_state
   - atomic_comment_target_locations
   - atomic_comment_analysis_links
@@ -88,6 +104,8 @@ required_tables:
   - strategy_card_pending_confirmations
   - strategy_action_manuscript_drafts
   - comment_response_drafts
+  - supplement_suggestion_items
+  - supplement_suggestion_intake_links
   - supplement_intake_items
   - supplement_landing_links
   - comment_completion_status
@@ -110,6 +128,19 @@ required_tables:
   - resume_must_not_forget
 
 tables:
+  - name: runtime_language_context
+    sql: |
+      CREATE TABLE IF NOT EXISTS runtime_language_context (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          document_language TEXT NOT NULL DEFAULT '',
+          working_language TEXT NOT NULL DEFAULT '',
+          manuscript_detected_language TEXT NOT NULL DEFAULT '',
+          review_comments_detected_language TEXT NOT NULL DEFAULT '',
+          prompt_detected_language TEXT NOT NULL DEFAULT '',
+          document_language_source TEXT NOT NULL DEFAULT '' CHECK (document_language_source IN ('', 'manuscript', 'review_comments', 'user_override')),
+          working_language_source TEXT NOT NULL DEFAULT '' CHECK (working_language_source IN ('', 'prompt', 'user_override')),
+          languages_confirmed TEXT NOT NULL DEFAULT 'no' CHECK (languages_confirmed IN ('yes', 'no'))
+      )
   - name: manuscript_summary
     sql: |
       CREATE TABLE IF NOT EXISTS manuscript_summary (
@@ -169,6 +200,38 @@ tables:
           excerpt_text TEXT NOT NULL,
           note TEXT NOT NULL DEFAULT '',
           PRIMARY KEY (comment_id, thread_id)
+      )
+  - name: review_comment_source_documents
+    sql: |
+      CREATE TABLE IF NOT EXISTS review_comment_source_documents (
+          source_document_id TEXT PRIMARY KEY,
+          source_kind TEXT NOT NULL CHECK (source_kind IN ('review_comments_source', 'editor_letter_source')),
+          document_order INTEGER NOT NULL,
+          source_label TEXT NOT NULL DEFAULT '',
+          source_path TEXT NOT NULL DEFAULT '',
+          original_text TEXT NOT NULL
+      )
+  - name: review_comment_coverage_segments
+    sql: |
+      CREATE TABLE IF NOT EXISTS review_comment_coverage_segments (
+          source_document_id TEXT NOT NULL REFERENCES review_comment_source_documents(source_document_id) ON DELETE CASCADE,
+          segment_order INTEGER NOT NULL,
+          coverage_status TEXT NOT NULL CHECK (coverage_status IN ('covered', 'uncovered')),
+          segment_text TEXT NOT NULL,
+          thread_id TEXT REFERENCES raw_review_threads(thread_id) ON DELETE SET NULL,
+          PRIMARY KEY (source_document_id, segment_order)
+      )
+  - name: review_comment_coverage_segment_comment_links
+    sql: |
+      CREATE TABLE IF NOT EXISTS review_comment_coverage_segment_comment_links (
+          source_document_id TEXT NOT NULL,
+          segment_order INTEGER NOT NULL,
+          link_order INTEGER NOT NULL,
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          PRIMARY KEY (source_document_id, segment_order, link_order),
+          FOREIGN KEY (source_document_id, segment_order)
+              REFERENCES review_comment_coverage_segments(source_document_id, segment_order)
+              ON DELETE CASCADE
       )
   - name: atomic_comment_state
     sql: |
@@ -265,6 +328,33 @@ tables:
           comment_id TEXT PRIMARY KEY REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
           draft_text TEXT NOT NULL DEFAULT '',
           rationale TEXT NOT NULL DEFAULT ''
+      )
+  - name: supplement_suggestion_items
+    sql: |
+      CREATE TABLE IF NOT EXISTS supplement_suggestion_items (
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          suggestion_order INTEGER NOT NULL,
+          analysis_order INTEGER,
+          request_summary TEXT NOT NULL DEFAULT '',
+          request_recommendation TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL CHECK (status IN ('provisional', 'confirmed', 'linked', 'satisfied', 'dismissed')),
+          PRIMARY KEY (comment_id, suggestion_order)
+      )
+  - name: supplement_suggestion_intake_links
+    sql: |
+      CREATE TABLE IF NOT EXISTS supplement_suggestion_intake_links (
+          comment_id TEXT NOT NULL,
+          suggestion_order INTEGER NOT NULL,
+          round_id TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          link_note TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (comment_id, suggestion_order, round_id, file_path),
+          FOREIGN KEY (comment_id, suggestion_order)
+              REFERENCES supplement_suggestion_items(comment_id, suggestion_order)
+              ON DELETE CASCADE,
+          FOREIGN KEY (round_id, file_path)
+              REFERENCES supplement_intake_items(round_id, file_path)
+              ON DELETE CASCADE
       )
   - name: supplement_intake_items
     sql: |
@@ -457,6 +547,20 @@ tables:
       )
 
 bootstrap:
+  - sql: |
+      INSERT INTO runtime_language_context (
+          id,
+          document_language,
+          working_language,
+          manuscript_detected_language,
+          review_comments_detected_language,
+          prompt_detected_language,
+          document_language_source,
+          working_language_source,
+          languages_confirmed
+      )
+      VALUES (1, '', '', '', '', '', '', '', 'no')
+      ON CONFLICT(id) DO NOTHING
   - sql: |
       INSERT INTO manuscript_summary (id, main_entry, project_shape, high_risk_areas)
       VALUES (1, '', '', '')

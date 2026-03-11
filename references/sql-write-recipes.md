@@ -11,6 +11,8 @@
 共同规则：
 
 - 每次写库前都要先执行 `PRAGMA foreign_keys = ON`
+- Stage 1 初始化后必须确保 `runtime_language_context` 已写入并与用户确认结果一致
+- Stage 3-5 的分析层与草案层字段默认使用工作语言；Stage 6 的最终 copy 与导出层字段默认使用文本语言
 - 当一个动作需要改多张表时，按对应 recipe 的推荐顺序写入
 - 对“替换型”表更新，先删除旧记录范围，再插入新记录
 - 每次写入后都必须运行 `gate-and-render` 核心脚本，让它校验状态机门禁并重渲染 Markdown 视图
@@ -22,6 +24,7 @@
 - 适用阶段：`stage_1`
 - 何时使用：初始化 workspace 后，补入口解析结果与初始阶段状态
 - 必须更新的表：
+  - `runtime_language_context`
   - `workflow_state`
   - `resume_brief`
   - 视情况更新 `workflow_pending_user_confirmations`
@@ -32,14 +35,15 @@
 - 推荐 SQL 顺序：
   1. `PRAGMA foreign_keys = ON`
   2. 根据输入结果更新 `workflow_state.current_stage = 'stage_1'`
-  3. 设置 `workflow_state.stage_gate`
+  3. `UPDATE runtime_language_context ...`
+  4. 设置 `workflow_state.stage_gate`
      - 入口已明确且可继续时为 `ready`
      - 主入口未定、缺输入或环境待确认时为 `blocked`
-  4. 设置 `workflow_state.next_action`
+  5. 设置 `workflow_state.next_action`
      - 正常推进时为 `enter_stage_2`
      - 待确认时改为对应请求动作
-  5. `UPDATE resume_brief ...`
-  6. 视情况清空并重建：
+  6. `UPDATE resume_brief ...`
+  7. 视情况清空并重建：
      - `workflow_pending_user_confirmations`
      - `workflow_global_blockers`
      - `resume_open_loops`
@@ -52,7 +56,7 @@
   - manuscript 主入口识别
 - 写后门槛：
   - `gate-and-render` 返回允许继续
-  - `instruction_payload.resume_packet` 与 `agent-resume.md` 已重新读取
+  - `instruction_payload.resume_packet` 与 `01-agent-resume.md` 已重新读取
 
 ## `recipe_stage2_upsert_manuscript_summary`
 
@@ -82,7 +86,7 @@
   - 主入口已明确
   - manuscript 结构分析已经形成稳定的 section/claim 草案
 - 写后门槛：
-  - `manuscript-structure-summary.md` 已成功重渲染
+  - `02-manuscript-structure-summary.md` 已成功重渲染
   - 结构摘要足以支撑 Stage 3 thread 抽取与 atomic 建模
 
 ## `recipe_stage3_replace_threaded_atomic_model`
@@ -94,24 +98,35 @@
   - `atomic_comments`
   - `raw_thread_atomic_links`
   - `atomic_comment_source_spans`
+  - `review_comment_source_documents`
+  - `review_comment_coverage_segments`
+  - `review_comment_coverage_segment_comment_links`
+  - `workflow_pending_user_confirmations`
   - `workflow_state`
   - `resume_brief`
   - `resume_recent_decisions`
   - `resume_must_not_forget`
 - 推荐 SQL 顺序：
   1. `PRAGMA foreign_keys = ON`
-  2. `DELETE FROM atomic_comment_source_spans`
-  3. `DELETE FROM raw_thread_atomic_links`
-  4. `DELETE FROM atomic_comments`
-  5. `DELETE FROM raw_review_threads`
-  6. 批量插入 `raw_review_threads`
-  7. 批量插入 `atomic_comments`
-  8. 批量插入 `raw_thread_atomic_links`
-  9. 批量插入 `atomic_comment_source_spans`
-  10. `UPDATE resume_brief ...`
-  11. 插入至少一条 `resume_recent_decisions`
-  12. 视情况插入 `resume_must_not_forget`
-  13. `UPDATE workflow_state SET current_stage = 'stage_3', stage_gate = 'ready', active_comment_id = NULL, next_action = 'enter_stage_4' WHERE id = 1`
+  2. `DELETE FROM review_comment_coverage_segment_comment_links`
+  3. `DELETE FROM review_comment_coverage_segments`
+  4. `DELETE FROM review_comment_source_documents`
+  5. `DELETE FROM atomic_comment_source_spans`
+  6. `DELETE FROM raw_thread_atomic_links`
+  7. `DELETE FROM atomic_comments`
+  8. `DELETE FROM raw_review_threads`
+  9. 批量插入 `raw_review_threads`
+  10. 批量插入 `atomic_comments`
+  11. 批量插入 `raw_thread_atomic_links`
+  12. 批量插入 `atomic_comment_source_spans`
+  13. 批量插入 `review_comment_source_documents`
+  14. 批量插入 `review_comment_coverage_segments`
+  15. 批量插入 `review_comment_coverage_segment_comment_links`
+  16. 重建 `workflow_pending_user_confirmations`
+  17. `UPDATE resume_brief ...`
+  18. 插入至少一条 `resume_recent_decisions`
+  19. 视情况插入 `resume_must_not_forget`
+  20. `UPDATE workflow_state SET current_stage = 'stage_3', stage_gate = 'blocked', active_comment_id = NULL, next_action = 'request_stage3_coverage_confirmation' WHERE id = 1`
 - 进入这条 recipe 之前应先确认：
   - Stage 2 已完成
   - 结构摘要足以支撑 reviewer thread 与 atomic 建模
@@ -121,6 +136,26 @@
   - 每个 `thread_id` 至少映射到一个 `comment_id`
   - 每个 `comment_id` 至少被一个 `thread_id` 引用
   - `atomic_comment_source_spans` 足以解释跨 reviewer 合并依据
+  - `06-review-comment-coverage.md` 已可供用户审阅
+  - `gate-and-render` 返回 Stage 3 coverage confirmation 请求
+
+## `recipe_stage3_clear_coverage_confirmation`
+
+- 适用阶段：`stage_3`
+- 何时使用：用户确认 `06-review-comment-coverage.md` 后，清除 Stage 3 覆盖率确认门禁
+- 必须更新的表：
+  - `workflow_pending_user_confirmations`
+  - `workflow_state`
+  - `resume_brief`
+- 推荐 SQL 顺序：
+  1. `PRAGMA foreign_keys = ON`
+  2. `DELETE FROM workflow_pending_user_confirmations`
+  3. `UPDATE resume_brief ...`
+  4. `UPDATE workflow_state SET current_stage = 'stage_3', stage_gate = 'ready', active_comment_id = NULL, next_action = 'enter_stage_4' WHERE id = 1`
+- 进入这条 recipe 之前应先确认：
+  - `06-review-comment-coverage.md` 已面向用户展示
+  - 用户已确认 Stage 3 的覆盖率与映射结果
+- 写后门槛：
   - `gate-and-render` 返回允许进入 Stage 4
 
 ## `recipe_stage4_upsert_atomic_workboard`
@@ -335,6 +370,27 @@
   - 用户待确认事项已显式展示
   - 在确认完成前，不得进入真正的草案执行
 
+## `recipe_stage5_confirm_strategy`
+
+- 适用阶段：`stage_5`
+- 何时使用：用户显式确认当前策略卡后
+- 必须更新的表：
+  - `strategy_card_pending_confirmations`
+  - `workflow_pending_user_confirmations`
+  - `comment_completion_status`
+  - `workflow_state`
+  - `resume_brief`
+- 推荐 SQL 顺序：
+  1. `PRAGMA foreign_keys = ON`
+  2. `DELETE FROM strategy_card_pending_confirmations WHERE comment_id = ?`
+  3. `DELETE FROM workflow_pending_user_confirmations`
+  4. `UPDATE comment_completion_status SET user_strategy_confirmed = 'yes' WHERE comment_id = ?`
+  5. `UPDATE workflow_state SET current_stage = 'stage_5', stage_gate = 'ready', active_comment_id = ?, next_action = 'author_comment_drafts' WHERE id = 1`
+  6. `UPDATE resume_brief ...`
+- 写后门槛：
+  - 当前策略已被显式确认
+  - 下一步才允许进入 Stage 5 drafts
+
 ## `recipe_stage5_set_blockers`
 
 - 适用阶段：`stage_5`
@@ -383,6 +439,24 @@
   - 当前 comment 不得被标记完成
   - `gate-and-render` 仍允许显式 `set_active_comment`
 
+## `recipe_stage5_replace_supplement_suggestions`
+
+- 适用阶段：`stage_5`
+- 何时使用：进入 Stage 5 后首次生成补材建议 backlog，或策略修改后刷新某条 comment 的补材建议时
+- 必须更新的表：
+  - `supplement_suggestion_items`
+  - `supplement_suggestion_intake_links`
+  - `resume_brief`
+  - 视情况更新 `resume_open_loops`
+- 推荐 SQL 顺序：
+  1. `PRAGMA foreign_keys = ON`
+  2. 删除并重写当前 comment 需要更新的 suggestion rows
+  3. 仅在需要重绑 intake 时更新 `supplement_suggestion_intake_links`
+  4. `UPDATE resume_brief ...`
+- 写后门槛：
+  - 每个 `evidence_gap = yes` 的 comment 至少有一条 suggestion row
+  - `14-supplement-suggestion-plan.md` 可被用户审阅
+
 ## `recipe_stage5_replace_manuscript_drafts`
 
 - 适用阶段：`stage_5`
@@ -403,6 +477,28 @@
 - 写后门槛：
   - 当前 comment 每个需要的 action/location 都已有 manuscript draft 行
   - 之后才允许把 `manuscript_draft_done` 置为 `yes`
+
+## `recipe_stage5_replace_execution_drafts`
+
+- 适用阶段：`stage_5`
+- 何时使用：当前策略已经确认，需要一次性写入 manuscript draft 与 response draft 时
+- 必须更新的表：
+  - `strategy_action_manuscript_drafts`
+  - `comment_response_drafts`
+  - `comment_completion_status`
+  - `resume_brief`
+- 推荐 SQL 顺序：
+  1. `PRAGMA foreign_keys = ON`
+  2. `DELETE FROM strategy_action_manuscript_drafts WHERE comment_id = ?`
+  3. 重写当前 comment 的 manuscript draft rows
+  4. `INSERT ... ON CONFLICT(comment_id) DO UPDATE` 到 `comment_response_drafts`
+  5. `UPDATE comment_completion_status SET manuscript_draft_done = 'yes', response_draft_done = 'yes' WHERE comment_id = ?`
+  6. `UPDATE resume_brief ...`
+- 进入这条 recipe 之前应先确认：
+  - `user_strategy_confirmed = yes`
+  - 当前策略卡与补材建议已稳定到足以形成草案
+- 写后门槛：
+  - 当前条目已拥有正式的 Stage 5 drafts 真源
 
 ## `recipe_stage5_upsert_response_draft`
 

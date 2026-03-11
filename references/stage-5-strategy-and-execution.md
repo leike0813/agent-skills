@@ -10,6 +10,7 @@
 
 - 围绕当前 `active_comment_id` 的 canonical atomic item 形成可执行策略
 - 在进入 Stage 6 前，先把该条的 manuscript draft、response draft、证据与确认闭环写入数据库
+- 让 Stage 5 的策略卡、补材判断与草案统一使用工作语言
 - 把局部 blocker 留在 comment 作用域，而不是把整个 Stage 5 都锁死
 - 允许用户显式切换当前焦点 comment，但禁止静默切换
 
@@ -18,7 +19,7 @@
 只有满足以下条件，才允许进入 Stage 5：
 
 - Stage 4 已完成
-- `atomic-comment-workboard.md` 已形成
+- `07-atomic-comment-workboard.md` 已形成
 - Stage 4 默认确认门禁已通过
 - `gate-and-render` 核心脚本已允许进入 `stage_5`
 - 当前准备处理的 `comment_id` 已在 workboard 中具备足够 planning 信息
@@ -28,16 +29,16 @@
 进入每条 item 的 Stage 5 前，至少要读：
 
 - `response-strategy-cards/{comment_id}.md`（若已存在）
-- `atomic-comment-workboard.md`
-- `thread-to-atomic-mapping.md`
-- `response-letter-outline.md`
+- `07-atomic-comment-workboard.md`
+- `05-thread-to-atomic-mapping.md`
+- `10-response-letter-outline.md`
 - 当前 `instruction_payload.resume_packet`
-- 当前 `agent-resume.md`
+- 当前 `01-agent-resume.md`
 
 必要时回读：
 
-- `manuscript-structure-summary.md`
-- `raw-review-thread-list.md`
+- `02-manuscript-structure-summary.md`
+- `03-raw-review-thread-list.md`
 - 原始 reviewer / editor 输入
 
 ## 子流程
@@ -74,6 +75,10 @@
   - 记录需要的证据、现有证据和缺口
 - `strategy_card_pending_confirmations`
   - 记录该条策略卡在执行前仍需用户确认的事项
+- `supplement_suggestion_items`
+  - 记录 Stage 5 全局补材建议 backlog；进入 Stage 5 后即应生成
+- `supplement_suggestion_intake_links`
+  - 把补材建议项与后续实际 intake 文件关联起来
 - `supplement_intake_items`
   - 记录本轮每个补材文件的接收判定（accepted/rejected）与理由
 - `supplement_landing_links`
@@ -91,8 +96,17 @@ Stage 5 默认要求逐条策略确认。
   - 当前立场是否可接受
   - 当前修改动作是否合适
   - 当前证据方案是否足够
+  - 当前补材建议清单是否遗漏关键项
 
 若用户尚未确认，Stage 5 默认停在等待确认态，而不是直接执行。
+
+若策略卡在确认后又发生语义变更，必须：
+
+- 把 `user_strategy_confirmed` 重置为 `no`
+- 重建 `strategy_card_pending_confirmations`
+- 清空旧的 `strategy_action_manuscript_drafts`
+- 清空旧的 `comment_response_drafts`
+- 重新请求用户确认
 
 ### 4. 识别 blocker / evidence gap
 
@@ -119,7 +133,7 @@ global blocker 的处理规则：
 
 ### 5. 形成 Stage 5 草案真源
 
-在策略确认完成且 blocker 已解除后，才允许形成：
+在策略确认完成后，才允许形成：
 
 - `strategy_action_manuscript_drafts`
   - 以 `comment_id + action_order + location_order` 为粒度
@@ -129,6 +143,14 @@ global blocker 的处理规则：
   - 保存当前条目的 response 草案与简短 rationale
 
 这些草案是 Stage 5 真源，不是 Stage 6 的最终导出文本。
+
+若仍存在 evidence gap，当前条目仍可继续保留 blocker；但 draft authoring 的前置条件始终是“策略已确认”，而不是“blocker 已全部关闭”。
+
+语言规则：
+
+- `strategy_cards`、`strategy_card_actions`、`strategy_card_evidence_items`、`supplement_intake_items.decision_rationale`、`comment_blockers` 使用工作语言
+- `strategy_action_manuscript_drafts` 与 `comment_response_drafts` 也使用工作语言
+- reviewer / editor 原文摘录与 source span 仍保持原语言
 
 Stage 6 会在这些草案基础上继续完成：
 
@@ -222,9 +244,9 @@ Stage 5 的一一对应检查至少要回答：
 
 - `response-strategy-cards/{comment_id}.md`
 - 必要时同时展示：
-  - `atomic-comment-workboard.md`
-  - `thread-to-atomic-mapping.md`
-  - `response-letter-outline.md`
+  - `07-atomic-comment-workboard.md`
+  - `05-thread-to-atomic-mapping.md`
+  - `10-response-letter-outline.md`
 
 ## 完成定义
 

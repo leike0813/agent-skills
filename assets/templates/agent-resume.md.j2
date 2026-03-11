@@ -1,10 +1,10 @@
-# Agent Resume
+# {{ msg("view.agent_resume.title") }}
 
-这是从 `review-master.db` 渲染出的 Agent 恢复视图。数据库真源是 `resume_brief`、`resume_open_loops`、`resume_recent_decisions`、`resume_must_not_forget` 与 `workflow_state`。它的职责是帮助 Agent 在首次调用、跨 Session 恢复和上下文压缩后重新对齐任务状态；它不是用户主确认工件，也不是可直写真源。
+{{ msg("view.agent_resume.intro") }}
 
-## Resume State
+## {{ msg("view.agent_resume.resume_state") }}
 
-| Field | Value |
+| {{ msg("table.field") }} | {{ msg("table.value") }} |
 | --- | --- |
 | `resume_status` | {{ resume_status }} |
 | `is_bootstrap` | {{ is_bootstrap }} |
@@ -12,20 +12,33 @@
 | `stage_gate` | {{ stage_gate }} |
 | `active_comment_id` | {{ active_comment_id }} |
 
-## What To Understand First
+## {{ msg("language.section_title") }}
 
-- Current state summary: {{ current_state_summary }}
-- Current objective: {{ current_objective }}
-- Current focus: {{ current_focus }}
-- Why paused: {{ why_paused }}
-- Next operator action: {{ next_operator_action }}
-- Next action anchor: {{ next_action_anchor }}
+| {{ msg("table.field") }} | {{ msg("table.value") }} |
+| --- | --- |
+| `{{ msg("language.document_language") }}` | {{ language_context.document_language }} |
+| `{{ msg("language.working_language") }}` | {{ language_context.working_language }} |
+| `{{ msg("language.manuscript_detected_language") }}` | {{ language_context.manuscript_detected_language or msg("common.none") }} |
+| `{{ msg("language.review_comments_detected_language") }}` | {{ language_context.review_comments_detected_language or msg("common.none") }} |
+| `{{ msg("language.prompt_detected_language") }}` | {{ language_context.prompt_detected_language or msg("common.none") }} |
+| `{{ msg("language.document_language_source") }}` | {{ language_context.document_language_source or msg("common.none") }} |
+| `{{ msg("language.working_language_source") }}` | {{ language_context.working_language_source or msg("common.none") }} |
+| `{{ msg("language.languages_confirmed") }}` | {{ language_context.languages_confirmed }} |
 
-## Open Loops
+## {{ msg("view.agent_resume.what_to_understand_first") }}
 
-这些是当前尚未闭环的关键事项。恢复时先确认这里是否和当前 gate 输出一致。
+- {{ msg("view.agent_resume.current_state_summary") }}: {{ current_state_summary }}
+- {{ msg("view.agent_resume.current_objective") }}: {{ current_objective }}
+- {{ msg("view.agent_resume.current_focus") }}: {{ current_focus }}
+- {{ msg("view.agent_resume.why_paused") }}: {{ why_paused }}
+- {{ msg("view.agent_resume.next_operator_action") }}: {{ next_operator_action }}
+- {{ msg("view.agent_resume.next_action_anchor") }}: {{ next_action_anchor }}
 
-| Order | Message |
+## {{ msg("view.agent_resume.open_loops") }}
+
+{{ msg("view.agent_resume.open_loops_intro") }}
+
+| {{ msg("table.order") }} | {{ msg("table.message") }} |
 | --- | --- |
 {% for item in open_loops -%}
 | {{ loop.index }} | {{ item }} |
@@ -33,11 +46,11 @@
 |  |  |
 {% endfor %}
 
-## Recent Decisions
+## {{ msg("view.agent_resume.recent_decisions") }}
 
-这些是最近已经锁定或用户已经确认的关键决策。新 Session 不应无声推翻它们。
+{{ msg("view.agent_resume.recent_decisions_intro") }}
 
-| Order | Message |
+| {{ msg("table.order") }} | {{ msg("table.message") }} |
 | --- | --- |
 {% for item in recent_decisions -%}
 | {{ loop.index }} | {{ item }} |
@@ -45,11 +58,11 @@
 |  |  |
 {% endfor %}
 
-## Must Not Forget
+## {{ msg("view.agent_resume.must_not_forget") }}
 
-这些提醒来自静态 Skill 摘要与运行时恢复层，帮助 Agent 在长上下文跨度下持续遵守核心纪律。
+{{ msg("view.agent_resume.must_not_forget_intro") }}
 
-| Order | Message |
+| {{ msg("table.order") }} | {{ msg("table.message") }} |
 | --- | --- |
 {% for item in must_not_forget -%}
 | {{ loop.index }} | {{ item }} |
@@ -57,18 +70,18 @@
 |  |  |
 {% endfor %}
 
-## Resume Read Order
+## {{ msg("view.agent_resume.resume_read_order") }}
 
-恢复时固定按以下顺序重建认知：
+{{ msg("view.agent_resume.resume_read_order_intro") }}
 
-| Step | Read This |
+| {{ msg("table.step") }} | {{ msg("table.read_this") }} |
 | --- | --- |
 {% for item in resume_read_order -%}
 | {{ loop.index }} | {{ item }} |
 {% endfor %}
 
-## Skill Runtime Digest
+## {{ msg("view.agent_resume.runtime_digest") }}
 
-下面是静态 Skill 摘要，用于提醒 Agent 当前 workflow 的核心目标、约束与执行方法。
+{{ msg("view.agent_resume.runtime_digest_intro") }}
 
 {{ runtime_digest }}

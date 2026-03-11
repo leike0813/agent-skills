@@ -2,59 +2,67 @@ views:
   - name: agent_resume
     mode: single
     template: agent-resume.md.j2
-    output: agent-resume.md
+    output: 01-agent-resume.md
   - name: manuscript_summary
     mode: single
     template: manuscript-structure-summary.md.j2
-    output: manuscript-structure-summary.md
+    output: 02-manuscript-structure-summary.md
   - name: raw_review_threads
     mode: single
     template: raw-review-thread-list.md.j2
-    output: raw-review-thread-list.md
+    output: 03-raw-review-thread-list.md
   - name: atomic_comments
     mode: single
     template: atomic-review-comment-list.md.j2
-    output: atomic-review-comment-list.md
+    output: 04-atomic-review-comment-list.md
   - name: thread_to_atomic_mapping
     mode: single
     template: thread-to-atomic-mapping.md.j2
-    output: thread-to-atomic-mapping.md
+    output: 05-thread-to-atomic-mapping.md
+  - name: review_comment_coverage
+    mode: single
+    template: review-comment-coverage.md.j2
+    output: 06-review-comment-coverage.md
   - name: atomic_workboard
     mode: single
     template: atomic-comment-workboard.md.j2
-    output: atomic-comment-workboard.md
+    output: 07-atomic-comment-workboard.md
   - name: style_profile
     mode: single
     template: style-profile.md.j2
-    output: style-profile.md
+    output: 08-style-profile.md
   - name: action_copy_variants
     mode: single
     template: action-copy-variants.md.j2
-    output: action-copy-variants.md
+    output: 09-action-copy-variants.md
   - name: response_letter_outline
     mode: single
     template: response-letter-outline.md.j2
-    output: response-letter-outline.md
+    output: 10-response-letter-outline.md
   - name: export_patch_plan
     mode: single
     template: export-patch-plan.md.j2
-    output: export-patch-plan.md
+    output: 11-export-patch-plan.md
   - name: response_letter_table_preview_md
     mode: single
     template: response-letter-table-preview.md.j2
-    output: response-letter-table-preview.md
+    output: 12-response-letter-table-preview.md
   - name: response_letter_table_preview_tex
     mode: single
     template: response-letter-table-preview.tex.j2
-    output: response-letter-table-preview.tex
+    output: 13-response-letter-table-preview.tex
+  - name: supplement_suggestion_plan
+    mode: single
+    template: supplement-suggestion-plan.md.j2
+    output: 14-supplement-suggestion-plan.md
   - name: supplement_intake_plan
     mode: single
     template: supplement-intake-plan.md.j2
-    output: supplement-intake-plan.md
+    output: 15-supplement-intake-plan.md
   - name: final_checklist
     mode: single
     template: final-assembly-checklist.md.j2
-    output: final-assembly-checklist.md
+    output: 16-final-assembly-checklist.md
   - name: response_strategy_card
     mode: per_comment
     template: response-strategy-card.md.j2
