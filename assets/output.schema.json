@@ -6,8 +6,7 @@
       "type": "string",
       "description": "Absolute path to the generated note artifact, or an empty string when no note file is produced.",
       "x-type": "artifact",
-      "x-role": "note",
-      "x-filename": "note.<paper_key>.md"
+      "x-role": "note"
     },
     "provenance": {
       "type": "object",
