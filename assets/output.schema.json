@@ -25,8 +25,7 @@
             "type": "string",
             "description": "Path to generated install-ready skill zip package.",
             "x-type": "artifact",
-            "x-role": "converted_skill_package",
-            "x-filename": "converted_skill.zip"
+            "x-role": "converted_skill_package"
         },
         "converted_skill_directory_path": {
             "type": "string",
@@ -36,8 +35,7 @@
             "type": "string",
             "description": "Path to conversion report.",
             "x-type": "artifact",
-            "x-role": "conversion_report",
-            "x-filename": "conversion_report.md"
+            "x-role": "conversion_report"
         }
     },
     "required": [

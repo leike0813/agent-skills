@@ -22,6 +22,7 @@
 ### System 管理
 - `GET /v1/management/system/settings`：获取系统设置（日志配置、鉴权会话日志持久化开关、数据重置确认文本）
 - `PUT /v1/management/system/settings`：更新系统设置（当前支持日志级别配置）
+- `GET /v1/management/system/logs/query`：查询系统日志与 bootstrap 日志（关键词/级别/时间范围/分页）
 - `POST /v1/management/system/reset-data`：执行数据重置（**破坏性操作**，需确认文本）
 
 ### Skill 管理
@@ -32,9 +33,11 @@
 ### Engine 管理
 - `GET /v1/management/engines`：引擎摘要列表（`engine/cli_version/models_count`，版本来自后台缓存）
 - `GET /v1/management/engines/{engine}`：引擎详情（额外包含 `models/upgrade_status/last_error`）
+- `GET /v1/management/engines/{engine}/auth/import/spec`：返回该引擎（及 OpenCode provider）导入鉴权文件要求
+- `POST /v1/management/engines/{engine}/auth/import`：提交并导入鉴权文件（multipart）
 
 ### Run 管理（对话窗口）
-- `GET /v1/management/runs`：运行摘要列表（支持 `limit`）
+- `GET /v1/management/runs`：运行摘要列表（支持 `page/page_size`，兼容 `limit`）
 - `GET /v1/management/runs/{request_id}`：会话状态（含 `pending_interaction_id`、`interaction_count`、`recovery_state/recovered_at/recovery_reason`）
 - `GET /v1/management/runs/{request_id}/files`：文件树
 - `GET /v1/management/runs/{request_id}/file?path=...`：文件预览
@@ -42,7 +45,9 @@
 - `GET /v1/management/runs/{request_id}/events/history`：结构化历史事件（支持 `from_seq/to_seq/from_ts/to_ts`）
 - `GET /v1/management/runs/{request_id}/chat`：SSE 对话事件流（复用 jobs chat 语义）
 - `GET /v1/management/runs/{request_id}/chat/history`：结构化对话历史（支持 `from_seq/to_seq/from_ts/to_ts`）
-- `GET /v1/management/runs/{request_id}/protocol/history`：协议级事件历史（FCMP/RASP/Orchestrator，支持 `attempt`）
+- `GET /v1/management/runs/{request_id}/protocol/history`：协议级事件历史（FCMP/RASP/Orchestrator，支持 `attempt` 与 `limit`）
+- `POST /v1/management/runs/{request_id}/protocol/rebuild`：手动重构该 run 的协议审计文件（全 attempts，覆盖写回并自动备份）
+- `GET /v1/management/runs/{request_id}/timeline/history`：Run 级时序历史（五泳道聚合，支持 `cursor/limit`）
 - `GET /v1/management/runs/{request_id}/logs/range`：按字节区间读取 `stdout/stderr/pty` 片段（供 `raw_ref` 回跳，支持 `attempt`）
 - `GET /v1/management/runs/{request_id}/pending`：查询待决交互
 - `POST /v1/management/runs/{request_id}/reply`：提交交互回复
@@ -86,10 +91,54 @@
 - `400`: 日志级别验证失败（如非法级别名）。
 - `500`: 文件系统写入错误。
 
+### 查询系统日志（System Console）
+`GET /v1/management/system/logs/query`
+
+用于管理端 **System Console** 查询日志。支持 `system`（`skill_runner.log*`）与 `bootstrap`（`bootstrap.log*`）两种日志源。
+
+**Query 参数**:
+- `source`（必填）：`system` / `bootstrap`
+- `cursor`（可选，默认 `0`）：分页偏移
+- `limit`（可选，默认 `200`，最大 `1000`）
+- `q`（可选）：关键词（对 `message/raw` 做 case-insensitive 匹配）
+- `level`（可选）：`DEBUG|INFO|WARNING|ERROR|CRITICAL`
+- `from_ts` / `to_ts`（可选）：ISO8601 时间范围过滤
+
+**Response** (`ManagementSystemLogQueryResponse`):
+```json
+{
+  "source": "system",
+  "items": [
+    {
+      "ts": "2026-03-07T01:20:52Z",
+      "level": "ERROR",
+      "message": "Failed to install codex",
+      "raw": "2026-03-07 01:20:52 ERROR server.test: Failed to install codex",
+      "source": "system",
+      "file": "skill_runner.log",
+      "line_no": 120
+    }
+  ],
+  "next_cursor": 1,
+  "total_matched": 42
+}
+```
+
+**错误码**:
+- `400`: `source` 或 `level` 参数非法。
+- `500`: 日志文件读取失败（文件系统错误）。
+
+**过滤规则**:
+- 仅允许白名单日志族：
+  - `source=system` → `skill_runner.log*`
+  - `source=bootstrap` → `bootstrap.log*`
+- 不支持任意路径输入。
+- 时间过滤为 best-effort；无法解析时间戳的行在启用时间过滤时会被排除。
+
 ### 数据重置
 `POST /v1/management/system/reset-data`
 
-**⚠️ 破坏性操作** — 将删除运行记录、缓存条目及可选的日志/引擎目录/Agent 状态数据。
+**⚠️ 破坏性操作** — 将删除运行记录、缓存条目及可选的日志/引擎目录/Agent 状态缓存数据。
 
 **Request Body** (`ManagementDataResetRequest`):
 ```json
@@ -97,7 +146,6 @@
   "confirmation": "CONFIRM RESET",
   "include_logs": true,
   "include_engine_catalog": false,
-  "include_agent_status": false,
   "include_engine_auth_sessions": false,
   "dry_run": true
 }
@@ -127,6 +175,39 @@
 - `409`: 另一个重置操作正在进行中。
 - `500`: 文件系统错误。
 
+### 管理 Run 摘要列表（分页）
+`GET /v1/management/runs`
+
+返回管理端 Run 摘要列表，支持分页。
+
+**Query 参数**:
+- `page`（可选，默认 `1`，最小 `1`）
+- `page_size`（可选，默认 `20`，最小 `1`，最大 `200`）
+- `limit`（可选，兼容旧参数；未提供 `page_size` 时生效）
+
+**Response** (`ManagementRunListResponse`):
+```json
+{
+  "runs": [
+    {
+      "request_id": "d290f1ee-...",
+      "run_id": "9d2c1f31-...",
+      "skill_id": "demo-interactive-skill",
+      "engine": "codex",
+      "model": "gpt-5.4",
+      "status": "running",
+      "pending_interaction_id": null,
+      "interaction_count": 0,
+      "updated_at": "2026-03-11T09:20:00Z"
+    }
+  ],
+  "total": 128,
+  "page": 1,
+  "page_size": 20,
+  "total_pages": 7
+}
+```
+
 ### 对话事件流（Chat SSE）
 `GET /v1/management/runs/{request_id}/chat`
 
@@ -148,6 +229,17 @@
 
 **关联接口**: 该接口在 `/v1/jobs/{request_id}/chat/history` 和 `/v1/temp-skill-runs/{request_id}/chat/history` 同样可用。
 
+**事件 kind 说明（增量）**:
+- `assistant_process`：assistant 过程消息（由 FCMP 的 `assistant.reasoning` / `assistant.tool_call` / `assistant.command_execution` 派生）
+- `assistant_final`：assistant 最终答复
+- `interaction_reply`：用户交互回复
+- `auth_submission`：用户鉴权输入
+- `orchestration_notice`：系统编排提示
+
+说明：
+- `assistant.message.promoted` 不会单独派生 chat 正文事件，仅作为收敛边界语义。
+- `assistant_process` 事件可在 `correlation` 中包含 `process_type`、`message_id`、`fcmp_seq`、`summary`、`details`。
+
 ### 协议级事件历史
 `GET /v1/management/runs/{request_id}/protocol/history`
 
@@ -158,6 +250,7 @@
 - `from_seq` / `to_seq`（可选）：按序号区间拉取
 - `from_ts` / `to_ts`（可选）：按时间区间拉取（ISO8601）
 - `attempt`（可选，`>=1`）：指定恢复尝试轮次
+- `limit`（可选，默认 `200`，最大 `1000`）：返回窗口上限
 
 **Response**:
 ```json
@@ -175,7 +268,104 @@
 - `400`: `stream` 值非法。
 - `404`: `request_id` 或 run 不存在。
 
-说明：该接口仅在管理 API 提供（`/v1/jobs` 和 `/v1/temp-skill-runs` 不提供此接口）。
+说明：
+- 该接口仅在管理 API 提供（`/v1/jobs` 和 `/v1/temp-skill-runs` 不提供此接口）。
+- FCMP 过程事件已扩展为通用类型：`assistant.reasoning` / `assistant.tool_call` / `assistant.command_execution` / `assistant.message.promoted`（保留 `assistant.message.final`）。
+- RASP 过程事件对应为 `agent.reasoning` / `agent.tool_call` / `agent.command_execution` / `agent.message.promoted`（保留 `agent.message.final`）。
+- RASP 额外包含回合标记：`agent.turn_start` / `agent.turn_complete`（仅审计，不映射 FCMP）。
+- `agent.turn_complete.data` 可直接包含结构化统计信息（例如 Gemini `stats`、Codex `usage`、OpenCode `cost/tokens`、iFlow execution metrics）。
+- RASP 生命周期扩展事件：`lifecycle.run_handle`（`data.handle_id`，仅审计，不映射 FCMP/chat）。
+- FCMP 不允许 `assistant.turn_*` 事件类型。
+- 同一 `message_id` 的收敛顺序为 `*.message.promoted` 先于 `*.message.final`。
+- `raw.stdout/raw.stderr` 事件仍保持原类型，`data.line` 可能为多行归并文本（string，向后兼容）。
+- Gemini 解析器在命中整批 JSON 时可产出 `parsed.json` 事件（RASP），用于呈现 `stream/session_id/response/summary/details` 结构化信息。
+- run 进入 terminal（`succeeded/failed/canceled`）后，`stream=rasp|fcmp` 的历史查询按审计文件口径返回（不混 live journal 增量）。
+
+### 手动重构协议审计
+`POST /v1/management/runs/{request_id}/protocol/rebuild`
+
+对指定 run 的全部 attempts 进行协议重构。  
+重构模式固定为 `strict_replay`：仅按真实运行链路回放（`io_chunks + orchestrator_events + meta`），关键证据缺失时该 attempt 失败且不覆写。  
+写回覆盖前会自动备份已有审计文件到 `.audit/rebuild_backups/<timestamp>/attempt-<N>/`。
+
+**Request Body**: 无
+
+**Response**:
+```json
+{
+  "request_id": "d290f1ee-...",
+  "run_id": "run-123",
+  "mode": "strict_replay",
+  "success": true,
+  "backup_dir": "/.../run-123/.audit/rebuild_backups/20260310T120000000000Z",
+  "attempts": [
+    {
+      "attempt": 1,
+      "mode": "strict_replay",
+      "source": "io_chunks",
+      "written": true,
+      "reason": "OK",
+      "event_count": 58,
+      "fcmp_count": 37,
+      "diagnostics": [],
+      "success": true
+    }
+  ]
+}
+```
+
+**错误码**:
+- `404`: `request_id` 不存在、run 不存在或 run 目录缺失。
+
+说明：
+- 此接口为人工运维动作，不会在页面访问或常规历史读取时自动触发。
+- 本次重构范围是“整个 run（全部 attempts）”，不会只重构单 attempt。
+- 重构不会做“运行态补偿重算注入”；仅允许真实回放链路自然产出事件。
+- 每个 attempt 单独执行：失败 attempt 不覆写，成功 attempt 可独立覆写。
+
+### Run 级时序历史
+`GET /v1/management/runs/{request_id}/timeline/history`
+
+返回跨流聚合后的 Run Scope 时间线（Orchestrator / Parser-RASP / Protocol-FCMP / Chat / Client）。
+
+**Query 参数**:
+- `cursor`（可选，默认 `0`）：按 `timeline_seq` 增量拉取游标
+- `limit`（可选，默认 `100`，最大 `500`）：本次返回窗口大小
+
+**Response**:
+```json
+{
+  "request_id": "d290f1ee-...",
+  "count": 2,
+  "events": [
+    {
+      "timeline_seq": 101,
+      "ts": "2026-03-06T10:00:01Z",
+      "lane": "protocol_fcmp",
+      "kind": "conversation.state.changed",
+      "summary": "state: queued -> running",
+      "attempt": 2,
+      "source_stream": "fcmp",
+      "raw_ref": {
+        "attempt_number": 2,
+        "stream": "stdout",
+        "byte_from": 0,
+        "byte_to": 64
+      },
+      "details": {
+        "stream": "fcmp",
+        "event": {}
+      }
+    }
+  ],
+  "cursor_floor": 101,
+  "cursor_ceiling": 132,
+  "source": "mixed"
+}
+```
+
+**错误码**:
+- `404`: `request_id` 或 run 不存在。
 
 ---
 
@@ -256,9 +446,22 @@
 - 必须包含以下文件：
   - `SKILL.md`
   - `assets/runner.json`
-  - `assets/input.schema.json`
-  - `assets/parameter.schema.json`
-  - `assets/output.schema.json`
+- schema 解析规则：
+  - 优先读取 `runner.json.schemas.input/parameter/output`
+  - 若声明缺失、为空、非法、越界或目标文件不存在，则回退到固定文件名：
+    - `assets/input.schema.json`
+    - `assets/parameter.schema.json`
+    - `assets/output.schema.json`
+  - 若 schema 声明失败但 fallback 存在：校验通过并记录 warning
+  - 若 schema 声明失败且 fallback 也不存在：技能包校验失败
+- engine config 解析规则：
+  - 可选声明 `runner.json.engine_configs.{engine}`
+  - 声明失败时静默回退到固定文件名：
+    - `codex` -> `assets/codex_config.toml`
+    - `gemini` -> `assets/gemini_settings.json`
+    - `iflow` -> `assets/iflow_settings.json`
+    - `opencode` -> `assets/opencode_config.json`
+  - 若声明和 fallback 都不存在：视为“未提供 skill-specific engine config”，不阻断运行
 - `input/parameter/output` schema 会在上传阶段执行服务端 meta-schema 预检：
   - `input.schema.json` 的 `x-input-source` 仅允许 `file` / `inline`；
   - `output.schema.json` 的 `x-type` 仅允许 `artifact` / `file`；
@@ -315,7 +518,7 @@
 - **输入分离（Mixed Input）**:
   - 顶层 `input` 用于传递业务输入（可为 string/array/object）。
   - 对 `input.schema.json` 中 `x-input-source=inline` 的字段，值直接来自请求体 `input`。
-  - 对 `x-input-source=file`（或未声明，默认 file）的字段，值来自后续 `/upload` 上传并注入为文件路径。
+  - 对 `x-input-source=file`（或未声明，默认 file）的字段，值也在请求体 `input` 中显式提交，但值必须是 `uploads/` 根下相对路径（例如 `papers/a.pdf`）。
 - **参数分离**: API 请求体中的 `parameter` 字段仅用于传递 `parameter.schema.json` 中定义的数值或配置。
 - **模型字段**:
   - `model` 为顶层字段，先通过 `GET /v1/engines/{engine}/models` 获取可用模型列表。
@@ -336,12 +539,15 @@
 - **缓存策略**:
   - 设置 `runtime_options.no_cache=true` 将跳过缓存命中检查。
   - `runtime_options.execution_mode=interactive` 时，系统会跳过缓存命中，且不会写入 `cache_entries`。
-- **Debug Bundle**: 设置 `runtime_options.debug=true` 时，bundle 会打包整个 `run_dir`（含 logs/result/artifacts 等）；默认 `false` 时仅包含 `result/result.json` 与 `artifacts/**`。两者分别包含 `bundle/manifest_debug.json` 与 `bundle/manifest.json`。
+- **Debug Bundle**: 普通 bundle 与 Debug Bundle 是两个独立下载产物；是否下载 debug 版本不再由 `runtime_options` 控制。
 - **临时 Skill 调试保留**: `runtime_options.debug_keep_temp=true` 仅用于 `/v1/temp-skill-runs`，表示终态后不立即删除临时 skill 包与解压目录。
 - **模型校验**: `model` 必须在 `GET /v1/engines/{engine}/models` 的 allowlist 中。
 - **引擎约束**: `engine` 必须包含在 skill 的有效引擎集合中（`effective_engines = (engines 或 全量支持引擎) - unsupported_engines`），否则返回 400（`SKILL_ENGINE_UNSUPPORTED`）。
 - **模式准入约束**: 请求的 `runtime_options.execution_mode` 必须包含在 skill 的 `execution_modes` 声明中，否则返回 400（`SKILL_EXECUTION_MODE_UNSUPPORTED`）。
-- **文件输入**: file 类型 input 仍由 `/upload` 接口提供。
+- **文件输入**:
+  - file 类型输入的路径声明也通过请求体 `input` 提交；
+  - `/upload` 仅负责上传 zip 并解压到 `uploads/`；
+  - 旧的 `uploads/<input_key>` 严格键匹配仅作为兼容回退，不再是主协议。
 - **input.json**: 系统会将请求保存下来（包含 `input` 与 `parameter`），用于审计。
 - **严格校验**: 缺少 required 的输入/参数/输出字段时会标记为 failed（不会仅给 warning）。
 - **并发保护**: 当执行队列已满时，`POST /v1/jobs` 或 `POST /v1/jobs/{request_id}/upload` 会返回 `429`。
@@ -370,6 +576,7 @@
   "status": "waiting_user",
   "skill_id": "demo-prime-number",
   "engine": "gemini",
+  "model": "gemini-3.1-pro-preview",
   "created_at": "2024-01-01T12:00:00Z",
   "updated_at": "2024-01-01T12:01:00Z",
   "pending_interaction_id": 12,
@@ -405,6 +612,7 @@
 说明：
 - `waiting_user` 为非终态，客户端应按 pending/reply 流程推进，而不是直接结束。
 - `pending_interaction_id` 为空表示当前没有待决交互。
+- `model` 为本次 run 记录的模型标识（若请求未显式指定则可能为空）。
 - `pending_auth_session_id` 非空时，表示 run 正在等待引擎鉴权，客户端应查询 `auth/session`。
 - `pending_payload` 包含待决事项的额外结构化载荷（如鉴权 URL 等），可用于前端直接渲染。
 - `interaction_count` 为当前 request 已记录的交互轮次计数。
@@ -424,10 +632,13 @@
 - `source_attempt` / `target_attempt`：恢复调度时的源/目标尝试轮次。
 - interactive 双轨完成说明：
   - 在 assistant 回复内容中解析到 `__SKILL_DONE__` 时按强条件完成；
-  - 未解析到 marker 但输出通过 schema 时按软条件完成，并在 warnings/diagnostics 中出现 `INTERACTIVE_COMPLETED_WITHOUT_DONE_MARKER`。
+  - 未解析到 marker 时，仅在未命中 ask_user 证据、且成功提取标准化 JSON 并通过 schema/artifact 校验时才允许软条件完成，并在 warnings/diagnostics 中出现 `INTERACTIVE_COMPLETED_WITHOUT_DONE_MARKER`。
   - `tool_use`/tool 回显中的 marker 文本不参与完成判定。
   - ask_user 提示建议使用非 JSON 结构化格式（YAML，示例：`<ASK_USER_YAML>...</ASK_USER_YAML>`），避免被结果 JSON 误判。
-  - ask_user 提示始终为可选 enrichment，不参与后端生命周期控制判定。
+  - 若某回合输出了 `<ASK_USER_YAML>`，则该回合不得同时输出 `__SKILL_DONE__`。
+  - 一旦命中 `<ASK_USER_YAML>` 或其他 ask_user 证据，后端必须进入 `waiting_user`，并禁止任何 soft completion / repair 改判完成。
+  - 若提取到 JSON 但 output schema 校验失败，run 进入 `waiting_user`，并产出 `INTERACTIVE_OUTPUT_EXTRACTED_BUT_SCHEMA_INVALID`。
+  - 若以 soft completion 完成且 output schema 过宽松，warnings/diagnostics 中会附带 `INTERACTIVE_SOFT_COMPLETION_SCHEMA_TOO_PERMISSIVE`。
 
 ### 查询待决交互 (Get Pending Interaction)
 `GET /v1/jobs/{request_id}/interaction/pending`
@@ -483,6 +694,34 @@
 - `409`: 非 `waiting_user` 状态提交、`interaction_id` 过期/不匹配、或 `idempotency_key` 冲突。
 - `SESSION_RESUME_FAILED`: `resumable` 路径下无法提取/使用会话句柄（Codex `thread_id`、Gemini `session_id`、iFlow `session-id`）。
 
+### 会话中导入鉴权文件 (Auth Import In Conversation)
+`POST /v1/jobs/{request_id}/interaction/auth/import`
+
+用于 `waiting_auth` 阶段且可用方法包含 `import` 时提交鉴权文件。
+
+**Request**:
+- `Content-Type`: `multipart/form-data`
+- `provider_id`（可选；OpenCode 建议传入，其他引擎可省略）
+- `files`（可重复）：鉴权文件
+
+**Response** (`InteractionReplyResponse`):
+```json
+{
+  "request_id": "d290f1ee-6c54-4b01-90e6-...",
+  "status": "queued",
+  "accepted": true,
+  "mode": "auth"
+}
+```
+
+**行为说明**:
+- 导入校验通过后，服务直接走 `auth.completed` 分支，清理 pending auth 并恢复 run 调度。
+- 该接口仅在 `waiting_auth` 且当前可用方法包含 `import` 时受理。
+
+**错误码**:
+- `409`: 当前不在待鉴权状态。
+- `422`: 文件缺失、结构不合法、provider 不匹配或当前引擎/provider 不支持导入。
+
 ### 上传文件 (Upload File)
 `POST /v1/jobs/{request_id}/upload`
 
@@ -494,7 +733,8 @@
 
 **行为**:
 - 系统会将 Zip 解压到 `data/requests/{request_id}/uploads/`。
-- **Strict Key-Matching**: 解压后的文件名必须与 Schema 定义的 Input Key 一致（例如 `input_file`），否则在运行时会报错。
+- Zip 包内部允许任意目录结构。
+- 若 create 阶段已声明 file 类型输入路径，upload 后系统会校验这些路径在 `uploads/` 下真实存在。
 
 **Response** (`RunUploadResponse`):
 ```json
@@ -518,7 +758,7 @@
   "result": {
     "status": "success",
     "data": { ... },
-    "artifacts": ["artifacts/report.md"],
+    "artifacts": ["reports/report.md"],
     "validation_warnings": [],
     "error": null
   }
@@ -538,26 +778,86 @@
 ```json
 {
   "request_id": "d290f1ee-6c54-4b01-90e6-...",
-  "artifacts": ["artifacts/report.md"]
+  "artifacts": ["reports/report.md"]
 }
 ```
-
-### 下载单个产物 (Download Artifact)
-`GET /v1/jobs/{request_id}/artifacts/{artifact_path}`
-
-**说明**:
-- `artifact_path` 必须以 `artifacts/` 开头。
-- 返回 `Content-Disposition` 以附件形式下载目标文件。
 
 ### 下载 Bundle (Get Bundle)
 `GET /v1/jobs/{request_id}/bundle`
 
 **Response**:
 - 直接返回 Bundle Zip 文件（`Content-Type: application/zip`）
-- `Content-Disposition` 中的文件名为 `run_bundle.zip`（debug=false）或 `run_bundle_debug.zip`（debug=true）
+- `Content-Disposition` 文件名为 `run_bundle.zip`
 
 **说明**:
-- Bundle 内包含运行产物与 `bundle/manifest.json`；debug=true 时会额外包含 logs 等调试文件，并使用 `bundle/manifest_debug.json`。
+- 普通 bundle 采用 contract-driven 语义，仅包含 `result/result.json` 与 resolved artifact 文件，以及 `bundle/manifest.json`。
+
+### 下载 Debug Bundle (Get Debug Bundle)
+`GET /v1/jobs/{request_id}/bundle/debug`
+
+**Response**:
+- 直接返回 Debug Bundle Zip 文件（`Content-Type: application/zip`）
+- `Content-Disposition` 文件名为 `run_bundle_debug.zip`
+
+**说明**:
+- Debug Bundle 会额外包含 logs 等调试文件，并使用 `bundle/manifest_debug.json`。
+
+### 获取 Run 文件树 (Get Run Files)
+`GET /v1/jobs/{request_id}/files`
+
+返回当前 run 可浏览文件树（run scope）。
+
+**Response** (`RunFilesResponse`):
+```json
+{
+  "request_id": "d290f1ee-6c54-4b01-90e6-...",
+  "run_id": "9d2c1f31-...",
+  "entries": [
+    {
+      "path": "result",
+      "name": "result",
+      "is_dir": true,
+      "depth": 0
+    },
+    {
+      "path": "result/result.json",
+      "name": "result.json",
+      "is_dir": false,
+      "depth": 1
+    }
+  ]
+}
+```
+
+### 获取 Run 文件预览 (Get Run File Preview)
+`GET /v1/jobs/{request_id}/file?path=...`
+
+返回后端 canonical 文件预览载荷（与管理 UI 文件预览同源）。
+
+**Query 参数**:
+- `path`（必填）：run 目录内相对路径
+
+**Response** (`RunFilePreviewResponse`):
+```json
+{
+  "request_id": "d290f1ee-6c54-4b01-90e6-...",
+  "run_id": "9d2c1f31-...",
+  "path": "result/result.json",
+  "preview": {
+    "mode": "text",
+    "content": "{\"status\":\"success\"}",
+    "size": 20,
+    "meta": "20 bytes, utf-8",
+    "detected_format": "json",
+    "rendered_html": "<div>...</div>",
+    "json_pretty": "{\n  \"status\": \"success\"\n}"
+  }
+}
+```
+
+**错误码**:
+- `400`: `path` 非法（绝对路径、包含 `..`、路径被过滤等）。
+- `404`: `request_id`、run 或目标文件不存在。
 
 ### 获取日志 (Get Logs)
 `GET /v1/jobs/{request_id}/logs`
@@ -597,6 +897,75 @@
 **Query 参数**:
 - `from_seq` / `to_seq`（可选）：按序号区间拉取
 - `from_ts` / `to_ts`（可选）：按时间区间拉取（ISO8601）
+
+### 获取引擎鉴权导入规格（管理 API）
+`GET /v1/management/engines/{engine}/auth/import/spec`
+
+用于 UI 渲染“导入鉴权文件”对话框。规则来自 engine adapter profile（声明式）。
+
+**Query 参数**:
+- `provider_id`（可选）：OpenCode 必填（如 `openai` / `google`），其他引擎忽略。
+
+**Response** (`ManagementEngineAuthImportSpecResponse`):
+```json
+{
+  "engine": "gemini",
+  "provider_id": null,
+  "supported": true,
+  "ask_user": {
+    "kind": "upload_files",
+    "prompt": "Upload credential files to complete authentication.",
+    "hint": "Select required files and submit to continue.",
+    "files": [
+      {
+        "name": "google_accounts.json",
+        "required": true,
+        "hint": "$HOME/.gemini/google_accounts.json",
+        "accept": ".json"
+      },
+      {
+        "name": "oauth_creds.json",
+        "required": true,
+        "hint": "$HOME/.gemini/oauth_creds.json",
+        "accept": ".json"
+      }
+    ],
+    "ui_hints": {
+      "risk_notice_required": false
+    }
+  }
+}
+```
+
+**错误码**:
+- `422`: 引擎/provider 不支持导入或导入规则非法。
+
+### 提交引擎鉴权文件导入（管理 API）
+`POST /v1/management/engines/{engine}/auth/import`
+
+**Request**:
+- `Content-Type`: `multipart/form-data`
+- `provider_id`（可选，OpenCode 必填）
+- `files`（可重复）：鉴权文件
+
+**Response** (`ManagementEngineAuthImportSubmitResponse`):
+```json
+{
+  "engine": "opencode",
+  "provider_id": "openai",
+  "imported_files": [
+    {
+      "source": "auth.json",
+      "target_relpath": ".local/share/opencode/auth.json",
+      "target_path": "/home/user/.local/share/opencode/auth.json"
+    }
+  ],
+  "risk_notice_required": false
+}
+```
+
+**错误码**:
+- `422`: 缺少必需文件、结构校验失败、provider 不匹配等。
 
 ### 获取日志片段（raw_ref 回跳）
 `GET /v1/jobs/{request_id}/logs/range`
@@ -712,7 +1081,6 @@
 配置：
 - `SKILL_RUNNER_E2E_CLIENT_PORT`：客户端端口，默认 `8011`；无效值回退到 `8011`。
 - `SKILL_RUNNER_E2E_CLIENT_BACKEND_BASE_URL`：后端 API 地址，默认 `http://127.0.0.1:8000`。
-- `SKILL_RUNNER_E2E_CLIENT_RECORDINGS_DIR`：录制回放文件目录，默认 `e2e_client/recordings`。
 
 主要页面与接口：
 - `GET /`：读取并展示 Skill 列表。
@@ -720,11 +1088,8 @@
 - `POST /skills/{skill_id}/run`：提交执行（创建 run + 可选上传 zip）。
 - `GET /runs/{request_id}`：运行观测页（stdout 主对话区、stderr 独立窗口、pending/reply 交互）。
 - `GET /runs/{request_id}/result`：结果与产物展示页。
-- `GET /recordings`：录制会话列表。
-- `GET /recordings/{request_id}`：单步回放页。
 - `GET /api/runs/{request_id}/events`：按 `run_source` 代理后端 SSE（installed:`/v1/jobs/*`，temp:`/v1/temp-skill-runs/*`）。
-- `POST /api/runs/{request_id}/reply`：代理后端 reply 并写入录制。
-- `GET /api/recordings/{request_id}`：读取录制 JSON。
+- `POST /api/runs/{request_id}/reply`：代理后端 reply。
 
 ### 页面上传安装 Skill 包
 `POST /ui/skill-packages/install`
@@ -755,10 +1120,10 @@
 - 文本文件可预览；二进制文件显示“不可预览（无信息）”。
 - 文本文件预览大小上限为 `256KB`，超限显示“文件过大不可预览”。
 
-### 系统设置页面
+### System Console 页面
 `GET /ui/settings`
 
-返回系统设置页面，提供日志级别配置、数据重置等管理操作的 GUI 入口（后端通过 `/v1/management/system/*` 实现）。
+返回 System Console 页面，提供日志级别配置、日志浏览（system/bootstrap）与数据重置等管理操作 GUI（后端通过 `/v1/management/system/*` 实现）。
 
 ### Engine 管理页面
 `GET /ui/engines`
@@ -789,7 +1154,7 @@
 
 运行说明：
 - 终端实际由 `ttyd` 提供，前端会按会话返回的端口嵌入 `http://<host>:<ttyd_port>/`。
-- 容器部署时需显式映射 ttyd 端口（默认 `7681:7681`）。
+- 容器部署时需显式映射 ttyd 端口（默认 `17681:17681`）。
 
 兼容性说明：
 - 旧页面 `GET /ui/engines/auth-shell` 已下线，返回 `404`。
@@ -845,12 +1210,18 @@ UI 层提供的引擎鉴权前端流程接口（代理后端 V2 Auth API）：
 
 页面能力：
 - 按 `request_id` 展示 run 列表（关联 `run_id`）；
+- 列表按页展示（默认 20 条/页），并支持“进入详情后返回原分页”；
+- 列表包含 `model` 列；
 - 展示当前状态、`pending_interaction_id`、`interaction_count`、`recovery_state` 与更新时间；
 - 轮询建议遵循 `poll_logs`：`queued/running=true`，`waiting_user=false`；
 - 支持自动刷新列表。
 
 ### Run 列表数据（Management Adapter）
 `GET /ui/management/runs/table`
+
+Query 参数：
+- `page`（可选，默认 `1`）
+- `page_size`（可选，默认 `20`）
 
 兼容旧接口（已弃用）：
 - `GET /ui/runs/table`
@@ -860,6 +1231,7 @@ UI 层提供的引擎鉴权前端流程接口（代理后端 V2 Auth API）：
 
 页面能力：
 - 展示 request/run 基本信息；
+- run 动作区包含并列 `Download Bundle` 与 `Download Debug Bundle` 按钮（仅成功终态可用）；
 - 展示 run 文件树（只读）与文件预览；文件区采用最大高度约束并在区内滚动；
 - 通过 SSE 实时查看输出：主对话优先消费 `chat_event`（FCMP），并将诊断/原始日志分区展示；
 - 支持 `raw_ref` 回跳：从结构化消息定位并预览原始日志区间；
@@ -972,7 +1344,6 @@ UI 层提供的引擎鉴权前端流程接口（代理后端 V2 Auth API）：
 - `GET /v1/temp-skill-runs/{request_id}/result`
 - `GET /v1/temp-skill-runs/{request_id}/artifacts`
 - `GET /v1/temp-skill-runs/{request_id}/bundle`
-- `GET /v1/temp-skill-runs/{request_id}/artifacts/{artifact_path}`
 - `GET /v1/temp-skill-runs/{request_id}/logs`
 - `GET /v1/temp-skill-runs/{request_id}/logs/range`（支持 `stream`、`byte_from`、`byte_to`、`attempt` 参数）
 - `GET /v1/temp-skill-runs/{request_id}/events`
