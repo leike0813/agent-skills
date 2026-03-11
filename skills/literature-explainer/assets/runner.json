@@ -1,0 +1,30 @@
+{
+  "id": "literature-explainer",
+  "version": "1.0.0",
+  "name": "Literature Explainer",
+  "description": "Interactive academic paper analysis and Q&A skill with evidence verification and optional note generation.",
+  "execution_modes": [
+    "interactive"
+  ],
+  "max_attempt": 24,
+  "runtime": {
+    "language": "python",
+    "version": "3.11",
+    "dependencies": [
+      "pymupdf4llm"
+    ]
+  },
+  "schemas": {
+    "input": "assets/input.schema.json",
+    "parameter": "assets/parameter.schema.json",
+    "output": "assets/output.schema.json"
+  },
+  "entrypoint": {
+    "prompts": {
+      "codex": "$literature-explainer : Use the uploaded paper file at `{{ input.source_path }}` and the optional language parameter `{{ parameter.language }}`. Follow SKILL.md exactly in interactive mode: normalize the source first, build initial understanding, ask for user intent, run evidence-backed Q&A when requested, and only persist the final note after the user explicitly asks for a note and confirms final save. End with a stdout JSON object.",
+      "gemini": "Use skill `literature-explainer` in interactive mode. Read `{{ input.source_path }}` first, normalize it through the dispatcher, then follow the staged paper-analysis workflow in SKILL.md. Only persist the final note after explicit user request and confirmation. End with a stdout JSON object.",
+      "iflow": "Use skill `literature-explainer` in interactive mode. Normalize `{{ input.source_path }}` first, then follow SKILL.md for staged paper analysis, evidence-backed Q&A, and optional note generation. Only persist the final note after explicit user request and confirmation. End with a stdout JSON object.",
+      "opencode": "Use skill `literature-explainer` interactively. Normalize the uploaded file `{{ input.source_path }}` first, then execute the staged workflow from SKILL.md. Do not auto-generate a note artifact unless the user explicitly requests it and confirms the save. Finish by printing a JSON object."
+    }
+  }
+}

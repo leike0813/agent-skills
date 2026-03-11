@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "source_path": {
+      "type": "string",
+      "description": "Uploaded paper source file path. The file content may be PDF, Markdown, plain text, or extensionless text.",
+      "x-input-source": "file"
+    }
+  },
+  "required": [
+    "source_path"
+  ]
+}
