@@ -5,6 +5,7 @@
 ## {{ msg("view.review_comment_coverage.legend_title") }}
 
 - {{ msg("view.review_comment_coverage.legend_covered") }}
+- {{ msg("view.review_comment_coverage.legend_duplicate") }}
 - {{ msg("view.review_comment_coverage.legend_uncovered") }}
 
 {% for document in documents -%}
@@ -14,18 +15,37 @@
 - {{ msg("view.review_comment_coverage.source_kind") }}: `{{ document.source_kind }}`
 - {{ msg("view.review_comment_coverage.source_path") }}: `{{ document.source_path }}`
 - {{ msg("view.review_comment_coverage.summary") }}: {{ msg("view.review_comment_coverage.summary_text", covered_segments=document.covered_segments, uncovered_segments=document.uncovered_segments, covered_threads=document.covered_threads) }}
+- {{ msg("view.review_comment_coverage.summary_role_text", primary_segments=document.covered_primary_segments, supporting_segments=document.covered_supporting_segments, duplicate_segments=document.covered_duplicate_segments) }}
 
 ### {{ msg("view.review_comment_coverage.copy_title") }}
 
-```text
+<div style="white-space: pre-wrap; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px;">
 {% for segment in document.segments -%}
 {% if segment.coverage_status == "covered" -%}
-[[covered thread:{{ segment.thread_id }} comments:{{ segment.comment_ids|join(",") }}]]{{ segment.segment_text }}[[/covered]]
+{% if segment.highlight_style == "duplicate" -%}
+<span style="color: #f57c00; font-weight: 700;">{{ segment.segment_text_html }}</span><span style="color: #6a737d; font-size: 0.85em;"> {{ segment.thread_tag }}</span>
 {% else -%}
-{{ segment.segment_text }}
+<span style="color: #d32f2f; font-weight: 700;">{{ segment.segment_text_html }}</span><span style="color: #6a737d; font-size: 0.85em;"> {{ segment.thread_tag }}</span>
+{% endif -%}
+{% else -%}
+{{ segment.segment_text_html }}
 {% endif -%}
 {% endfor -%}
-```
+</div>
+
+### {{ msg("view.review_comment_coverage.appendix_title") }}
+
+{{ msg("view.review_comment_coverage.appendix_intro") }}
+
+{% if document.coverage_mappings -%}
+| `source_document_id` | `thread_id` | `span_role` | `comment_ids` | `span_order` | `offset_range` | `segment_excerpt` |
+| --- | --- | --- | --- | --- | --- | --- |
+{% for mapping in document.coverage_mappings -%}
+| `{{ mapping.source_document_id }}` | `{{ mapping.thread_id }}` | `{{ mapping.span_role }}` | `{{ mapping.comment_ids_display }}` | `{{ mapping.span_order }}` | `{{ mapping.start_offset }}:{{ mapping.end_offset }}` | {{ mapping.segment_excerpt }} |
+{% endfor -%}
+{% else -%}
+{{ msg("view.review_comment_coverage.no_mappings") }}
+{% endif %}
 
 {% else -%}
 {{ msg("view.review_comment_coverage.no_documents") }}

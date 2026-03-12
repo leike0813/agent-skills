@@ -17,7 +17,9 @@
 {% for row in rows -%}
 ### {{ row.thread_id }}
 
-- {{ msg("view.raw_threads.original_text") }}: {{ row.original_text }}
+- {{ msg("view.raw_threads.original_text_primary_supporting") }}:
+
+<div style="white-space: pre-wrap;">{{ row.aggregated_original_text }}</div>
 
 {% else -%}
 - {{ msg("common.none") }}

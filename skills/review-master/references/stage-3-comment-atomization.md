@@ -11,7 +11,7 @@
 - 先保留 reviewer / editor 的原始条目层
 - 再把这些原始条目整理为内部执行所需的 canonical atomic item
 - 明确原始意见块到 atomic item 的拆分、合并与去重关系
-- 生成一份面向用户审阅的 `06-review-comment-coverage.md`，让用户确认原始审稿意见已被充分覆盖
+- 生成一份面向用户审阅的 `06-review-comment-coverage.md`，让用户确认原始审稿意见已被充分覆盖（`primary/supporting` 红色高亮，`duplicate_filtered` 橙色高亮，未覆盖片段保持默认文本色）
 
 ## 进入条件
 
@@ -99,8 +99,7 @@
   - `resume_must_not_forget`
 - 同步写入：
   - `review_comment_source_documents`
-  - `review_comment_coverage_segments`
-  - `review_comment_coverage_segment_comment_links`
+  - `raw_thread_source_spans`
 - 写库后立即运行 `gate-and-render`
 - 读取最新的 `instruction_payload`
 - 先向用户展示 `06-review-comment-coverage.md`、`03-raw-review-thread-list.md` 和 `05-thread-to-atomic-mapping.md`
@@ -141,6 +140,8 @@
 - 每个 `thread_id` 至少映射到一个 `comment_id`
 - 每个 `comment_id` 至少被一个 `thread_id` 引用
 - `atomic_comment_source_spans` 足以解释每个合并来源
-- `06-review-comment-coverage.md` 已生成，且被覆盖片段能稳定映射到 `thread_id` / `comment_id`
+- `raw_thread_source_spans` 能把每个 `thread_id` 精确锚定到原文 offset（`span_text == original_text[start_offset:end_offset]`），且每个 `thread_id` 至少有一条 `span_role='primary'`
+- `06-review-comment-coverage.md` 已生成，且覆盖映射附录能稳定映射到 `thread_id` / `comment_id`
+- gate 若提示“仅标题覆盖、正文疑似漏抽”，需与用户复核并按需补写 `supporting` span；该提示默认不作为硬阻断
 - 用户已确认 Stage 3 覆盖率审阅结果
 - `gate-and-render` 核心脚本允许进入阶段四

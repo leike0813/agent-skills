@@ -14,13 +14,13 @@ from workspace_db import (
     ACTION_COPY_VARIANTS_MD,
     ALLOWED_EVIDENCE_GAP,
     ALLOWED_ARTIFACT_STATUS,
-    ALLOWED_COVERAGE_STATUS,
     ALLOWED_LOCATION_ROLE,
     ALLOWED_PRIORITY,
     ALLOWED_PROFILE_TARGET,
     ALLOWED_RESPONSE_ROLE,
     ALLOWED_RESUME_STATUS,
     ALLOWED_SOURCE_KIND,
+    ALLOWED_SPAN_ROLE,
     ALLOWED_SOURCE_TYPE,
     ALLOWED_STAGE,
     ALLOWED_STAGE_GATE,
@@ -242,6 +242,13 @@ def normalize_newlines(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def compact_excerpt(value: str, *, limit: int = 120) -> str:
+    compact = " ".join(value.split())
+    if len(compact) > limit:
+        return f"{compact[: limit - 3]}..."
+    return compact
+
+
 def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
     raw_thread_links = fetch_all(
         connection,
@@ -255,20 +262,12 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY document_order, source_document_id
         """,
     )
-    review_comment_coverage_segments = fetch_all(
+    raw_thread_source_spans = fetch_all(
         connection,
         """
-        SELECT source_document_id, segment_order, coverage_status, segment_text, thread_id
-        FROM review_comment_coverage_segments
-        ORDER BY source_document_id, segment_order
-        """,
-    )
-    review_comment_coverage_segment_comment_links = fetch_all(
-        connection,
-        """
-        SELECT source_document_id, segment_order, link_order, comment_id
-        FROM review_comment_coverage_segment_comment_links
-        ORDER BY source_document_id, segment_order, link_order
+        SELECT thread_id, source_document_id, span_order, span_role, start_offset, end_offset, span_text
+        FROM raw_thread_source_spans
+        ORDER BY source_document_id, start_offset, end_offset, thread_id, span_order
         """,
     )
     atomic_source_spans = fetch_all(
@@ -419,8 +418,7 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
     return {
         "raw_thread_links": raw_thread_links,
         "review_comment_source_documents": review_comment_source_documents,
-        "review_comment_coverage_segments": review_comment_coverage_segments,
-        "review_comment_coverage_segment_comment_links": review_comment_coverage_segment_comment_links,
+        "raw_thread_source_spans": raw_thread_source_spans,
         "atomic_source_spans": atomic_source_spans,
         "target_locations": target_locations,
         "analysis_links": analysis_links,
@@ -489,11 +487,15 @@ def validate_database_content(
     review_comment_source_document_map = {
         str(row["source_document_id"]): row for row in support["review_comment_source_documents"]
     }
-    review_comment_coverage_segment_map: dict[tuple[str, int], sqlite3.Row] = {}
-    coverage_segment_to_comment_ids: dict[tuple[str, int], list[str]] = defaultdict(list)
-    thread_to_coverage_segment_keys: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    raw_thread_source_span_map: dict[tuple[str, str, int], sqlite3.Row] = {}
+    thread_to_source_span_keys: dict[str, list[tuple[str, str, int]]] = defaultdict(list)
+    spans_by_source_document: dict[str, list[tuple[int, int, str, int, str]]] = defaultdict(list)
+    thread_span_roles: dict[str, set[str]] = defaultdict(set)
+    legacy_source_documents: set[str] = set()
     for row in support["review_comment_source_documents"]:
         source_document_id = str(row["source_document_id"])
+        if source_document_id.startswith("legacy-thread::"):
+            legacy_source_documents.add(source_document_id)
         if str(row["source_kind"]) not in ALLOWED_SOURCE_KIND:
             add_issue(
                 format_errors,
@@ -519,76 +521,105 @@ def validate_database_content(
                 f"source_document_id '{source_document_id}' must not contain spaces",
                 path=db_path,
             )
-    for row in support["review_comment_coverage_segments"]:
+    for row in support["raw_thread_source_spans"]:
+        thread_id = str(row["thread_id"])
         source_document_id = str(row["source_document_id"])
-        segment_order = int(row["segment_order"])
-        segment_key = (source_document_id, segment_order)
-        review_comment_coverage_segment_map[segment_key] = row
-        coverage_status = str(row["coverage_status"])
-        if coverage_status not in ALLOWED_COVERAGE_STATUS:
+        span_order = int(row["span_order"])
+        span_key = (thread_id, source_document_id, span_order)
+        raw_thread_source_span_map[span_key] = row
+        thread_to_source_span_keys[thread_id].append(span_key)
+        span_role = str(row["span_role"] or "")
+        if span_role not in ALLOWED_SPAN_ROLE:
             add_issue(
                 format_errors,
-                "review_comment_coverage_segments",
+                "raw_thread_source_spans",
                 "invalid_enum",
-                f"coverage_status='{coverage_status}' is not allowed",
-                path=db_path,
-            )
-        if str(row["segment_text"]) == "":
-            add_issue(
-                format_errors,
-                "review_comment_coverage_segments",
-                "missing_required_field",
-                "segment_text must be non-empty",
-                path=db_path,
-            )
-        thread_id = str(row["thread_id"] or "")
-        if coverage_status == "covered":
-            if not thread_id:
-                add_issue(
-                    format_errors,
-                    "review_comment_coverage_segments",
-                    "missing_required_field",
-                    "covered segments must reference thread_id",
-                    path=db_path,
-                )
-            else:
-                thread_to_coverage_segment_keys[thread_id].append(segment_key)
-        if coverage_status == "uncovered" and thread_id:
-            add_issue(
-                format_errors,
-                "review_comment_coverage_segments",
-                "invalid_thread_reference",
-                "uncovered segments must not reference thread_id",
+                (
+                    f"span ({thread_id}, {source_document_id}, {span_order}) has invalid "
+                    f"span_role='{span_role}'"
+                ),
                 path=db_path,
                 thread_id=thread_id,
             )
-    for row in support["review_comment_coverage_segment_comment_links"]:
-        segment_key = (str(row["source_document_id"]), int(row["segment_order"]))
-        coverage_segment_to_comment_ids[segment_key].append(str(row["comment_id"]))
-    for source_document_id, row in review_comment_source_document_map.items():
-        segment_rows = [
-            review_comment_coverage_segment_map[key]
-            for key in sorted(review_comment_coverage_segment_map)
-            if key[0] == source_document_id
-        ]
-        if not segment_rows:
+            continue
+        thread_span_roles[thread_id].add(span_role)
+        start_offset = int(row["start_offset"])
+        end_offset = int(row["end_offset"])
+        if start_offset < 0 or end_offset <= start_offset:
             add_issue(
                 format_errors,
-                "review_comment_coverage_segments",
-                "missing_segments",
-                f"source document '{source_document_id}' has no coverage segments",
+                "raw_thread_source_spans",
+                "invalid_span_offset",
+                (
+                    f"span ({thread_id}, {source_document_id}, {span_order}) "
+                    f"has invalid offset range [{start_offset}, {end_offset})"
+                ),
                 path=db_path,
+                thread_id=thread_id,
             )
             continue
-        reconstructed = "".join(str(segment_row["segment_text"]) for segment_row in segment_rows)
-        if normalize_newlines(reconstructed) != normalize_newlines(str(row["original_text"])):
+        source_row = review_comment_source_document_map.get(source_document_id)
+        if source_row is None:
             add_issue(
                 format_errors,
-                "review_comment_coverage_segments",
-                "mismatched_document_reconstruction",
-                f"coverage segments for source document '{source_document_id}' do not reconstruct original_text",
+                "raw_thread_source_spans",
+                "missing_source_document",
+                (
+                    f"span ({thread_id}, {source_document_id}, {span_order}) references "
+                    f"unknown source_document_id '{source_document_id}'"
+                ),
                 path=db_path,
+                thread_id=thread_id,
             )
+            continue
+        original_text = str(source_row["original_text"])
+        if end_offset > len(original_text):
+            add_issue(
+                format_errors,
+                "raw_thread_source_spans",
+                "span_out_of_bounds",
+                (
+                    f"span ({thread_id}, {source_document_id}, {span_order}) with "
+                    f"offset [{start_offset}, {end_offset}) exceeds source length {len(original_text)}"
+                ),
+                path=db_path,
+                thread_id=thread_id,
+            )
+            continue
+        expected_text = original_text[start_offset:end_offset]
+        if normalize_newlines(str(row["span_text"])) != normalize_newlines(expected_text):
+            add_issue(
+                format_errors,
+                "raw_thread_source_spans",
+                "span_text_mismatch",
+                (
+                    f"span ({thread_id}, {source_document_id}, {span_order}) text does not match "
+                    "source substring at declared offsets"
+                ),
+                path=db_path,
+                thread_id=thread_id,
+            )
+        spans_by_source_document[source_document_id].append((start_offset, end_offset, thread_id, span_order, span_role))
+
+    for source_document_id, spans in spans_by_source_document.items():
+        ordered_spans = sorted(spans, key=lambda item: (item[0], item[1], item[2], item[3]))
+        previous: tuple[int, int, str, int, str] | None = None
+        for span in ordered_spans:
+            if previous is not None and span[0] < previous[1]:
+                add_issue(
+                    format_errors,
+                    "raw_thread_source_spans",
+                    "overlapping_spans",
+                    (
+                        "source document "
+                        f"'{source_document_id}' has overlapping spans: "
+                        f"({previous[2]}, order={previous[3]}, range={previous[0]}:{previous[1]}) and "
+                        f"({span[2]}, order={span[3]}, range={span[0]}:{span[1]})"
+                    ),
+                    path=db_path,
+                    thread_id=span[2],
+                )
+            previous = span
 
     raw_thread_rows = fetch_all(
         connection,
@@ -609,6 +640,24 @@ def validate_database_content(
             add_issue(format_errors, "raw_review_threads", "missing_required_field", "original_text must be non-empty", path=db_path, thread_id=thread_id)
         if not str(row["normalized_summary"]).strip():
             add_issue(format_errors, "raw_review_threads", "missing_required_field", "normalized_summary must be non-empty", path=db_path, thread_id=thread_id)
+        if thread_id not in thread_to_source_span_keys:
+            add_issue(
+                format_errors,
+                "raw_thread_source_spans",
+                "missing_thread_spans",
+                f"raw_review_thread '{thread_id}' has no source spans in raw_thread_source_spans",
+                path=db_path,
+                thread_id=thread_id,
+            )
+        elif "primary" not in thread_span_roles.get(thread_id, set()):
+            add_issue(
+                format_errors,
+                "raw_thread_source_spans",
+                "missing_primary_span",
+                f"raw_review_thread '{thread_id}' must include at least one primary span",
+                path=db_path,
+                thread_id=thread_id,
+            )
 
     atomic_rows = fetch_all(
         connection,
@@ -726,40 +775,20 @@ def validate_database_content(
         thread_to_comment_ids[thread_id].append(comment_id)
         comment_to_thread_ids[comment_id].append(thread_id)
 
-    for segment_key, segment_row in review_comment_coverage_segment_map.items():
-        if str(segment_row["coverage_status"]) != "covered":
-            continue
-        thread_id = str(segment_row["thread_id"])
-        linked_comment_ids = coverage_segment_to_comment_ids.get(segment_key, [])
-        if not linked_comment_ids:
+    for span_key, span_row in raw_thread_source_span_map.items():
+        thread_id = str(span_row["thread_id"])
+        if not thread_to_comment_ids.get(thread_id):
             add_issue(
                 format_errors,
-                "review_comment_coverage_segment_comment_links",
-                "missing_comment_links",
+                "raw_thread_source_spans",
+                "missing_thread_comment_links",
                 (
-                    "covered segment "
-                    f"({segment_key[0]}, {segment_key[1]}) has no linked canonical atomic comments"
+                    f"span ({span_key[0]}, {span_key[1]}, {span_key[2]}) belongs to thread '{thread_id}' "
+                    "but raw_thread_atomic_links has no linked comment_id"
                 ),
                 path=db_path,
                 thread_id=thread_id,
             )
-            continue
-        valid_comment_ids = set(thread_to_comment_ids.get(thread_id, []))
-        for comment_id in linked_comment_ids:
-            if comment_id not in valid_comment_ids:
-                add_issue(
-                    format_errors,
-                    "review_comment_coverage_segment_comment_links",
-                    "invalid_comment_link",
-                    (
-                        "covered segment "
-                        f"({segment_key[0]}, {segment_key[1]}) links comment '{comment_id}' "
-                        f"which is not mapped from thread '{thread_id}'"
-                    ),
-                    path=db_path,
-                    thread_id=thread_id,
-                    comment_id=comment_id,
-                )
 
     for row in support["atomic_source_spans"]:
         comment_id = str(row["comment_id"])
@@ -1135,6 +1164,38 @@ def validate_database_content(
                 comment_id=comment_id,
             )
 
+    stage3_coverage_advisories: list[str] = []
+    threads_without_supporting = {
+        thread_id
+        for thread_id, roles in thread_span_roles.items()
+        if "primary" in roles and "supporting" not in roles
+    }
+    for source_document_id, source_row in review_comment_source_document_map.items():
+        original_text = str(source_row["original_text"])
+        spans = sorted(
+            spans_by_source_document.get(source_document_id, []),
+            key=lambda item: (item[0], item[1], item[2], item[3]),
+        )
+        for index, span in enumerate(spans):
+            start_offset, end_offset, thread_id, span_order, span_role = span
+            if span_role != "primary" or thread_id not in threads_without_supporting:
+                continue
+            next_start = spans[index + 1][0] if index + 1 < len(spans) else len(original_text)
+            if next_start <= end_offset:
+                continue
+            uncovered = original_text[end_offset:next_start].strip()
+            if len(uncovered) < 120:
+                continue
+            if "\n" not in uncovered and not any(mark in uncovered for mark in (".", ";", "?", "!")):
+                continue
+            stage3_coverage_advisories.append(
+                (
+                    f"thread '{thread_id}' has no supporting span after primary span "
+                    f"(source='{source_document_id}', span_order={span_order}). "
+                    f"Adjacent uncovered text excerpt: \"{compact_excerpt(uncovered)}\""
+                )
+            )
+
     return (
         workflow_state,
         resume_brief,
@@ -1144,9 +1205,9 @@ def validate_database_content(
         resume_recent_decisions,
         resume_must_not_forget,
         review_comment_source_document_map,
-        review_comment_coverage_segment_map,
-        dict(coverage_segment_to_comment_ids),
-        dict(thread_to_coverage_segment_keys),
+        dict(raw_thread_source_span_map),
+        dict(thread_to_source_span_keys),
+        sorted(legacy_source_documents),
         raw_thread_map,
         atomic_map,
         atomic_state_map,
@@ -1172,6 +1233,7 @@ def validate_database_content(
         export_artifact_map,
         supplement_suggestion_map,
         dict(supplement_suggestion_count_by_comment),
+        stage3_coverage_advisories,
         format_errors,
     )
 
@@ -1181,9 +1243,9 @@ def validate_dependencies(
     stage_number: int,
     active_comment_id: str | None,
     review_comment_source_document_map: dict[str, sqlite3.Row],
-    review_comment_coverage_segment_map: dict[tuple[str, int], sqlite3.Row],
-    coverage_segment_to_comment_ids: dict[tuple[str, int], list[str]],
-    thread_to_coverage_segment_keys: dict[str, list[tuple[str, int]]],
+    raw_thread_source_span_map: dict[tuple[str, str, int], sqlite3.Row],
+    thread_to_source_span_keys: dict[str, list[tuple[str, str, int]]],
+    legacy_source_documents: list[str],
     raw_thread_map: dict[str, sqlite3.Row],
     atomic_map: dict[str, sqlite3.Row],
     atomic_state_map: dict[str, sqlite3.Row],
@@ -1221,12 +1283,23 @@ def validate_dependencies(
                 "stage_3 or later requires review_comment_source_documents",
                 path=db_path,
             )
-        if not review_comment_coverage_segment_map:
+        if not raw_thread_source_span_map:
             add_issue(
                 dependency_errors,
-                "review_comment_coverage_segments",
-                "missing_coverage_segments",
-                "stage_3 or later requires review_comment_coverage_segments",
+                "raw_thread_source_spans",
+                "missing_source_spans",
+                "stage_3 or later requires raw_thread_source_spans",
+                path=db_path,
+            )
+        if legacy_source_documents and stage_number <= 4:
+            add_issue(
+                dependency_errors,
+                "raw_thread_source_spans",
+                "legacy_source_spans_require_stage3_rebuild",
+                (
+                    "legacy thread-level source documents were detected; rerun Stage 3 from the original reviewer/editor "
+                    "files to rebuild source spans for full-document coverage highlighting"
+                ),
                 path=db_path,
             )
         for thread_id in sorted(raw_thread_ids):
@@ -1239,12 +1312,12 @@ def validate_dependencies(
                     path=db_path,
                     thread_id=thread_id,
                 )
-            if not thread_to_coverage_segment_keys.get(thread_id):
+            if not thread_to_source_span_keys.get(thread_id):
                 add_issue(
                     dependency_errors,
-                    "review_comment_coverage_segments",
-                    "missing_thread_coverage",
-                    f"raw_review_thread '{thread_id}' has no covered segment in review-comment coverage truth",
+                    "raw_thread_source_spans",
+                    "missing_thread_spans",
+                    f"raw_review_thread '{thread_id}' has no source span in raw_thread_source_spans",
                     path=db_path,
                     thread_id=thread_id,
                 )
@@ -1258,21 +1331,32 @@ def validate_dependencies(
                     path=db_path,
                     comment_id=comment_id,
                 )
-        for segment_key, row in sorted(review_comment_coverage_segment_map.items()):
-            if str(row["coverage_status"]) != "covered":
-                continue
-            comment_ids = coverage_segment_to_comment_ids.get(segment_key, [])
-            if not comment_ids:
+        for span_key, span_row in sorted(raw_thread_source_span_map.items()):
+            thread_id = str(span_row["thread_id"])
+            if thread_id not in raw_thread_ids:
                 add_issue(
                     dependency_errors,
-                    "review_comment_coverage_segment_comment_links",
-                    "missing_segment_comment_links",
+                    "raw_thread_source_spans",
+                    "unknown_thread_reference",
                     (
-                        "covered segment "
-                        f"({segment_key[0]}, {segment_key[1]}) must link at least one canonical atomic comment"
+                        f"span ({span_key[0]}, {span_key[1]}, {span_key[2]}) references "
+                        f"unknown thread_id '{thread_id}'"
                     ),
                     path=db_path,
-                    thread_id=str(row["thread_id"]),
+                    thread_id=thread_id,
+                )
+                continue
+            if not thread_to_comment_ids.get(thread_id):
+                add_issue(
+                    dependency_errors,
+                    "raw_thread_source_spans",
+                    "span_thread_without_comment_links",
+                    (
+                        f"span ({span_key[0]}, {span_key[1]}, {span_key[2]}) belongs to thread '{thread_id}' "
+                        "but raw_thread_atomic_links has no linked comment_id"
+                    ),
+                    path=db_path,
+                    thread_id=thread_id,
                 )
 
     if stage_number >= 4:
@@ -1483,7 +1567,7 @@ def validate_consistency(
     resume_recent_decisions: list[str],
     resume_must_not_forget: list[str],
     review_comment_source_document_map: dict[str, sqlite3.Row],
-    review_comment_coverage_segment_map: dict[tuple[str, int], sqlite3.Row],
+    raw_thread_source_span_map: dict[tuple[str, str, int], sqlite3.Row],
     raw_thread_map: dict[str, sqlite3.Row],
     atomic_map: dict[str, sqlite3.Row],
     atomic_state_map: dict[str, sqlite3.Row],
@@ -1580,12 +1664,12 @@ def validate_consistency(
                 "stage_3 is ready but review_comment_source_documents is empty",
                 path=db_path,
             )
-        if not review_comment_coverage_segment_map:
+        if not raw_thread_source_span_map:
             add_issue(
                 consistency_errors,
                 "workflow_state",
                 "stage_gate_without_authored_prerequisites",
-                "stage_3 is ready but review_comment_coverage_segments is empty",
+                "stage_3 is ready but raw_thread_source_spans is empty",
                 path=db_path,
             )
     if current_stage == "stage_4":
@@ -1789,6 +1873,7 @@ def build_repair_sequence(
         "atomic_comments": "recipe_stage3_replace_threaded_atomic_model",
         "raw_thread_atomic_links": "recipe_stage3_replace_threaded_atomic_model",
         "review_comment_source_documents": "recipe_stage3_replace_threaded_atomic_model",
+        "raw_thread_source_spans": "recipe_stage3_replace_threaded_atomic_model",
         "review_comment_coverage_segments": "recipe_stage3_replace_threaded_atomic_model",
         "review_comment_coverage_segment_comment_links": "recipe_stage3_replace_threaded_atomic_model",
         "atomic_comment_state": "recipe_stage4_upsert_atomic_workboard",
@@ -1823,6 +1908,10 @@ def build_repair_sequence(
         "raw_review_threads": ["review-master.db", RAW_REVIEW_THREADS_MD],
         "atomic_comments": ["review-master.db", ATOMIC_COMMENTS_MD],
         "raw_thread_atomic_links": ["review-master.db", THREAD_TO_ATOMIC_MAPPING_MD],
+        "review_comment_source_documents": ["review-master.db", REVIEW_COMMENT_COVERAGE_MD],
+        "raw_thread_source_spans": ["review-master.db", REVIEW_COMMENT_COVERAGE_MD],
+        "review_comment_coverage_segments": ["review-master.db", REVIEW_COMMENT_COVERAGE_MD],
+        "review_comment_coverage_segment_comment_links": ["review-master.db", REVIEW_COMMENT_COVERAGE_MD],
         "atomic_comment_state": ["review-master.db", ATOMIC_WORKBOARD_MD],
         "atomic_comment_target_locations": ["review-master.db", ATOMIC_WORKBOARD_MD],
         "atomic_comment_analysis_links": ["review-master.db", ATOMIC_WORKBOARD_MD],
@@ -1855,6 +1944,10 @@ def build_repair_sequence(
         "raw_review_threads": localization.msg("gate.repair.raw_review_threads"),
         "atomic_comments": localization.msg("gate.repair.atomic_comments"),
         "raw_thread_atomic_links": localization.msg("gate.repair.raw_thread_atomic_links"),
+        "review_comment_source_documents": localization.msg("gate.repair.review_comment_source_documents"),
+        "raw_thread_source_spans": localization.msg("gate.repair.raw_thread_source_spans"),
+        "review_comment_coverage_segments": localization.msg("gate.repair.review_comment_coverage_segments"),
+        "review_comment_coverage_segment_comment_links": localization.msg("gate.repair.review_comment_coverage_segment_comment_links"),
         "atomic_comment_state": localization.msg("gate.repair.atomic_comment_state"),
         "atomic_comment_target_locations": localization.msg("gate.repair.atomic_comment_target_locations"),
         "atomic_comment_analysis_links": localization.msg("gate.repair.atomic_comment_analysis_links"),
@@ -2125,6 +2218,7 @@ def build_stage_actions(
     export_patch_set_map: dict[str, sqlite3.Row],
     export_patch_count_map: dict[str, int],
     export_artifact_map: dict[str, sqlite3.Row],
+    stage3_coverage_advisories: list[str],
     localization: LocalizationBundle,
 ) -> list[dict[str, Any]]:
     if workflow_state is None:
@@ -2142,11 +2236,17 @@ def build_stage_actions(
     active_comment_id = str(workflow_state["active_comment_id"]) if workflow_state["active_comment_id"] is not None else None
     if pending:
         if current_stage == "stage_3":
+            reason = localization.msg("gate.allowed.request_stage3_coverage_confirmation.reason")
+            if stage3_coverage_advisories:
+                reason = (
+                    f"{reason} "
+                    f"{localization.msg('gate.allowed.request_stage3_coverage_confirmation.advisory', count=len(stage3_coverage_advisories))}"
+                )
             return [
                 make_action(
                     "request_stage3_coverage_confirmation",
                     localization.msg("gate.allowed.request_stage3_coverage_confirmation.instruction"),
-                    localization.msg("gate.allowed.request_stage3_coverage_confirmation.reason"),
+                    reason,
                     ["review-master.db", REVIEW_COMMENT_COVERAGE_MD, RAW_REVIEW_THREADS_MD, THREAD_TO_ATOMIC_MAPPING_MD],
                     recipe_id="recipe_stage3_clear_coverage_confirmation",
                 )
@@ -2462,6 +2562,7 @@ def build_instruction_payload(
     export_patch_set_map: dict[str, sqlite3.Row],
     export_patch_count_map: dict[str, int],
     export_artifact_map: dict[str, sqlite3.Row],
+    stage3_coverage_advisories: list[str],
     format_errors: list[dict[str, Any]],
     dependency_errors: list[dict[str, Any]],
     consistency_errors: list[dict[str, Any]],
@@ -2504,6 +2605,7 @@ def build_instruction_payload(
             export_patch_set_map,
             export_patch_count_map,
             export_artifact_map,
+            stage3_coverage_advisories,
             localization,
         )
         recommended_next_action = allowed_next_actions[0]
@@ -2527,6 +2629,7 @@ def build_instruction_payload(
         "recommended_next_action": recommended_next_action,
         "repair_sequence": repair_sequence,
         "blocked_actions": blocked_actions,
+        "coverage_review_advisories": stage3_coverage_advisories,
     }
 
 
@@ -2561,9 +2664,9 @@ def main() -> int:
     resume_recent_decisions: list[str] = []
     resume_must_not_forget: list[str] = []
     review_comment_source_document_map: dict[str, sqlite3.Row] = {}
-    review_comment_coverage_segment_map: dict[tuple[str, int], sqlite3.Row] = {}
-    coverage_segment_to_comment_ids: dict[tuple[str, int], list[str]] = {}
-    thread_to_coverage_segment_keys: dict[str, list[tuple[str, int]]] = {}
+    raw_thread_source_span_map: dict[tuple[str, str, int], sqlite3.Row] = {}
+    thread_to_source_span_keys: dict[str, list[tuple[str, str, int]]] = {}
+    legacy_source_documents: list[str] = []
     raw_thread_map: dict[str, sqlite3.Row] = {}
     atomic_map: dict[str, sqlite3.Row] = {}
     atomic_state_map: dict[str, sqlite3.Row] = {}
@@ -2587,6 +2690,7 @@ def main() -> int:
     export_patch_set_map: dict[str, sqlite3.Row] = {}
     export_patch_count_map: dict[str, int] = {}
     export_artifact_map: dict[str, sqlite3.Row] = {}
+    stage3_coverage_advisories: list[str] = []
     runtime_language_context = {
         "document_language": "en",
         "working_language": "en",
@@ -2612,9 +2716,9 @@ def main() -> int:
                 resume_recent_decisions,
                 resume_must_not_forget,
                 review_comment_source_document_map,
-                review_comment_coverage_segment_map,
-                coverage_segment_to_comment_ids,
-                thread_to_coverage_segment_keys,
+                raw_thread_source_span_map,
+                thread_to_source_span_keys,
+                legacy_source_documents,
                 raw_thread_map,
                 atomic_map,
                 atomic_state_map,
@@ -2640,6 +2744,7 @@ def main() -> int:
                 export_artifact_map,
                 supplement_suggestion_map,
                 supplement_suggestion_count_by_comment,
+                stage3_coverage_advisories,
                 content_errors,
             ) = validate_database_content(connection, db_path)
             format_errors.extend(content_errors)
@@ -2659,9 +2764,9 @@ def main() -> int:
             stage_num,
             active_comment_id,
             review_comment_source_document_map,
-            review_comment_coverage_segment_map,
-            coverage_segment_to_comment_ids,
-            thread_to_coverage_segment_keys,
+            raw_thread_source_span_map,
+            thread_to_source_span_keys,
+            legacy_source_documents,
             raw_thread_map,
             atomic_map,
             atomic_state_map,
@@ -2698,7 +2803,7 @@ def main() -> int:
             resume_recent_decisions,
             resume_must_not_forget,
             review_comment_source_document_map,
-            review_comment_coverage_segment_map,
+            raw_thread_source_span_map,
             raw_thread_map,
             atomic_map,
             atomic_state_map,
@@ -2745,6 +2850,7 @@ def main() -> int:
         export_patch_set_map,
         export_patch_count_map,
         export_artifact_map,
+        stage3_coverage_advisories,
         format_errors,
         dependency_errors,
         consistency_errors,

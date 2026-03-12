@@ -37,6 +37,10 @@ enums:
   coverage_status:
     - covered
     - uncovered
+  span_role:
+    - primary
+    - supporting
+    - duplicate_filtered
   location_role:
     - primary
     - supporting
@@ -92,6 +96,7 @@ required_tables:
   - raw_thread_atomic_links
   - atomic_comment_source_spans
   - review_comment_source_documents
+  - raw_thread_source_spans
   - review_comment_coverage_segments
   - review_comment_coverage_segment_comment_links
   - atomic_comment_state
@@ -210,6 +215,18 @@ tables:
           source_label TEXT NOT NULL DEFAULT '',
           source_path TEXT NOT NULL DEFAULT '',
           original_text TEXT NOT NULL
+      )
+  - name: raw_thread_source_spans
+    sql: |
+      CREATE TABLE IF NOT EXISTS raw_thread_source_spans (
+          thread_id TEXT NOT NULL REFERENCES raw_review_threads(thread_id) ON DELETE CASCADE,
+          source_document_id TEXT NOT NULL REFERENCES review_comment_source_documents(source_document_id) ON DELETE CASCADE,
+          span_order INTEGER NOT NULL,
+          span_role TEXT NOT NULL CHECK (span_role IN ('primary', 'supporting', 'duplicate_filtered')),
+          start_offset INTEGER NOT NULL CHECK (start_offset >= 0),
+          end_offset INTEGER NOT NULL CHECK (end_offset > start_offset),
+          span_text TEXT NOT NULL,
+          PRIMARY KEY (thread_id, source_document_id, span_order)
       )
   - name: review_comment_coverage_segments
     sql: |
