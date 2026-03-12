@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import importlib
 import re
 import sqlite3
@@ -87,6 +88,7 @@ DEFAULT_ENUMS = {
     "source_type": {"reviewer_comment", "editor_comment"},
     "source_kind": {"review_comments_source", "editor_letter_source"},
     "coverage_status": {"covered", "uncovered"},
+    "span_role": {"primary", "supporting", "duplicate_filtered"},
     "location_role": {"primary", "supporting"},
     "response_role": {"primary", "supporting", "merged_duplicate"},
     "profile_target": {"manuscript", "response_letter"},
@@ -112,29 +114,30 @@ REPAIR_PRIORITY = {
     "atomic_comments": 6,
     "raw_thread_atomic_links": 7,
     "review_comment_source_documents": 8,
-    "review_comment_coverage_segments": 9,
-    "review_comment_coverage_segment_comment_links": 10,
-    "atomic_comment_state": 11,
-    "atomic_comment_target_locations": 12,
-    "atomic_comment_analysis_links": 13,
-    "strategy_cards": 14,
-    "strategy_action_manuscript_drafts": 15,
-    "comment_response_drafts": 16,
-    "comment_completion_status": 17,
-    "comment_blockers": 18,
-    "response_thread_resolution_links": 19,
-    "style_profiles": 20,
-    "style_profile_rules": 21,
-    "action_copy_variants": 22,
-    "selected_action_copy_variants": 23,
-    "response_thread_rows": 24,
-    "export_patch_sets": 25,
-    "export_patches": 26,
-    "export_artifacts": 27,
-    "supplement_suggestion_items": 28,
-    "supplement_suggestion_intake_links": 29,
-    "supplement_intake_items": 30,
-    "supplement_landing_links": 31,
+    "raw_thread_source_spans": 9,
+    "review_comment_coverage_segments": 10,
+    "review_comment_coverage_segment_comment_links": 11,
+    "atomic_comment_state": 12,
+    "atomic_comment_target_locations": 13,
+    "atomic_comment_analysis_links": 14,
+    "strategy_cards": 15,
+    "strategy_action_manuscript_drafts": 16,
+    "comment_response_drafts": 17,
+    "comment_completion_status": 18,
+    "comment_blockers": 19,
+    "response_thread_resolution_links": 20,
+    "style_profiles": 21,
+    "style_profile_rules": 22,
+    "action_copy_variants": 23,
+    "selected_action_copy_variants": 24,
+    "response_thread_rows": 25,
+    "export_patch_sets": 26,
+    "export_patches": 27,
+    "export_artifacts": 28,
+    "supplement_suggestion_items": 29,
+    "supplement_suggestion_intake_links": 30,
+    "supplement_intake_items": 31,
+    "supplement_landing_links": 32,
 }
 
 
@@ -193,6 +196,7 @@ ALLOWED_STAGE_GATE = enum_values("stage_gate")
 ALLOWED_SOURCE_TYPE = enum_values("source_type")
 ALLOWED_SOURCE_KIND = enum_values("source_kind")
 ALLOWED_COVERAGE_STATUS = enum_values("coverage_status")
+ALLOWED_SPAN_ROLE = enum_values("span_role")
 ALLOWED_LOCATION_ROLE = enum_values("location_role")
 ALLOWED_RESPONSE_ROLE = enum_values("response_role")
 ALLOWED_PROFILE_TARGET = enum_values("profile_target")
@@ -245,6 +249,7 @@ def ensure_runtime_schema_compatibility(connection: sqlite3.Connection) -> None:
         not table_exists(connection, table_name)
         for table_name in (
             "review_comment_source_documents",
+            "raw_thread_source_spans",
             "review_comment_coverage_segments",
             "review_comment_coverage_segment_comment_links",
         )
@@ -260,6 +265,19 @@ def ensure_runtime_schema_compatibility(connection: sqlite3.Connection) -> None:
         if not isinstance(table, dict) or "sql" not in table:
             raise RuntimeError("each schema table entry must contain an 'sql' field")
         connection.execute(str(table["sql"]))
+    ensure_column_exists(
+        connection,
+        table_name="raw_thread_source_spans",
+        column_name="span_role",
+        ddl="ALTER TABLE raw_thread_source_spans ADD COLUMN span_role TEXT NOT NULL DEFAULT 'primary'",
+    )
+    connection.execute(
+        """
+        UPDATE raw_thread_source_spans
+        SET span_role = 'primary'
+        WHERE span_role IS NULL OR TRIM(span_role) = ''
+        """
+    )
     if legacy_missing_coverage_tables:
         backfill_legacy_review_comment_coverage(connection)
     if legacy_missing_supplement_tables:
@@ -319,6 +337,16 @@ def table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    rows = fetch_all(connection, f"PRAGMA table_info({table_name})")
+    return any(str(row["name"]) == column_name for row in rows)
+
+
+def ensure_column_exists(connection: sqlite3.Connection, *, table_name: str, column_name: str, ddl: str) -> None:
+    if table_exists(connection, table_name) and not column_exists(connection, table_name, column_name):
+        connection.execute(ddl)
+
+
 def split_multiline(value: str) -> list[str]:
     return [line.strip() for line in value.splitlines() if line.strip()]
 
@@ -328,11 +356,55 @@ def normalize_newlines(value: str) -> str:
 
 
 def backfill_legacy_review_comment_coverage(connection: sqlite3.Connection) -> None:
-    existing_row = fetch_one(
+    existing_span = fetch_one(
+        connection,
+        "SELECT 1 FROM raw_thread_source_spans LIMIT 1",
+    )
+    if existing_span is not None:
+        return
+    source_row = fetch_one(
         connection,
         "SELECT 1 FROM review_comment_source_documents LIMIT 1",
     )
-    if existing_row is not None:
+    segment_rows = fetch_all(
+        connection,
+        """
+        SELECT source_document_id, segment_order, coverage_status, segment_text, thread_id
+        FROM review_comment_coverage_segments
+        ORDER BY source_document_id, segment_order
+        """,
+    )
+    if source_row is not None and segment_rows:
+        span_order_by_thread_doc: dict[tuple[str, str], int] = defaultdict(int)
+        cursor_by_source_doc: dict[str, int] = defaultdict(int)
+        for row in segment_rows:
+            source_document_id = str(row["source_document_id"])
+            segment_text = str(row["segment_text"] or "")
+            start_offset = cursor_by_source_doc[source_document_id]
+            end_offset = start_offset + len(segment_text)
+            cursor_by_source_doc[source_document_id] = end_offset
+            if str(row["coverage_status"]) != "covered":
+                continue
+            thread_id = str(row["thread_id"] or "")
+            if not thread_id or not segment_text:
+                continue
+            span_order_by_thread_doc[(thread_id, source_document_id)] += 1
+            connection.execute(
+                """
+                INSERT INTO raw_thread_source_spans (
+                    thread_id, source_document_id, span_order, span_role, start_offset, end_offset, span_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    thread_id,
+                    source_document_id,
+                    span_order_by_thread_doc[(thread_id, source_document_id)],
+                    "primary",
+                    start_offset,
+                    end_offset,
+                    segment_text,
+                ),
+            )
         return
     thread_rows = fetch_all(
         connection,
@@ -355,6 +427,7 @@ def backfill_legacy_review_comment_coverage(connection: sqlite3.Connection) -> N
     comment_ids_by_thread: dict[str, list[str]] = defaultdict(list)
     for row in thread_links:
         comment_ids_by_thread[str(row["thread_id"])].append(str(row["comment_id"]))
+    connection.execute("DELETE FROM raw_thread_source_spans")
     connection.execute("DELETE FROM review_comment_coverage_segment_comment_links")
     connection.execute("DELETE FROM review_comment_coverage_segments")
     connection.execute("DELETE FROM review_comment_source_documents")
@@ -376,6 +449,22 @@ def backfill_legacy_review_comment_coverage(connection: sqlite3.Connection) -> N
                 document_order,
                 f"{reviewer_id} / thread {thread_order}",
                 f"legacy://review-comments/{thread_id}",
+                original_text,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO raw_thread_source_spans (
+                thread_id, source_document_id, span_order, span_role, start_offset, end_offset, span_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                thread_id,
+                source_document_id,
+                1,
+                "primary",
+                0,
+                len(original_text),
                 original_text,
             ),
         )
@@ -574,6 +663,24 @@ def tex_escape(value: str) -> str:
     return escaped
 
 
+def coverage_excerpt(value: str, *, limit: int = 140) -> str:
+    compact = " ".join(value.split())
+    if len(compact) > limit:
+        compact = f"{compact[: limit - 3]}..."
+    return compact.replace("|", "\\|")
+
+
+def short_thread_tag(thread_id: str, *, duplicate: bool = False) -> str:
+    match = re.fullmatch(r"reviewer_(\d+)_thread_(\d+)", thread_id)
+    if match is None:
+        base = f"[{thread_id}]"
+        return f"{base[:-1]} dup]" if duplicate else base
+    reviewer_no = int(match.group(1))
+    thread_no = int(match.group(2))
+    base = f"[R{reviewer_no}_T{thread_no:03d}]"
+    return f"{base[:-1]} dup]" if duplicate else base
+
+
 def build_comment_source_index(connection: sqlite3.Connection) -> dict[str, dict[str, list[str]]]:
     rows = fetch_all(
         connection,
@@ -725,6 +832,23 @@ def build_raw_review_threads_context(connection: sqlite3.Connection) -> dict[str
         ORDER BY rrt.reviewer_id, rrt.thread_order, rtl.link_order
         """,
     )
+    span_rows = fetch_all(
+        connection,
+        """
+        SELECT rts.thread_id, rts.span_role, rts.span_text, rts.span_order, rts.start_offset, rts.end_offset,
+               rts.source_document_id, COALESCE(rcsd.document_order, 999999) AS document_order
+        FROM raw_thread_source_spans rts
+        LEFT JOIN review_comment_source_documents rcsd ON rcsd.source_document_id = rts.source_document_id
+        WHERE rts.span_role IN ('primary', 'supporting')
+        ORDER BY document_order, rts.source_document_id, rts.thread_id, rts.span_order, rts.start_offset, rts.end_offset
+        """,
+    )
+    source_spans_by_thread: dict[str, list[str]] = defaultdict(list)
+    for span in span_rows:
+        thread_id = str(span["thread_id"])
+        span_text = str(span["span_text"] or "")
+        if span_text:
+            source_spans_by_thread[thread_id].append(span_text)
     thread_map: dict[str, dict[str, Any]] = {}
     for row in rows:
         thread_id = str(row["thread_id"])
@@ -744,6 +868,12 @@ def build_raw_review_threads_context(connection: sqlite3.Connection) -> dict[str
             thread["linked_comment_ids"].append(str(row["comment_id"]))
     for thread in thread_map.values():
         thread["linked_comment_ids"] = join_ordered(thread["linked_comment_ids"])
+        source_spans = source_spans_by_thread.get(str(thread["thread_id"]), [])
+        if source_spans:
+            ordered_unique_source_spans = list(dict.fromkeys(source_spans))
+            thread["aggregated_original_text"] = "\n\n".join(ordered_unique_source_spans)
+        else:
+            thread["aggregated_original_text"] = str(thread["original_text"])
     ordered_rows = sorted(thread_map.values(), key=lambda item: (item["reviewer_id"], item["thread_order"], item["thread_id"]))
     return {"rows": ordered_rows}
 
@@ -824,22 +954,35 @@ def build_thread_to_atomic_mapping_context(connection: sqlite3.Connection) -> di
 
 
 def build_review_comment_coverage_context(connection: sqlite3.Connection) -> dict[str, Any]:
-    rows = fetch_all(
+    document_rows = fetch_all(
         connection,
         """
-        SELECT d.source_document_id, d.source_kind, d.document_order, d.source_label, d.source_path, d.original_text,
-               s.segment_order, s.coverage_status, s.segment_text, s.thread_id,
-               l.link_order, l.comment_id
+        SELECT source_document_id, source_kind, document_order, source_label, source_path, original_text
         FROM review_comment_source_documents d
-        LEFT JOIN review_comment_coverage_segments s ON s.source_document_id = d.source_document_id
-        LEFT JOIN review_comment_coverage_segment_comment_links l
-          ON l.source_document_id = s.source_document_id
-         AND l.segment_order = s.segment_order
-        ORDER BY d.document_order, d.source_document_id, s.segment_order, l.link_order
+        ORDER BY d.document_order, d.source_document_id
         """,
     )
+    span_rows = fetch_all(
+        connection,
+        """
+        SELECT thread_id, source_document_id, span_order, span_role, start_offset, end_offset, span_text
+        FROM raw_thread_source_spans
+        ORDER BY source_document_id, start_offset, end_offset, thread_id, span_order
+        """,
+    )
+    link_rows = fetch_all(
+        connection,
+        """
+        SELECT thread_id, comment_id, link_order
+        FROM raw_thread_atomic_links
+        ORDER BY thread_id, link_order, comment_id
+        """,
+    )
+    comment_ids_by_thread: dict[str, list[str]] = defaultdict(list)
+    for row in link_rows:
+        comment_ids_by_thread[str(row["thread_id"])].append(str(row["comment_id"]))
     documents: dict[str, dict[str, Any]] = {}
-    for row in rows:
+    for row in document_rows:
         source_document_id = str(row["source_document_id"])
         document = documents.setdefault(
             source_document_id,
@@ -851,39 +994,115 @@ def build_review_comment_coverage_context(connection: sqlite3.Connection) -> dic
                 "source_path": str(row["source_path"]),
                 "original_text": str(row["original_text"]),
                 "segments": [],
-                "_segment_map": {},
                 "_covered_threads": set(),
             },
         )
-        if row["segment_order"] is None:
-            continue
-        segment_order = int(row["segment_order"])
-        segment = document["_segment_map"].setdefault(
-            segment_order,
-            {
-                "segment_order": segment_order,
-                "coverage_status": str(row["coverage_status"]),
-                "segment_text": str(row["segment_text"]),
-                "thread_id": str(row["thread_id"] or ""),
-                "comment_ids": [],
-            },
-        )
-        if segment not in document["segments"]:
-            document["segments"].append(segment)
-        if row["comment_id"] is not None:
-            segment["comment_ids"].append(str(row["comment_id"]))
-        if segment["coverage_status"] == "covered" and segment["thread_id"]:
-            document["_covered_threads"].add(segment["thread_id"])
+    spans_by_document: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in span_rows:
+        spans_by_document[str(row["source_document_id"])].append(row)
 
     ordered_documents = sorted(documents.values(), key=lambda item: (item["document_order"], item["source_document_id"]))
     for document in ordered_documents:
-        document["segments"] = sorted(document["segments"], key=lambda item: item["segment_order"])
-        for segment in document["segments"]:
-            segment["comment_ids"] = [comment_id for comment_id in dict.fromkeys(segment["comment_ids"]) if comment_id]
+        coverage_mappings: list[dict[str, str | int]] = []
+        original_text = str(document["original_text"])
+        spans = sorted(
+            spans_by_document.get(str(document["source_document_id"]), []),
+            key=lambda row: (int(row["start_offset"]), int(row["end_offset"]), str(row["thread_id"]), int(row["span_order"])),
+        )
+        role_counts = {"primary": 0, "supporting": 0, "duplicate_filtered": 0}
+        pointer = 0
+        for span in spans:
+            start_offset = max(0, min(len(original_text), int(span["start_offset"])))
+            end_offset = max(start_offset, min(len(original_text), int(span["end_offset"])))
+            if start_offset > pointer:
+                uncovered_text = original_text[pointer:start_offset]
+                if uncovered_text:
+                    document["segments"].append(
+                        {
+                            "coverage_status": "uncovered",
+                            "segment_text": uncovered_text,
+                            "segment_text_html": html.escape(uncovered_text),
+                            "thread_id": "",
+                            "thread_tag": "",
+                            "comment_ids": [],
+                            "comment_ids_display": "",
+                            "span_role": "",
+                            "highlight_style": "",
+                        }
+                    )
+            covered_text = original_text[start_offset:end_offset]
+            thread_id = str(span["thread_id"])
+            span_role = str(span["span_role"] or "primary")
+            if span_role not in ALLOWED_SPAN_ROLE:
+                span_role = "primary"
+            comment_ids = [comment_id for comment_id in dict.fromkeys(comment_ids_by_thread.get(thread_id, [])) if comment_id]
+            is_duplicate = span_role == "duplicate_filtered"
+            role_counts[span_role] += 1
+            document["segments"].append(
+                {
+                    "coverage_status": "covered",
+                    "segment_text": covered_text,
+                    "segment_text_html": html.escape(covered_text),
+                    "thread_id": thread_id,
+                    "thread_tag": short_thread_tag(thread_id, duplicate=is_duplicate),
+                    "comment_ids": comment_ids,
+                    "comment_ids_display": ", ".join(comment_ids),
+                    "span_role": span_role,
+                    "highlight_style": "duplicate" if is_duplicate else "covered",
+                }
+            )
+            document["_covered_threads"].add(thread_id)
+            if covered_text:
+                coverage_mappings.append(
+                    {
+                        "source_document_id": str(document["source_document_id"]),
+                        "thread_id": thread_id,
+                        "span_role": span_role,
+                        "span_order": int(span["span_order"]),
+                        "start_offset": int(span["start_offset"]),
+                        "end_offset": int(span["end_offset"]),
+                        "comment_ids_display": ", ".join(comment_ids),
+                        "segment_excerpt": coverage_excerpt(covered_text),
+                    }
+                )
+            pointer = max(pointer, end_offset)
+        if pointer < len(original_text):
+            uncovered_text = original_text[pointer:]
+            if uncovered_text:
+                document["segments"].append(
+                    {
+                        "coverage_status": "uncovered",
+                        "segment_text": uncovered_text,
+                        "segment_text_html": html.escape(uncovered_text),
+                        "thread_id": "",
+                        "thread_tag": "",
+                        "comment_ids": [],
+                        "comment_ids_display": "",
+                        "span_role": "",
+                        "highlight_style": "",
+                    }
+                )
+        if not document["segments"] and original_text:
+            document["segments"] = [
+                {
+                    "coverage_status": "uncovered",
+                    "segment_text": original_text,
+                    "segment_text_html": html.escape(original_text),
+                    "thread_id": "",
+                    "thread_tag": "",
+                    "comment_ids": [],
+                    "comment_ids_display": "",
+                    "span_role": "",
+                    "highlight_style": "",
+                }
+            ]
         document["covered_segments"] = sum(1 for segment in document["segments"] if segment["coverage_status"] == "covered")
         document["uncovered_segments"] = sum(1 for segment in document["segments"] if segment["coverage_status"] == "uncovered")
         document["covered_threads"] = len(document["_covered_threads"])
-        document.pop("_segment_map", None)
+        document["covered_primary_segments"] = role_counts["primary"]
+        document["covered_supporting_segments"] = role_counts["supporting"]
+        document["covered_duplicate_segments"] = role_counts["duplicate_filtered"]
+        document["coverage_mappings"] = coverage_mappings
         document.pop("_covered_threads", None)
     return {"documents": ordered_documents}
 

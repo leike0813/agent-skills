@@ -387,7 +387,7 @@ conda run --no-capture-output -n DataProcessing python -u \
 - 先抽出原始 reviewer / editor 条目，写入 `raw_review_threads`
 - 再由 LLM 做去重、归并、原子化，产出 canonical `atomic_comments`
 - 再写 `raw_thread_atomic_links` 与 `atomic_comment_source_spans`
-- 再写 `review_comment_source_documents`、`review_comment_coverage_segments` 与 `review_comment_coverage_segment_comment_links`
+- 再写 `review_comment_source_documents` 与 `raw_thread_source_spans`
 - 更新 `resume_brief`
 - 补充 `resume_recent_decisions`
 - 补充 `resume_must_not_forget`
@@ -397,8 +397,10 @@ conda run --no-capture-output -n DataProcessing python -u \
 - Stage 3 先保留 raw thread 层，再进入 canonical atomic 建模，不能跳过中间映射层
 - reviewer / editor 原始条目边界先按原文自然条目保留，不在 raw thread 层做语义合并
 - `raw_review_threads.original_text` 与 `atomic_comment_source_spans.excerpt_text` 必须保留原语言
+- `raw_review_threads.original_text` 必须可回溯到原始 reviewer/editor 文本，不得写成纯归纳改写句
 - `raw_review_threads.normalized_summary`、`atomic_comments.canonical_summary` 与 `atomic_comments.required_action` 必须写成工作语言
-- Stage 3 必须额外形成 `06-review-comment-coverage.md`，用近似原文件文本拷贝展示哪些原文已被提取到 `thread_id` / `comment_id`
+- `raw_thread_source_spans.span_role` 采用三类：`primary`（主意见）、`supporting`（正文/补充论据）、`duplicate_filtered`（重复出现但摘要层去重）
+- Stage 3 必须额外形成 `06-review-comment-coverage.md`，按完整原始 reviewer/editor 文档顺序展示：`primary/supporting` 用红色高亮，`duplicate_filtered` 用橙色高亮并附 `dup` 标签，未覆盖片段保持默认文本色，并在附录表中给出 `thread_id` / `comment_id` / `span_role` 与 offset 映射
 - canonical atomic item 必须满足：可独立回应、可独立制定修改动作、可独立判定完成
 - 跨 reviewer 的重复意见默认采用保守合并：只有核心问题和期望动作都基本一致时才合并
 - 若诉求角度、修改范围或所需证据明显不同，则保留为不同 atomic item
@@ -411,7 +413,9 @@ conda run --no-capture-output -n DataProcessing python -u \
 - 是否合并存在高风险歧义且无法仅凭现有材料判断
 - editor 要求与 reviewer 要求冲突，无法直接决定建模方式
 - 存在 `thread_id` 未映射任何 `comment_id` 或 `comment_id` 未被任何 `thread_id` 引用
-- coverage view 仍存在无法解释的未覆盖残留，或 coverage 标记无法稳定映射到正确 `thread_id` / `comment_id`
+- coverage view 仍存在无法解释的未覆盖残留，或覆盖映射附录无法稳定映射到正确 `thread_id` / `comment_id`
+- gate 报告 legacy thread 级覆盖真源（例如 `legacy-thread::...`），要求基于原始 reviewer/editor 文件重跑 Stage 3
+- gate 的 “仅标题覆盖、正文疑似漏抽” 提示属于弱提示：必须与用户核查，但不直接阻断 Stage 4
 
 完成定义：
 
@@ -420,6 +424,7 @@ conda run --no-capture-output -n DataProcessing python -u \
 - 每个 `thread_id` 至少映射到一个 `comment_id`
 - 每个 `comment_id` 至少被一个 `thread_id` 引用
 - `atomic_comment_source_spans` 足以解释每个合并来源
+- 每个 `thread_id` 至少有一条 `raw_thread_source_spans`，且至少包含一条 `span_role='primary'`，并满足 span offset 与 span_text 能精确回放到 `review_comment_source_documents.original_text`
 - `06-review-comment-coverage.md` 已生成并足以供用户审阅
 - 用户已明确确认 coverage 审阅结果
 - `gate-and-render` 允许进入 Stage 4

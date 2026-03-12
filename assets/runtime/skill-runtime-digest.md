@@ -27,7 +27,9 @@
 - 首次初始化前先确认文本语言与工作语言
 - 每次写库后都必须运行 `gate-and-render` 核心脚本
 - 有 `pending_user_confirmations` 时先请求确认
-- Stage 3 建模完成后必须先展示 `06-review-comment-coverage.md` 并拿到用户确认，确认前不得进入 Stage 4
+- Stage 3 建模完成后必须先展示 `06-review-comment-coverage.md`（完整原文顺序 + 红色高亮 `primary/supporting` + 橙色高亮 `duplicate_filtered` + 短 `thread_id` 标签 + 覆盖映射附录）并拿到用户确认，确认前不得进入 Stage 4
+- Stage 3 覆盖真源以 `review_comment_source_documents` + `raw_thread_source_spans` 为准；若 gate 提示 legacy thread 级覆盖真源，必须重跑 Stage 3 重建
+- 每个 `thread_id` 至少包含一条 `span_role='primary'`；“仅标题覆盖、正文疑似漏抽”作为弱提示提醒用户复核，不直接触发 repair 阻断
 - 有 `global_blockers` 时先请求补材或澄清
 - Stage 5 必须先形成策略卡并完成显式确认，确认前不得形成 Stage 5 drafts
 - 进入 Stage 5 后必须形成 `14-supplement-suggestion-plan.md`，先展示全局补材建议 backlog，再处理后续 intake

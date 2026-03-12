@@ -99,8 +99,7 @@
   - `raw_thread_atomic_links`
   - `atomic_comment_source_spans`
   - `review_comment_source_documents`
-  - `review_comment_coverage_segments`
-  - `review_comment_coverage_segment_comment_links`
+  - `raw_thread_source_spans`
   - `workflow_pending_user_confirmations`
   - `workflow_state`
   - `resume_brief`
@@ -108,25 +107,23 @@
   - `resume_must_not_forget`
 - 推荐 SQL 顺序：
   1. `PRAGMA foreign_keys = ON`
-  2. `DELETE FROM review_comment_coverage_segment_comment_links`
-  3. `DELETE FROM review_comment_coverage_segments`
-  4. `DELETE FROM review_comment_source_documents`
-  5. `DELETE FROM atomic_comment_source_spans`
-  6. `DELETE FROM raw_thread_atomic_links`
-  7. `DELETE FROM atomic_comments`
-  8. `DELETE FROM raw_review_threads`
-  9. 批量插入 `raw_review_threads`
-  10. 批量插入 `atomic_comments`
-  11. 批量插入 `raw_thread_atomic_links`
-  12. 批量插入 `atomic_comment_source_spans`
-  13. 批量插入 `review_comment_source_documents`
-  14. 批量插入 `review_comment_coverage_segments`
-  15. 批量插入 `review_comment_coverage_segment_comment_links`
-  16. 重建 `workflow_pending_user_confirmations`
-  17. `UPDATE resume_brief ...`
-  18. 插入至少一条 `resume_recent_decisions`
-  19. 视情况插入 `resume_must_not_forget`
-  20. `UPDATE workflow_state SET current_stage = 'stage_3', stage_gate = 'blocked', active_comment_id = NULL, next_action = 'request_stage3_coverage_confirmation' WHERE id = 1`
+  2. `DELETE FROM raw_thread_source_spans`
+  3. `DELETE FROM review_comment_source_documents`
+  4. `DELETE FROM atomic_comment_source_spans`
+  5. `DELETE FROM raw_thread_atomic_links`
+  6. `DELETE FROM atomic_comments`
+  7. `DELETE FROM raw_review_threads`
+  8. 批量插入 `raw_review_threads`
+  9. 批量插入 `atomic_comments`
+  10. 批量插入 `raw_thread_atomic_links`
+  11. 批量插入 `atomic_comment_source_spans`
+  12. 批量插入 `review_comment_source_documents`
+  13. 批量插入 `raw_thread_source_spans`（必须包含 `span_role`，取值仅 `primary` / `supporting` / `duplicate_filtered`）
+  14. 重建 `workflow_pending_user_confirmations`
+  15. `UPDATE resume_brief ...`
+  16. 插入至少一条 `resume_recent_decisions`
+  17. 视情况插入 `resume_must_not_forget`
+  18. `UPDATE workflow_state SET current_stage = 'stage_3', stage_gate = 'blocked', active_comment_id = NULL, next_action = 'request_stage3_coverage_confirmation' WHERE id = 1`
 - 进入这条 recipe 之前应先确认：
   - Stage 2 已完成
   - 结构摘要足以支撑 reviewer thread 与 atomic 建模
@@ -136,6 +133,10 @@
   - 每个 `thread_id` 至少映射到一个 `comment_id`
   - 每个 `comment_id` 至少被一个 `thread_id` 引用
   - `atomic_comment_source_spans` 足以解释跨 reviewer 合并依据
+  - 每个 `thread_id` 至少有一条 `raw_thread_source_spans`
+  - 每个 `thread_id` 至少有一条 `span_role='primary'`
+  - 每条 `raw_thread_source_spans` 都满足 offset 与 span_text 对原文的精确匹配
+  - 若存在语义重复但被摘要层去重的原文位置，应写入 `span_role='duplicate_filtered'` 以保证覆盖可见性
   - `06-review-comment-coverage.md` 已可供用户审阅
   - `gate-and-render` 返回 Stage 3 coverage confirmation 请求
 
