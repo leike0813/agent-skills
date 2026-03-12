@@ -8,6 +8,27 @@
 - {{ msg("view.review_comment_coverage.legend_duplicate") }}
 - {{ msg("view.review_comment_coverage.legend_uncovered") }}
 
+## {{ msg("view.review_comment_coverage.metrics_title") }}
+
+{{ msg("view.review_comment_coverage.metrics_intro") }}
+
+- {{ msg("view.review_comment_coverage.metrics_global_including_duplicates", covered_chars=coverage_metrics["global"]["covered_chars_including_duplicates"], total_chars=coverage_metrics["global"]["total_chars"], coverage_percent=coverage_metrics["global"]["coverage_percent_including_duplicates"]) }}
+- {{ msg("view.review_comment_coverage.metrics_global_non_duplicate", covered_chars=coverage_metrics["global"]["covered_chars_non_duplicate"], total_chars=coverage_metrics["global"]["total_chars"], coverage_percent=coverage_metrics["global"]["coverage_percent_non_duplicate"]) }}
+- {{ msg("view.review_comment_coverage.metrics_threshold_text", hard_threshold=coverage_metrics["thresholds"]["hard_percent"], soft_threshold=coverage_metrics["thresholds"]["soft_percent"]) }}
+- {{ msg("view.review_comment_coverage.metrics_gate_status", gate_status=msg("view.review_comment_coverage.metrics_gate_status." ~ coverage_metrics["gate_status"])) }}
+
+### {{ msg("view.review_comment_coverage.metrics_per_document_title") }}
+
+{% if coverage_metrics["per_document"] -%}
+| `source_document_id` | {{ msg("view.review_comment_coverage.metrics_doc_label") }} | {{ msg("view.review_comment_coverage.metrics_doc_total") }} | {{ msg("view.review_comment_coverage.metrics_doc_including_duplicates") }} | {{ msg("view.review_comment_coverage.metrics_doc_non_duplicate") }} |
+| --- | --- | --- | --- | --- |
+{% for item in coverage_metrics["per_document"] -%}
+| `{{ item.source_document_id }}` | {{ item.source_label }} | `{{ item.total_chars }}` | `{{ item.covered_chars_including_duplicates }}/{{ item.total_chars }}` ({{ "%.2f"|format(item.coverage_percent_including_duplicates) }}%) | `{{ item.covered_chars_non_duplicate }}/{{ item.total_chars }}` ({{ "%.2f"|format(item.coverage_percent_non_duplicate) }}%) |
+{% endfor -%}
+{% else -%}
+{{ msg("view.review_comment_coverage.metrics_no_documents") }}
+{% endif %}
+
 {% for document in documents -%}
 ## {{ document.source_label }}
 

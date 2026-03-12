@@ -43,11 +43,14 @@ from workspace_db import (
     SUPPLEMENT_INTAKE_PLAN_MD,
     RESPONSE_TABLE_PREVIEW_MD,
     RESPONSE_TABLE_PREVIEW_TEX,
+    STAGE3_COVERAGE_HARD_THRESHOLD,
+    STAGE3_COVERAGE_SOFT_THRESHOLD,
     STYLE_PROFILE_MD,
     STRATEGY_CARD_DIR,
     TARGET_LOCATION_RE,
     THREAD_TO_ATOMIC_MAPPING_MD,
     artifact_paths,
+    build_stage3_character_coverage_metrics,
     connect_db,
     ensure_runtime_schema_compatibility,
     fetch_all,
@@ -1269,6 +1272,7 @@ def validate_dependencies(
     export_patch_count_map: dict[str, int],
     export_artifact_map: dict[str, sqlite3.Row],
     supplement_suggestion_count_by_comment: dict[str, int],
+    stage3_coverage_metrics: dict[str, Any],
 ) -> list[dict[str, Any]]:
     dependency_errors: list[dict[str, Any]] = []
     raw_thread_ids = set(raw_thread_map)
@@ -1358,6 +1362,30 @@ def validate_dependencies(
                     path=db_path,
                     thread_id=thread_id,
                 )
+        global_metrics = stage3_coverage_metrics.get("global", {})
+        total_chars = int(global_metrics.get("total_chars", 0))
+        coverage_percent_including_duplicates = float(
+            global_metrics.get("coverage_percent_including_duplicates", 0.0)
+        )
+        hard_threshold = float(
+            stage3_coverage_metrics.get("thresholds", {}).get(
+                "hard_percent",
+                STAGE3_COVERAGE_HARD_THRESHOLD,
+            )
+        )
+        if total_chars > 0 and str(stage3_coverage_metrics.get("gate_status", "")) == "hard_fail":
+            add_issue(
+                dependency_errors,
+                "raw_thread_source_spans",
+                "coverage_below_hard_threshold",
+                (
+                    "stage_3 global character coverage is below hard threshold: "
+                    f"{coverage_percent_including_duplicates:.2f}% < {hard_threshold:.2f}% "
+                    f"(covered_chars_including_duplicates={int(global_metrics.get('covered_chars_including_duplicates', 0))}, "
+                    f"total_chars={total_chars})"
+                ),
+                path=db_path,
+            )
 
     if stage_number >= 4:
         for comment_id in sorted(atomic_ids):
@@ -2563,6 +2591,7 @@ def build_instruction_payload(
     export_patch_count_map: dict[str, int],
     export_artifact_map: dict[str, sqlite3.Row],
     stage3_coverage_advisories: list[str],
+    stage3_coverage_metrics: dict[str, Any],
     format_errors: list[dict[str, Any]],
     dependency_errors: list[dict[str, Any]],
     consistency_errors: list[dict[str, Any]],
@@ -2630,6 +2659,7 @@ def build_instruction_payload(
         "repair_sequence": repair_sequence,
         "blocked_actions": blocked_actions,
         "coverage_review_advisories": stage3_coverage_advisories,
+        "coverage_review_metrics": stage3_coverage_metrics,
     }
 
 
@@ -2691,6 +2721,26 @@ def main() -> int:
     export_patch_count_map: dict[str, int] = {}
     export_artifact_map: dict[str, sqlite3.Row] = {}
     stage3_coverage_advisories: list[str] = []
+    stage3_coverage_metrics: dict[str, Any] = {
+        "metric_type": "character_coverage",
+        "scope": "global",
+        "counts_include_whitespace": True,
+        "includes_duplicate_filtered": True,
+        "thresholds": {
+            "hard_percent": STAGE3_COVERAGE_HARD_THRESHOLD,
+            "soft_percent": STAGE3_COVERAGE_SOFT_THRESHOLD,
+            "unit": "percent",
+        },
+        "global": {
+            "total_chars": 0,
+            "covered_chars_including_duplicates": 0,
+            "covered_chars_non_duplicate": 0,
+            "coverage_percent_including_duplicates": 0.0,
+            "coverage_percent_non_duplicate": 0.0,
+        },
+        "per_document": [],
+        "gate_status": "not_applicable",
+    }
     runtime_language_context = {
         "document_language": "en",
         "working_language": "en",
@@ -2747,6 +2797,11 @@ def main() -> int:
                 stage3_coverage_advisories,
                 content_errors,
             ) = validate_database_content(connection, db_path)
+            stage3_coverage_metrics = build_stage3_character_coverage_metrics(
+                connection,
+                hard_threshold=STAGE3_COVERAGE_HARD_THRESHOLD,
+                soft_threshold=STAGE3_COVERAGE_SOFT_THRESHOLD,
+            )
             format_errors.extend(content_errors)
     except sqlite3.DatabaseError as exc:
         return emit({"status": "error", "error": f"sqlite error: {exc}"}, exit_code=1)
@@ -2790,8 +2845,25 @@ def main() -> int:
             export_patch_count_map,
             export_artifact_map,
             supplement_suggestion_count_by_comment,
+            stage3_coverage_metrics,
         )
     )
+    if (
+        stage_num >= 3
+        and str(stage3_coverage_metrics.get("gate_status", "")) == "soft_warn"
+    ):
+        global_metrics = stage3_coverage_metrics.get("global", {})
+        thresholds = stage3_coverage_metrics.get("thresholds", {})
+        stage3_coverage_advisories.append(
+            localization.msg(
+                "gate.stage3.coverage.soft_advisory",
+                coverage_percent=f"{float(global_metrics.get('coverage_percent_including_duplicates', 0.0)):.2f}",
+                hard_threshold=f"{float(thresholds.get('hard_percent', STAGE3_COVERAGE_HARD_THRESHOLD)):.2f}",
+                soft_threshold=f"{float(thresholds.get('soft_percent', STAGE3_COVERAGE_SOFT_THRESHOLD)):.2f}",
+                covered_chars=int(global_metrics.get("covered_chars_including_duplicates", 0)),
+                total_chars=int(global_metrics.get("total_chars", 0)),
+            )
+        )
     consistency_errors.extend(
         validate_consistency(
             db_path,
@@ -2851,6 +2923,7 @@ def main() -> int:
         export_patch_count_map,
         export_artifact_map,
         stage3_coverage_advisories,
+        stage3_coverage_metrics,
         format_errors,
         dependency_errors,
         consistency_errors,

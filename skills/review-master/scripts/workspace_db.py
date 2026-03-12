@@ -140,6 +140,9 @@ REPAIR_PRIORITY = {
     "supplement_landing_links": 32,
 }
 
+STAGE3_COVERAGE_HARD_THRESHOLD = 30.0
+STAGE3_COVERAGE_SOFT_THRESHOLD = 50.0
+
 
 def required_runtime_dependencies() -> list[str]:
     missing: list[str] = []
@@ -681,6 +684,175 @@ def short_thread_tag(thread_id: str, *, duplicate: bool = False) -> str:
     return f"{base[:-1]} dup]" if duplicate else base
 
 
+def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not intervals:
+        return []
+    ordered = sorted(intervals, key=lambda item: (item[0], item[1]))
+    merged: list[tuple[int, int]] = []
+    current_start, current_end = ordered[0]
+    for start, end in ordered[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+            continue
+        merged.append((current_start, current_end))
+        current_start, current_end = start, end
+    merged.append((current_start, current_end))
+    return merged
+
+
+def interval_covered_chars(intervals: list[tuple[int, int]]) -> int:
+    return sum(end - start for start, end in merge_intervals(intervals))
+
+
+def coverage_percent(covered_chars: int, total_chars: int) -> float:
+    if total_chars <= 0:
+        return 0.0
+    return round((covered_chars / total_chars) * 100.0, 2)
+
+
+def classify_stage3_coverage_gate_status(
+    coverage_percent_including_duplicates: float,
+    total_chars: int,
+    *,
+    hard_threshold: float,
+    soft_threshold: float,
+) -> str:
+    if total_chars <= 0:
+        return "not_applicable"
+    if coverage_percent_including_duplicates < hard_threshold:
+        return "hard_fail"
+    if coverage_percent_including_duplicates < soft_threshold:
+        return "soft_warn"
+    return "pass"
+
+
+def build_stage3_character_coverage_metrics_from_rows(
+    document_rows: list[sqlite3.Row],
+    span_rows: list[sqlite3.Row],
+    *,
+    hard_threshold: float = STAGE3_COVERAGE_HARD_THRESHOLD,
+    soft_threshold: float = STAGE3_COVERAGE_SOFT_THRESHOLD,
+) -> dict[str, Any]:
+    document_order: list[str] = []
+    document_meta: dict[str, dict[str, Any]] = {}
+    for row in document_rows:
+        source_document_id = str(row["source_document_id"])
+        if source_document_id in document_meta:
+            continue
+        original_text = str(row["original_text"] or "")
+        document_order.append(source_document_id)
+        document_meta[source_document_id] = {
+            "source_document_id": source_document_id,
+            "source_label": str(row["source_label"] or source_document_id),
+            "source_kind": str(row["source_kind"] or ""),
+            "document_order": int(row["document_order"]),
+            "total_chars": len(original_text),
+        }
+
+    inclusive_intervals: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    non_duplicate_intervals: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for row in span_rows:
+        source_document_id = str(row["source_document_id"])
+        if source_document_id not in document_meta:
+            continue
+        total_chars = int(document_meta[source_document_id]["total_chars"])
+        start_offset = max(0, min(total_chars, int(row["start_offset"])))
+        end_offset = max(0, min(total_chars, int(row["end_offset"])))
+        if end_offset <= start_offset:
+            continue
+        inclusive_intervals[source_document_id].append((start_offset, end_offset))
+        span_role = str(row["span_role"] or "primary")
+        if span_role != "duplicate_filtered":
+            non_duplicate_intervals[source_document_id].append((start_offset, end_offset))
+
+    per_document: list[dict[str, Any]] = []
+    global_total_chars = 0
+    global_covered_including_duplicates = 0
+    global_covered_non_duplicate = 0
+    for source_document_id in document_order:
+        meta = document_meta[source_document_id]
+        total_chars = int(meta["total_chars"])
+        covered_including_duplicates = interval_covered_chars(inclusive_intervals.get(source_document_id, []))
+        covered_non_duplicate = interval_covered_chars(non_duplicate_intervals.get(source_document_id, []))
+        global_total_chars += total_chars
+        global_covered_including_duplicates += covered_including_duplicates
+        global_covered_non_duplicate += covered_non_duplicate
+        per_document.append(
+            {
+                **meta,
+                "covered_chars_including_duplicates": covered_including_duplicates,
+                "covered_chars_non_duplicate": covered_non_duplicate,
+                "coverage_percent_including_duplicates": coverage_percent(covered_including_duplicates, total_chars),
+                "coverage_percent_non_duplicate": coverage_percent(covered_non_duplicate, total_chars),
+            }
+        )
+
+    global_coverage_including_duplicates = coverage_percent(
+        global_covered_including_duplicates,
+        global_total_chars,
+    )
+    global_coverage_non_duplicate = coverage_percent(
+        global_covered_non_duplicate,
+        global_total_chars,
+    )
+    gate_status = classify_stage3_coverage_gate_status(
+        global_coverage_including_duplicates,
+        global_total_chars,
+        hard_threshold=hard_threshold,
+        soft_threshold=soft_threshold,
+    )
+    return {
+        "metric_type": "character_coverage",
+        "scope": "global",
+        "counts_include_whitespace": True,
+        "includes_duplicate_filtered": True,
+        "thresholds": {
+            "hard_percent": hard_threshold,
+            "soft_percent": soft_threshold,
+            "unit": "percent",
+        },
+        "global": {
+            "total_chars": global_total_chars,
+            "covered_chars_including_duplicates": global_covered_including_duplicates,
+            "covered_chars_non_duplicate": global_covered_non_duplicate,
+            "coverage_percent_including_duplicates": global_coverage_including_duplicates,
+            "coverage_percent_non_duplicate": global_coverage_non_duplicate,
+        },
+        "per_document": per_document,
+        "gate_status": gate_status,
+    }
+
+
+def build_stage3_character_coverage_metrics(
+    connection: sqlite3.Connection,
+    *,
+    hard_threshold: float = STAGE3_COVERAGE_HARD_THRESHOLD,
+    soft_threshold: float = STAGE3_COVERAGE_SOFT_THRESHOLD,
+) -> dict[str, Any]:
+    document_rows = fetch_all(
+        connection,
+        """
+        SELECT source_document_id, source_kind, document_order, source_label, source_path, original_text
+        FROM review_comment_source_documents d
+        ORDER BY d.document_order, d.source_document_id
+        """,
+    )
+    span_rows = fetch_all(
+        connection,
+        """
+        SELECT thread_id, source_document_id, span_order, span_role, start_offset, end_offset, span_text
+        FROM raw_thread_source_spans
+        ORDER BY source_document_id, start_offset, end_offset, thread_id, span_order
+        """,
+    )
+    return build_stage3_character_coverage_metrics_from_rows(
+        document_rows,
+        span_rows,
+        hard_threshold=hard_threshold,
+        soft_threshold=soft_threshold,
+    )
+
+
 def build_comment_source_index(connection: sqlite3.Connection) -> dict[str, dict[str, list[str]]]:
     rows = fetch_all(
         connection,
@@ -1001,6 +1173,16 @@ def build_review_comment_coverage_context(connection: sqlite3.Connection) -> dic
     for row in span_rows:
         spans_by_document[str(row["source_document_id"])].append(row)
 
+    coverage_metrics = build_stage3_character_coverage_metrics_from_rows(
+        document_rows,
+        span_rows,
+        hard_threshold=STAGE3_COVERAGE_HARD_THRESHOLD,
+        soft_threshold=STAGE3_COVERAGE_SOFT_THRESHOLD,
+    )
+    metrics_by_document = {
+        str(item["source_document_id"]): item for item in coverage_metrics["per_document"]
+    }
+
     ordered_documents = sorted(documents.values(), key=lambda item: (item["document_order"], item["source_document_id"]))
     for document in ordered_documents:
         coverage_mappings: list[dict[str, str | int]] = []
@@ -1103,8 +1285,21 @@ def build_review_comment_coverage_context(connection: sqlite3.Connection) -> dic
         document["covered_supporting_segments"] = role_counts["supporting"]
         document["covered_duplicate_segments"] = role_counts["duplicate_filtered"]
         document["coverage_mappings"] = coverage_mappings
+        document_metrics = metrics_by_document.get(str(document["source_document_id"]), {})
+        document["char_total"] = int(document_metrics.get("total_chars", len(original_text)))
+        document["char_covered_including_duplicates"] = int(document_metrics.get("covered_chars_including_duplicates", 0))
+        document["char_covered_non_duplicate"] = int(document_metrics.get("covered_chars_non_duplicate", 0))
+        document["char_coverage_percent_including_duplicates"] = float(
+            document_metrics.get("coverage_percent_including_duplicates", 0.0)
+        )
+        document["char_coverage_percent_non_duplicate"] = float(
+            document_metrics.get("coverage_percent_non_duplicate", 0.0)
+        )
         document.pop("_covered_threads", None)
-    return {"documents": ordered_documents}
+    return {
+        "documents": ordered_documents,
+        "coverage_metrics": coverage_metrics,
+    }
 
 
 def build_atomic_workboard_context(connection: sqlite3.Connection) -> dict[str, Any]:
