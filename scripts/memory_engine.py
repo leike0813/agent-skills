@@ -12,7 +12,8 @@ DEFAULT_MEMORY_DIR = ".memory"
 DEFAULT_MEMORY_FILE = ""
 MEMORY_FILE_SUFFIX = ".memory.jsonl"
 SCHEMA_VERSION = 3
-VALID_STAGES = {"initial_analysis", "qa", "note"}
+VALID_INSTRUCTION_STAGES = {"initial_analysis", "qa", "note"}
+VALID_UPDATE_STAGES = {"initial_analysis", "qa"}
 VALID_SOURCE_TYPES = {"web_url", "reference_title"}
 QA_THRESHOLD = 1200
 QA_SUMMARY_MIN = 900
@@ -22,8 +23,8 @@ BASE_REQUIRED_FIELDS = {"stage", "paper_key", "session_key"}
 STAGE_REQUIRED_FIELDS = {
     "initial_analysis": {"analysis_tldr", "analysis_outline", "section_summaries"},
     "qa": {"user_question", "agent_answer_summary", "answer_original_length", "evidence_items"},
-    "note": {"content"},
 }
+NOTE_INSTRUCTION_REQUIRED_FIELDS = ["paper_key", "session_key"]
 
 
 def _print_json(data: dict[str, Any], exit_code: int = 0) -> None:
@@ -335,14 +336,13 @@ def _instruction_specs() -> dict[str, dict[str, Any]]:
             },
         },
         "note": {
-            "required_fields": _required_fields_for_stage("note"),
+            "required_fields": NOTE_INSTRUCTION_REQUIRED_FIELDS,
             "rules": {
                 "execution_steps": [
                     "Only enter note generation after the user explicitly requests it.",
                     "Call instructions for note first.",
                     "Call read and use structured memory records as the only source material.",
                     "Generate the final Markdown note in the fixed section order.",
-                    "Call update with stage=note after the note content is finalized.",
                 ],
                 "note_optional": True,
                 "read_policy": {
@@ -350,7 +350,7 @@ def _instruction_specs() -> dict[str, dict[str, Any]]:
                     "ignore_legacy_by_default": True,
                     "analysis_scope": "paper_global",
                     "qa_scope": "current_session_only",
-                    "single_note_record_only": True,
+                    "ignore_note_stage_records": True,
                 },
                 "note_generation": {
                     "consume_memory_directly": True,
@@ -371,17 +371,15 @@ def _instruction_specs() -> dict[str, dict[str, Any]]:
                         "证据原文",
                         "未解决点/后续动作",
                     ],
-                    "write_back_final_note": True,
-                    "note_memory_update_mode": "overwrite_existing_note",
+                    "persist_note_to_file_only": True,
                 },
                 "caution_points": [
                     "Do not enter note generation without explicit user consent.",
                     "Do not use raw answer text as a fallback source.",
                     "Do not expand the paper summary into a multi-section recap.",
-                    "Do not keep multiple stage=note records for the same paper.",
+                    "Do not write note content back into memory records.",
                 ],
                 "failure_conditions": [
-                    "Missing note content for update.",
                     "Structured memory records are unavailable or insufficient.",
                     "The final note does not follow the fixed section order.",
                 ],
@@ -399,13 +397,7 @@ def _instruction_specs() -> dict[str, dict[str, Any]]:
                     "must_use_memory_records_as_source": True,
                     "must_keep_qa_evidence_sources_verbatim": True,
                     "paper_summary_must_be_one_paragraph": True,
-                    "final_note_writeback_stage": "note",
-                    "note_record_uniqueness": "one_per_paper",
-                },
-                "update_payload": {
-                    "stage": "note",
-                    "required_fields": _required_fields_for_stage("note"),
-                    "content_semantics": "final_markdown_note_snapshot",
+                    "final_note_memory_writeback": False,
                 },
             },
         },
@@ -413,12 +405,12 @@ def _instruction_specs() -> dict[str, dict[str, Any]]:
 
 
 def handle_instructions(args: argparse.Namespace) -> None:
-    if args.stage not in VALID_STAGES:
+    if args.stage not in VALID_INSTRUCTION_STAGES:
         _print_json(
             {
                 "ok": False,
                 "error": "invalid_stage",
-                "valid_stages": sorted(VALID_STAGES),
+                "valid_stages": sorted(VALID_INSTRUCTION_STAGES),
             },
             exit_code=1,
         )
@@ -440,12 +432,12 @@ def _validate_payload(payload: Any) -> dict[str, Any]:
         _print_json({"ok": False, "error": "payload_must_be_object"}, exit_code=1)
 
     stage = str(payload.get("stage", ""))
-    if stage not in VALID_STAGES:
+    if stage not in VALID_UPDATE_STAGES:
         _print_json(
             {
                 "ok": False,
                 "error": "invalid_stage",
-                "valid_stages": sorted(VALID_STAGES),
+                "valid_stages": sorted(VALID_UPDATE_STAGES),
             },
             exit_code=1,
         )
@@ -544,10 +536,8 @@ def _build_stage_entry(payload: dict[str, Any]) -> dict[str, Any]:
             "next_actions": _coerce_str_list(payload.get("next_actions")),
         }
 
-    content = str(payload["content"]).strip()
-    if not content:
-        _print_json({"ok": False, "error": "note_content_must_be_non_empty"}, exit_code=1)
-    return base_entry | {"content": content}
+    _print_json({"ok": False, "error": "unsupported_stage_for_update", "stage": stage}, exit_code=1)
+    raise RuntimeError("unreachable")
 
 
 def handle_update(args: argparse.Namespace) -> None:
@@ -566,8 +556,6 @@ def handle_update(args: argparse.Namespace) -> None:
     entry = _build_stage_entry(payload_obj)
 
     existing_entries = _read_jsonl(memory_path)
-    if entry["stage"] == "note":
-        existing_entries = [item for item in existing_entries if str(item.get("stage")) != "note"]
     existing_entries.append(entry)
 
     with memory_path.open("w", encoding="utf-8") as handle:
@@ -600,7 +588,7 @@ def handle_read(args: argparse.Namespace) -> None:
             for entry in entries
             if str(entry.get("paper_key")) == args.paper_key
             and (
-                str(entry.get("stage")) in {"initial_analysis", "note"}
+                str(entry.get("stage")) in {"initial_analysis"}
                 or str(entry.get("session_key")) == args.session_key
             )
         ]
@@ -610,16 +598,7 @@ def handle_read(args: argparse.Namespace) -> None:
         if args.session_key:
             entries = [entry for entry in entries if str(entry.get("session_key")) == args.session_key]
 
-    latest_note: dict[str, Any] | None = None
-    filtered_entries: list[dict[str, Any]] = []
-    for entry in entries:
-        if str(entry.get("stage")) == "note":
-            latest_note = entry
-            continue
-        filtered_entries.append(entry)
-    if latest_note is not None:
-        filtered_entries.append(latest_note)
-    entries = filtered_entries
+    entries = [entry for entry in entries if str(entry.get("stage")) in {"initial_analysis", "qa"}]
 
     if args.limit is not None and args.limit >= 0:
         entries = entries[-args.limit :] if args.limit > 0 else []
