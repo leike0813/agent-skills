@@ -137,6 +137,7 @@
   - 每个 `thread_id` 至少有一条 `span_role='primary'`
   - 每条 `raw_thread_source_spans` 都满足 offset 与 span_text 对原文的精确匹配
   - 若存在语义重复但被摘要层去重的原文位置，应写入 `span_role='duplicate_filtered'` 以保证覆盖可见性
+  - Stage 3 字符级覆盖率主指标（含 `duplicate_filtered`）不得低于 hard `30%`；若介于 `30%-50%`，属于软提示，需与用户复核
   - `06-review-comment-coverage.md` 已可供用户审阅
   - `gate-and-render` 返回 Stage 3 coverage confirmation 请求
 

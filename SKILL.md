@@ -401,6 +401,9 @@ conda run --no-capture-output -n DataProcessing python -u \
 - `raw_review_threads.normalized_summary`、`atomic_comments.canonical_summary` 与 `atomic_comments.required_action` 必须写成工作语言
 - `raw_thread_source_spans.span_role` 采用三类：`primary`（主意见）、`supporting`（正文/补充论据）、`duplicate_filtered`（重复出现但摘要层去重）
 - Stage 3 必须额外形成 `06-review-comment-coverage.md`，按完整原始 reviewer/editor 文档顺序展示：`primary/supporting` 用红色高亮，`duplicate_filtered` 用橙色高亮并附 `dup` 标签，未覆盖片段保持默认文本色，并在附录表中给出 `thread_id` / `comment_id` / `span_role` 与 offset 映射
+- Stage 3 同时计算字符级覆盖率指标（字符口径使用 Python `len`，包含空白；主指标分子包含 `duplicate_filtered`）并写入覆盖率视图与 instruction payload：
+  - hard 阈值：`30%`（低于即硬阻断）
+  - soft 阈值：`50%`（介于 hard/soft 为软提示，不额外阻断）
 - canonical atomic item 必须满足：可独立回应、可独立制定修改动作、可独立判定完成
 - 跨 reviewer 的重复意见默认采用保守合并：只有核心问题和期望动作都基本一致时才合并
 - 若诉求角度、修改范围或所需证据明显不同，则保留为不同 atomic item
@@ -415,6 +418,7 @@ conda run --no-capture-output -n DataProcessing python -u \
 - 存在 `thread_id` 未映射任何 `comment_id` 或 `comment_id` 未被任何 `thread_id` 引用
 - coverage view 仍存在无法解释的未覆盖残留，或覆盖映射附录无法稳定映射到正确 `thread_id` / `comment_id`
 - gate 报告 legacy thread 级覆盖真源（例如 `legacy-thread::...`），要求基于原始 reviewer/editor 文件重跑 Stage 3
+- Stage 3 全局字符覆盖率低于 `30%`（含 duplicate 主指标）
 - gate 的 “仅标题覆盖、正文疑似漏抽” 提示属于弱提示：必须与用户核查，但不直接阻断 Stage 4
 
 完成定义：

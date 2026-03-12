@@ -89,6 +89,7 @@
   - 先稳定 raw thread 边界
   - 再做 canonical atomic 建模
   - 再生成 `06-review-comment-coverage.md`
+  - 同步检查字符级覆盖率阈值（hard=`30%`，soft=`50%`；主指标包含 `duplicate_filtered`）
   - `primary/supporting` 用红色高亮，`duplicate_filtered` 用橙色高亮展示重复但已去重的原文片段
   - 先请求用户确认 Stage 3 覆盖率，再进入阶段四
 - 阻断：
@@ -97,6 +98,7 @@
   - 存在未映射 thread 或孤立 atomic item
   - `raw_thread_source_spans` 不能精确回放到 `review_comment_source_documents.original_text`
   - 存在 `thread_id` 没有任何 `span_role='primary'`
+  - 全局字符覆盖率低于 hard 阈值（`30%`）
   - 仍在使用 legacy thread 级覆盖真源（需重跑 Stage 3）
   - `workflow_pending_user_confirmations` 非空
 - 禁止：
