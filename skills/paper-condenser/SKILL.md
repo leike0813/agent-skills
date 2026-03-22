@@ -7,19 +7,20 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 
 ## Overview
 
-将长篇学术论文、研究报告或章节转写为期刊论文式凝缩稿时，先做确定性初始化与 intake，再做语义理解、提问、方案确认，最后才进入正式撰写。本 skill 的运行方式是强约束协作：脚本负责确定性、重复性高、可验证的工作，LLM 负责语义理解、用户交互、判断与写作。
+将长篇学术论文、研究报告或章节转写为期刊论文式凝缩稿时，先做确定性初始化、intake 与 supporting-elements inventory，再做语义理解、提问、方案确认，最后才进入正式撰写。本 skill 的运行方式是强约束协作：脚本负责确定性、重复性高、可验证的工作，LLM 负责语义理解、用户交互、判断与写作。
 
 ## Input Contract
 
 - 首版正式输入是单个 UTF-8 `.tex` 原稿文件路径。
 - 只读读取原稿文件，不直接修改原文件。
-- 文件路径输入场景下，必须先建立 `artifacts/<document-slug>/` 任务目录，再继续任何语义分析。
-- 如果用户没有明确目标约束，必须先收集目标语言、目标体例、目标期刊类型、LaTeX 模板和目标正文长度，再继续推进。
+- 文件路径输入场景下，必须先在当前项目目录下建立 `.paper-condenser-tmp/<document-slug>/` 任务目录，再继续任何语义分析。
+- 如果用户没有明确目标约束，必须先收集目标语言、目标体例、目标期刊类型、LaTeX 模板、目标正文长度、图表处理偏好和参考文献处理偏好，再继续推进。
 
 ## Hard Constraints
 
 - 禁止一步到位直接生成目标论文全文。
 - 禁止替用户做语言、体例、目标期刊、正文长度、重点取舍等关键决策。
+- 禁止在最终稿中静默丢弃已批准保留的图、表、引用或参考文献结构。
 - 禁止直接修改原稿。
 - 禁止跳过阶段门禁直接进入后续阶段。
 - 仅把 `paper-condenser/references/` 下的文件视为包内参考资料；仓库根 `references/` 是开发资料，不是运行时包资源。
@@ -28,13 +29,16 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 
 - `scripts/bootstrap_runtime.py`
   - 只负责文件路径输入场景下的统一运行入口。
-  - 负责生成 `document-slug`、创建 `artifacts/<document-slug>/`、初始化运行期工件、并首填充 `manuscript-profile.json` 的确定性字段。
+  - 负责生成 `document-slug`、在当前项目目录下创建 `.paper-condenser-tmp/<document-slug>/`、初始化运行期工件、并首填充 `manuscript-profile.json` 的确定性字段。
 - `scripts/init_artifacts.py`
   - 只负责在已知 `artifact-root` 的前提下创建或补齐缺失工件。
   - 负责从 `assets/artifact-templates/` 复制模板，不负责语义判断。
 - `scripts/stage1_intake.py`
   - 只负责 Stage 1 的确定性 intake。
   - 负责读取单文件 `.tex` 原稿、写入 `content_preview`、`source_stats`、`intake_status`。
+- `scripts/extract_supporting_elements.py`
+  - 只负责 Stage 1 的 supporting-elements inventory。
+  - 负责从单文件 `.tex` 原稿中提取 figure、table、citation 和 bibliography 的确定性清单，并写回 `manuscript-profile.json`。
 - `scripts/init_final_draft.py`
   - 只负责 Stage 5 的确定性 preflight 与 `final-draft.tex` 骨架初始化。
   - 负责校验四个核心工件、读取 `latex_template_id`、确认方案已批准，并从内置模板复制出 `final-draft.tex`。
@@ -61,21 +65,28 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 必须维护以下四个核心工件，且职责边界不能混淆：
 
 - `manuscript-profile.json`
-  - 保存原稿事实层信息、确定性 intake 元信息，以及后续语义分析结果。
+  - 保存原稿事实层信息、确定性 intake 元信息、supporting-elements inventory，以及后续语义分析结果。
 - `target-settings.json`
-  - 保存用户确认后的目标约束，包括 LaTeX preset 选择。
+  - 保存用户确认后的目标约束，包括 LaTeX preset 选择、图表偏好和参考文献处理偏好。
 - `style-profile.md`
-  - 保存风格观察、问题诊断、修正建议和目标风格原则。
+  - 保存风格观察、问题诊断、修正建议和目标风格原则，包括 caption、table title、citation sentence 与 references presentation 的风格要求。
 - `condensation-plan.md`
-  - 保存凝缩执行方案、篇幅分配和用户批准记录。
+  - 保存凝缩执行方案、篇幅分配、图表/参考文献迁移决策和用户批准记录。
 - `final-draft.tex`
   - 保存 Stage 5 的正式 LaTeX 成稿；它不是中间工件，但它是最终输出的运行态真源。
+- `rewrite-report.md`
+  - 保存 Stage 5 的正式转写报告；它不是中间工件，但它是最终交付的伴随输出真源。
+
+运行态工件默认必须创建在**当前项目目录**下的 `.paper-condenser-tmp/` 中，而不是 Skill 包目录内部。
 
 文件路径输入场景下，优先运行统一运行入口：
 `python -u paper-condenser/scripts/bootstrap_runtime.py --source-path <SOURCE_PATH>`
 
 完成 runtime bootstrap 后，必须运行 Stage 1 intake：
 `python -u paper-condenser/scripts/stage1_intake.py --artifact-root <ARTIFACT_ROOT>`
+
+完成 intake 后，必须运行 supporting-elements extraction：
+`python -u paper-condenser/scripts/extract_supporting_elements.py --artifact-root <ARTIFACT_ROOT>`
 
 若只需要对一个已确定的工件目录做底层初始化，则运行：
 `python -u paper-condenser/scripts/init_artifacts.py --artifact-root <ARTIFACT_ROOT>`
@@ -89,7 +100,7 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 
 **Preconditions**
 
-- 文件路径输入场景下，`artifacts/<document-slug>/` 已存在。
+- 文件路径输入场景下，`.paper-condenser-tmp/<document-slug>/` 已存在。
 - `manuscript-profile.json` 已存在。
 
 **Required Script Calls**
@@ -97,6 +108,7 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 - 收到新的原稿文件路径时，先运行 `bootstrap_runtime.py`。
 - 若已知 `artifact-root` 但工件不完整，必须运行 `init_artifacts.py`。
 - 在任何语义分析前，必须运行 `stage1_intake.py` 并确认 `intake_status=complete`。
+- 在任何图、表、参考文献相关的语义判断前，必须运行 `extract_supporting_elements.py` 并确认 `supporting_elements_status=complete`。
 
 **LLM Tasks**
 
@@ -105,18 +117,20 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
   2. 归纳主题与核心研究问题，形成可工作的 `topic` 草案。
   3. 提炼 `main_work` 与 `novelty`，要求是结构化列表而不是口头总结。
   4. 形成 `section_outline`，至少覆盖当前处理范围内的主要章节或结构单元。
-  5. 识别可疑的非核心内容并写入 `removable_candidates`。
-  6. 把仍未解决的理解歧义写入 `open_questions`，而不是留在聊天上下文里。
+  5. 审阅 `supporting_elements` inventory，判断当前原稿中的图、表、引用和参考文献结构是否构成核心证据层，并把明显的风险或歧义写入 `open_questions`。
+  6. 识别可疑的非核心内容并写入 `removable_candidates`，其中包括可能被删改、并入正文或仅保留占位的图表候选。
+  7. 把仍未解决的理解歧义写入 `open_questions`，而不是留在聊天上下文里。
 - 只有当范围不清、文档边界不清、原稿明显过长且需要先锁定处理部分时，才向用户发起 Stage 1 提问。
 
 **Outputs**
 
-- 更新 `manuscript-profile.json`，至少补齐 `scope`、`topic`、`main_work`、`novelty`、`section_outline`、`removable_candidates`、`open_questions`。
+- 更新 `manuscript-profile.json`，至少补齐 `scope`、`topic`、`main_work`、`novelty`、`section_outline`、`removable_candidates`、`open_questions`，并保留 supporting-elements inventory。
 - 当 Stage 1 达到可用理解草案时，把 `status` 更新为 `analysis_complete`。
 
 **Do Not Advance Until**
 
 - 已完成 deterministic intake。
+- 已完成 supporting-elements inventory extraction。
 - 已识别当前处理范围并写入 `scope`。
 - `topic`、`main_work`、`novelty`、`section_outline`、`removable_candidates` 都已形成可用草案。
 - `open_questions` 已作为显式列表写回工件，即使当前为空也必须保留。
@@ -130,7 +144,7 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 
 **Required Script Calls**
 
-- 在开始正文写作前，必须先运行 `init_final_draft.py` 初始化 `final-draft.tex`。
+- 无新增必调脚本。
 
 **LLM Tasks**
 
@@ -140,11 +154,13 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
   3. 询问并写入 `target_journal_type`。
   4. 询问并写入 `latex_template_id`；首版只允许选择 skill 内置 preset。
   5. 询问并写入 `target_body_length.value` 与 `target_body_length.unit`。
-  6. 询问并写入 `must_keep`。
-  7. 询问并写入 `must_avoid`。
-  8. 在字段逐步补齐过程中持续更新 `target-settings.json`，但在正式确认前保持 `user_confirmed=false`。
-  9. 当整组设置齐备后，向用户做一次完整 readback，其中必须包含模板选择。
-  10. 只有在用户明确确认整组设置后，才把 `user_confirmed` 更新为 `true`。
+  6. 询问并写入 `figure_table_preference`。
+  7. 询问并写入 `reference_handling_preference`。
+  8. 询问并写入 `must_keep`。
+  9. 询问并写入 `must_avoid`。
+  10. 在字段逐步补齐过程中持续更新 `target-settings.json`，但在正式确认前保持 `user_confirmed=false`。
+  11. 当整组设置齐备后，向用户做一次完整 readback，其中必须包含模板选择、图表偏好和参考文献处理偏好。
+  12. 只有在用户明确确认整组设置后，才把 `user_confirmed` 更新为 `true`。
 
 **Outputs**
 
@@ -152,7 +168,7 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 
 **Do Not Advance Until**
 
-- `target_language`、`target_form`、`target_journal_type`、`target_body_length`、`must_keep`、`must_avoid` 都已写入。
+- `target_language`、`target_form`、`target_journal_type`、`target_body_length`、`figure_table_preference`、`reference_handling_preference`、`must_keep`、`must_avoid` 都已写入。
 - `latex_template_id` 已写入。
 - 已对整组设置做过完整 readback。
 - 用户已明确确认，且 `user_confirmed=true`。
@@ -173,8 +189,8 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 - 按以下顺序执行 Stage 3：
   1. 基于 Stage 1 与 Stage 2 的结果审视原稿的表达风格、结构习惯、语气和论述方式。
   2. 在 `Source Style` 中记录原稿已有的风格特征、优点、惯用表达和结构习惯。
-  3. 在 `Problems To Fix` 中记录需要纠正的风格、规范、语气或表达问题。
-  4. 在 `Target Style Guidance` 中形成面向目标稿的可执行写作原则和风格指导。
+  3. 在 `Problems To Fix` 中记录需要纠正的风格、规范、语气或表达问题，包括 caption、table title、citation sentence 和 references presentation 的问题。
+  4. 在 `Target Style Guidance` 中形成面向目标稿的可执行写作原则和风格指导，包括 supporting elements 的表达方式。
   5. 在 `Open Questions` 中记录仍需用户确认的风格偏好、语气边界或规范选择。
 - 只有在风格偏好、语气边界或表达规范存在不确定性时，才向用户发起 Stage 3 提问。
 
@@ -208,7 +224,9 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
   4. 在 `Target Outline` 中记录目标稿大纲。
   5. 在 `Length Allocation` 中记录各部分篇幅分配。
   6. 在 `Omit / Merge Strategy` 中记录压缩、合并、删除策略。
-  7. 在 `Approval` 中记录当前是否获得用户批准；仅在用户明确批准后将 `Status` 更新为 `approved`。
+  7. 在 `Figure / Table Plan` 中记录哪些图表保留、哪些表格改写为正文、哪些元素仅保留占位或删除。
+  8. 在 `Reference Plan` 中记录哪些引用必须保留、哪些参考文献结构沿用 BibTeX / citekey、哪些引用可合并或删除。
+  9. 在 `Approval` 中记录当前是否获得用户批准；仅在用户明确批准后将 `Status` 更新为 `approved`。
 - 只有在方案收敛或批准存在不确定性时，才向用户发起 Stage 4 提问。
 
 **Outputs**
@@ -217,7 +235,7 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 
 **Do Not Advance Until**
 
-- `Core Message`、`Priority Map`、`Target Outline`、`Length Allocation`、`Omit / Merge Strategy` 都已写入可执行内容。
+- `Core Message`、`Priority Map`、`Target Outline`、`Length Allocation`、`Omit / Merge Strategy`、`Figure / Table Plan`、`Reference Plan` 都已写入可执行内容。
 - `Approval` 已显式记录 `Status: approved`。
 
 ### Stage 5. 最终撰写
@@ -231,24 +249,27 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 
 **Required Script Calls**
 
-- 无新增必调脚本。
+- 进入最终写作前，必须先运行 `init_final_draft.py` 完成 drafting preflight，并初始化 `final-draft.tex` 的单文件骨架。
 
 **LLM Tasks**
 
-1. 先通过 `init_final_draft.py` 执行 drafting preflight，并初始化 `final-draft.tex` 的单文件骨架。
-2. 按 `Target Outline` 顺序逐段写作，把内容持续落到 `final-draft.tex`。
-3. 完成整稿整合，统一标题、摘要、章节层级、过渡关系和 LaTeX 结构。
-4. 做整稿校对，检查术语一致性、风格一致性、长度分配遵循情况，以及是否满足 `must_keep` / `must_avoid`。
-5. 若发现上游工件仍有关键缺口，暂停最终写作并回到相应阶段补齐；否则保留 `final-draft.tex` 作为正式成稿。
+1. 在骨架初始化完成后，按 `Target Outline` 顺序逐段写作，把内容持续落到 `final-draft.tex`，并同时遵循已批准的 `Figure / Table Plan` 与 `Reference Plan`。
+2. 完成整稿整合，统一标题、摘要、章节层级、过渡关系、LaTeX 结构以及 supporting elements 的嵌入方式。
+3. 对已批准保留的图、表、引用、参考文献做完整迁移；若当前轮次无法精修，必须保留清晰占位，而不是静默省略。
+4. 生成 `rewrite-report.md`，记录本轮转写的关键阶段决策、最终稿各部分相对原文的参照关系，以及后续修改风险。
+5. 做整稿与报告校对，检查术语一致性、风格一致性、长度分配遵循情况，以及是否满足 `must_keep` / `must_avoid`，并检查 supporting elements 没有被静默丢弃，且报告中的参照说明与最终稿一致。
+6. 若发现上游工件仍有关键缺口，暂停最终写作并回到相应阶段补齐；否则保留 `final-draft.tex` 与 `rewrite-report.md` 作为正式交付结果。
 
 **Outputs**
 
-- 生成 `artifacts/<document-slug>/final-draft.tex` 作为正式成稿。
+- 生成 `.paper-condenser-tmp/<document-slug>/final-draft.tex` 作为正式成稿。
+- 生成 `.paper-condenser-tmp/<document-slug>/rewrite-report.md` 作为正式转写报告。
 
 **Do Not Advance Until**
 
 - 已确认不存在未补齐的关键方案缺口。
 - `final-draft.tex` 已落盘。
+- `rewrite-report.md` 已落盘。
 
 ## Question Policy
 
@@ -256,27 +277,30 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 - 每一阶段优先问完成该阶段所需的最少问题，避免一次抛出过多无关问题。
 - Stage 1 只允许询问原稿范围、边界、章节归属和理解阻塞点，不得提前询问目标语言、目标体例、目标期刊类型或目标篇幅。
 - 如果 Stage 1 存在未决但不阻塞进入下一阶段的问题，先把它们写入 `manuscript-profile.json.open_questions`。
-- Stage 2 只允许询问目标语言、目标体例、目标期刊类型、LaTeX 模板选择、目标正文长度、`must_keep` 和 `must_avoid`，不得提前进入风格画像或凝缩方案。
+- Stage 2 只允许询问目标语言、目标体例、目标期刊类型、LaTeX 模板选择、目标正文长度、图表处理偏好、参考文献处理偏好、`must_keep` 和 `must_avoid`，不得提前进入风格画像或凝缩方案。
 - Stage 2 的模板选择只允许使用 skill 内置 preset，不接受首版外部模板路径。
 - Stage 2 收集到部分设置后，应先回写 `target-settings.json`，再继续补齐剩余字段；没有完整 readback 和明确确认前，不得把 `user_confirmed` 置为 `true`。
 - Stage 3 只允许询问风格偏好、语气边界、表达规范和修辞层面的取舍，不得提前进入 Stage 4 的重点/非重点、大纲或篇幅分配讨论。
 - 如果 Stage 3 存在未决但不阻塞进入下一阶段的风格问题，先把它们写入 `style-profile.md` 的 `Open Questions`。
-- Stage 4 只允许询问核心信息保留、重点/非重点、大纲、篇幅分配、删改策略和方案批准，不得提前进入最终撰写。
+- Stage 4 只允许询问核心信息保留、重点/非重点、大纲、篇幅分配、删改策略、图表取舍、引用与参考文献迁移策略和方案批准，不得提前进入最终撰写。
 - 如果 Stage 4 仍未获得明确批准，先把结果写回 `condensation-plan.md`，保持 `Approval` 为 `Status: not approved`。
 - Stage 5 只允许处理最终 LaTeX 撰写、整稿整合、整稿校对和必要的回退判定，不得把 Stage 5 变成重新谈判 Stage 2-4 的默认入口。
+- Stage 5 生成转写报告时，不得编造原文依据；所有参照说明都必须来自四个核心工件、supporting-elements inventory 和最终稿本身。
 - 如果发现原稿风格、结构或规范存在明显问题，可以提出建议，但建议不能替代用户确认。
 - 如果用户试图跳过分析和方案确认，明确说明当前缺失的工件或确认项，并把流程拉回到最近未完成阶段。
+- 运行态工件默认只能写入当前项目目录下的 `.paper-condenser-tmp/`，不得把中间工件或最终稿直接写进 Skill 包目录。
 
 ## Drafting Gate
 
 只有同时满足以下条件，才允许进入最终撰写阶段：
 
-- `artifacts/<document-slug>/manuscript-profile.json` 已形成可用版本。
-- `artifacts/<document-slug>/target-settings.json` 中关键目标设置已获得用户确认。
-- `artifacts/<document-slug>/target-settings.json` 中 `latex_template_id` 已明确。
-- `artifacts/<document-slug>/style-profile.md` 已总结出可执行的风格指导。
-- `artifacts/<document-slug>/condensation-plan.md` 已记录目标大纲、篇幅分配和用户批准。
-- `artifacts/<document-slug>/final-draft.tex` 是正式成稿的运行态真源。
+- `.paper-condenser-tmp/<document-slug>/manuscript-profile.json` 已形成可用版本。
+- `.paper-condenser-tmp/<document-slug>/target-settings.json` 中关键目标设置已获得用户确认。
+- `.paper-condenser-tmp/<document-slug>/target-settings.json` 中 `latex_template_id` 已明确。
+- `.paper-condenser-tmp/<document-slug>/style-profile.md` 已总结出可执行的风格指导。
+- `.paper-condenser-tmp/<document-slug>/condensation-plan.md` 已记录目标大纲、篇幅分配、图表/参考文献迁移决策和用户批准。
+- `.paper-condenser-tmp/<document-slug>/final-draft.tex` 是正式成稿的运行态真源。
+- `.paper-condenser-tmp/<document-slug>/rewrite-report.md` 是正式转写报告的运行态真源。
 
 只要其中任一条件不成立，就继续分析、提问或修订方案，不得生成最终凝缩稿。
 
@@ -289,11 +313,14 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 - `references/stage3-playbook.md`：Stage 3 子步骤、提问边界、失败处理与交接检查清单。
 - `references/stage4-playbook.md`：Stage 4 子步骤、提问边界、失败处理与交接检查清单。
 - `references/stage5-playbook.md`：Stage 5 LaTeX 模板初始化、分段写作、整稿整合、整稿校对与回退判定。
+- `references/rewrite-report-playbook.md`：Stage 5 转写报告的固定结构、混合级参照规则与失败处理。
+- `references/supporting-elements-playbook.md`：图、表、参考文献在 Stage 1 / 4 / 5 中的横切处理规则与脚本边界。
 - `references/SCI_paper_guidance.md`：SCI 论文体例、IMRaD 结构、图表与引文规范参考；在判断英文期刊稿的结构和表达规范时按需查阅。
 - `references/Chinese_paper_guidance.md`：中文期刊论文体例、摘要/图表/参考文献规范参考；在判断中文期刊稿的结构和表达规范时按需查阅。
 - `assets/artifact-templates/`：四个运行期工件的初始化模板。
 - `assets/latex-templates/`：Stage 5 使用的内置单文件 LaTeX preset。
 - `scripts/bootstrap_runtime.py`：文件路径输入场景的统一运行入口。
 - `scripts/stage1_intake.py`：单文件 `.tex` 原稿的 Stage 1 确定性 intake 入口。
+- `scripts/extract_supporting_elements.py`：单文件 `.tex` 原稿的 supporting-elements inventory 提取入口。
 - `scripts/init_artifacts.py`：正式工件初始化入口。
 - `scripts/init_final_draft.py`：Stage 5 的最终稿骨架初始化入口。

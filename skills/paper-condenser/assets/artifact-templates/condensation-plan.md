@@ -20,6 +20,14 @@
 
 <!-- 记录压缩、合并、删除策略 -->
 
+## Figure / Table Plan
+
+<!-- 记录哪些图表保留、改写、合并或删除 -->
+
+## Reference Plan
+
+<!-- 记录引用与参考文献的保留、压缩与迁移策略 -->
+
 ## Approval
 
 Status: not approved

@@ -46,8 +46,9 @@ def slugify_source_name(source_path: Path) -> str:
 
 
 def resolve_artifact_root(script_path: Path, document_slug: str) -> Path:
-    package_root = script_path.resolve().parent.parent
-    return package_root / "artifacts" / document_slug
+    _ = script_path
+    project_root = Path.cwd().resolve()
+    return project_root / ".paper-condenser-tmp" / document_slug
 
 
 def detect_source_type(source_path: Path) -> str:
