@@ -10,6 +10,17 @@
     "file_size_bytes": 0
   },
   "intake_status": "pending",
+  "supporting_elements_status": "pending",
+  "supporting_elements": {
+    "figures": [],
+    "tables": [],
+    "citations": [],
+    "bibliography": {
+      "mode": "none",
+      "resources": [],
+      "entries": []
+    }
+  },
   "topic": "",
   "main_work": [],
   "novelty": [],

@@ -7,6 +7,8 @@
     "value": 0,
     "unit": ""
   },
+  "figure_table_preference": "",
+  "reference_handling_preference": "",
   "must_keep": [],
   "must_avoid": [],
   "user_confirmed": false

@@ -5,7 +5,7 @@
 ## 适用范围
 
 - 本 playbook 只处理风格画像、问题诊断和目标稿风格指导。
-- Stage 3 的正式真源是 `artifacts/<document-slug>/style-profile.md`。
+- Stage 3 的正式真源是 `.paper-condenser-tmp/<document-slug>/style-profile.md`。
 - 本阶段不新增脚本，也不修改 `style-profile.md` 的四段模板结构。
 
 ## 子步骤顺序
@@ -26,6 +26,7 @@
   - Stage 2 的目标设置
 - 操作：
   - 记录原稿的表达风格、句式习惯、论述密度、结构节奏、常用措辞和已有优点。
+  - 记录 caption、table title、citation sentence 和 references presentation 的既有习惯。
 - 应写入章节：
   - `## Source Style`
 
@@ -33,6 +34,7 @@
 
 - 操作：
   - 识别需要纠偏的风格、规范、语气或表达问题。
+  - 单独识别图题、表题、引文引入句和参考文献呈现方式中的问题。
   - 区分“应保留的特色”和“应纠正的问题”。
 - 应写入章节：
   - `## Problems To Fix`
@@ -41,6 +43,7 @@
 
 - 操作：
   - 给出面向目标稿的可执行写作原则。
+  - 把 supporting elements 的表达方式也转化为写作层面的指导。
   - 将 Stage 2 的目标设置转化为写作层面的风格指导，而不是停留在抽象偏好。
 - 应写入章节：
   - `## Target Style Guidance`

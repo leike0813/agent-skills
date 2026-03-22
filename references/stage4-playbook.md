@@ -4,9 +4,9 @@
 
 ## 适用范围
 
-- 本 playbook 只处理凝缩方案收敛与批准。
-- Stage 4 的正式真源是 `artifacts/<document-slug>/condensation-plan.md`。
-- 本阶段不新增脚本，也不修改 `condensation-plan.md` 的六段模板结构。
+- 本 playbook 处理凝缩方案收敛、supporting elements 迁移方案与批准。
+- Stage 4 的正式真源是 `.paper-condenser-tmp/<document-slug>/condensation-plan.md`。
+- 本阶段不新增脚本，也不修改 `condensation-plan.md` 的既有规划结构之外的状态字段。
 
 ## 子步骤顺序
 
@@ -56,7 +56,23 @@
 - 应写入章节：
   - `## Omit / Merge Strategy`
 
-### 7. Approval 记录
+### 7. Figure / Table Plan 制定
+
+- 操作：
+  - 明确保留哪些图表、哪些表格改写为正文、哪些元素可以合并或删除。
+  - 明确哪些元素即使暂时无法精修，也必须在 Stage 5 中保留清晰占位。
+- 应写入章节：
+  - `## Figure / Table Plan`
+
+### 8. Reference Plan 制定
+
+- 操作：
+  - 明确保留哪些引用、哪些参考文献结构沿用 BibTeX / citekey、哪些引用可压缩或删除。
+  - 明确最终稿应保留何种 citation / bibliography 结构。
+- 应写入章节：
+  - `## Reference Plan`
+
+### 9. Approval 记录
 
 - 操作：
   - 在方案完整后请求用户批准。
@@ -71,6 +87,8 @@
 - 目标大纲存在多个合理版本，无法自行判断用户偏好。
 - 篇幅分配取决于用户取舍。
 - 某项删改策略可能改变用户想保留的重点。
+- 某个图表是否必须保留会影响论证力度。
+- 某组引用是否允许压缩会影响学术支撑边界。
 - 当前方案已成形，但还未得到明确批准。
 
 ## 禁止提问条件
@@ -110,4 +128,6 @@
 - `Target Outline` 已写入目标稿大纲
 - `Length Allocation` 已写入篇幅分配
 - `Omit / Merge Strategy` 已写入删改策略
+- `Figure / Table Plan` 已写入图表迁移策略
+- `Reference Plan` 已写入引用与参考文献迁移策略
 - `Approval` 已记录 `Status: approved`

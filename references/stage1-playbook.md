@@ -5,8 +5,8 @@
 ## 适用范围
 
 - 本 playbook 只适用于单文件 `.tex` 路径输入。
-- Stage 1 的正式真源是 `artifacts/<document-slug>/manuscript-profile.json`。
-- `bootstrap_runtime.py`、`init_artifacts.py`、`stage1_intake.py` 只负责确定性准备；其后所有理解动作都由 LLM 完成。
+- Stage 1 的正式真源是 `.paper-condenser-tmp/<document-slug>/manuscript-profile.json`。
+- `bootstrap_runtime.py`、`init_artifacts.py`、`stage1_intake.py`、`extract_supporting_elements.py` 只负责确定性准备；其后所有理解动作都由 LLM 完成。
 
 ## 子步骤顺序
 
@@ -32,7 +32,18 @@
   - `source_stats`
   - `intake_status`
 
-### 3. 处理范围识别
+### 3. Supporting-Elements Inventory
+
+- 输入：`artifact-root`。
+- 操作：
+  - 运行 `extract_supporting_elements.py --artifact-root <ARTIFACT_ROOT>`。
+  - 确认 `supporting_elements_status=complete`。
+  - 确认 `supporting_elements` 中已形成 figure、table、citation 与 bibliography 的事实层清单。
+- 应写入字段：
+  - `supporting_elements_status`
+  - `supporting_elements`
+
+### 4. 处理范围识别
 
 - 输入：原稿文本、`content_preview`、源文件路径。
 - 操作：
@@ -41,7 +52,7 @@
 - 应写入字段：
   - `scope`
 
-### 4. 主题与研究问题归纳
+### 5. 主题与研究问题归纳
 
 - 输入：完整原稿或当前处理范围内的主要内容。
 - 操作：
@@ -50,7 +61,7 @@
 - 应写入字段：
   - `topic`
 
-### 5. 主要工作与创新点提炼
+### 6. 主要工作与创新点提炼
 
 - 输入：原稿中的方法、结果、贡献描述。
 - 操作：
@@ -60,17 +71,18 @@
   - `main_work`
   - `novelty`
 
-### 6. 章节结构与可裁剪内容识别
+### 7. 章节结构与可裁剪内容识别
 
 - 输入：原稿章节标题、结构单元、内容分布。
 - 操作：
   - 形成原稿结构概览。
+  - 审阅 supporting-elements inventory，判断哪些图表或引用显然属于核心证据层，哪些更像补充信息。
   - 标记可能属于背景堆叠、重复说明、实现细节过多、非核心扩展内容的段落类型。
 - 应写入字段：
   - `section_outline`
   - `removable_candidates`
 
-### 7. 开放问题整理与门禁判断
+### 8. 开放问题整理与门禁判断
 
 - 输入：前六步结果。
 - 操作：
@@ -123,6 +135,7 @@
 ## Stage 2 交接检查清单
 
 - `intake_status=complete`
+- `supporting_elements_status=complete`
 - `scope` 已写入
 - `topic` 非空
 - `main_work` 非空

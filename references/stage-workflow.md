@@ -6,7 +6,7 @@
 
 ### Preconditions
 
-- 文件路径输入场景下，已存在 `artifacts/<document-slug>/`。
+- 文件路径输入场景下，已存在 `.paper-condenser-tmp/<document-slug>/`。
 - `manuscript-profile.json` 已存在。
 
 ### Required Script Calls
@@ -14,6 +14,7 @@
 - 新的原稿文件路径进入流程：先调用 `bootstrap_runtime.py`。
 - 已知 `artifact-root` 但工件不完整：调用 `init_artifacts.py`。
 - 任何语义分析前：调用 `stage1_intake.py`，并确认 `intake_status=complete`。
+- 任何 supporting-elements 语义判断前：调用 `extract_supporting_elements.py`，并确认 `supporting_elements_status=complete`。
 
 ### LLM Tasks
 
@@ -22,8 +23,9 @@
 3. 提炼 `main_work`，要求每项工作都可独立陈述。
 4. 提炼 `novelty`，允许是初步判断，但不得留空。
 5. 形成 `section_outline`，至少覆盖主要章节或结构单元。
-6. 识别 `removable_candidates`，列出可能压缩、合并或删除的非核心内容。
-7. 把当前仍未解决的理解歧义写入 `open_questions`。
+6. 审阅 supporting-elements inventory，识别图表、表格、引用与参考文献结构中的关键证据层和潜在歧义。
+7. 识别 `removable_candidates`，列出可能压缩、合并或删除的非核心内容，包括可能被改写为正文的图表候选。
+8. 把当前仍未解决的理解歧义写入 `open_questions`。
 
 ### Stage 1 Question Triggers
 
@@ -45,6 +47,7 @@
 ### Do Not Advance Until
 
 - 已完成 deterministic intake。
+- 已完成 supporting-elements inventory extraction。
 - 已识别当前处理范围。
 - 已形成非空的 `topic`、`main_work`、`novelty`、`section_outline`、`removable_candidates` 草案。
 - `open_questions` 已作为显式列表写回工件，即使当前为空也必须保留。
@@ -58,7 +61,7 @@
 
 ### Required Script Calls
 
-- 在开始正文写作前，先调用 `init_final_draft.py` 初始化 `final-draft.tex`。
+- 无新增必调脚本。
 
 ### LLM Tasks
 
@@ -67,23 +70,27 @@
 3. 询问并写入 `target_journal_type`。
 4. 询问并写入 `latex_template_id`。
 5. 询问并写入 `target_body_length.value` 与 `target_body_length.unit`。
-6. 询问并写入 `must_keep`。
-7. 询问并写入 `must_avoid`。
-8. 在正式确认前持续回写 `target-settings.json`，保持 `user_confirmed=false`。
-9. 当整组设置齐备后，对用户做一次完整 readback，其中必须包含模板选择。
-10. 仅在用户明确确认后，把 `user_confirmed` 更新为 `true`。
+6. 询问并写入 `figure_table_preference`。
+7. 询问并写入 `reference_handling_preference`。
+8. 询问并写入 `must_keep`。
+9. 询问并写入 `must_avoid`。
+10. 在正式确认前持续回写 `target-settings.json`，保持 `user_confirmed=false`。
+11. 当整组设置齐备后，对用户做一次完整 readback，其中必须包含模板选择、图表偏好和参考文献偏好。
+12. 仅在用户明确确认后，把 `user_confirmed` 更新为 `true`。
 
 ### Stage 2 Question Triggers
 
 - 任一核心目标设置字段仍为空。
 - `latex_template_id` 尚未确定。
+- `figure_table_preference` 尚未确定。
+- `reference_handling_preference` 尚未确定。
 - `must_keep` 或 `must_avoid` 尚未收敛。
 - 已完成部分填写，但尚未做整组 readback。
 - 用户改变前面已经给出的目标设置。
 
 ### Stage 2 Question Boundaries
 
-- Stage 2 只处理目标设置与保留/避免项。
+- Stage 2 只处理目标设置、图表处理偏好、参考文献处理偏好与保留/避免项。
 - Stage 2 不提前进入风格画像。
 - Stage 2 不提前进入重点/非重点、目标大纲或篇幅分配讨论。
 
@@ -93,7 +100,7 @@
 
 ### Do Not Advance Until
 
-- `target_language`、`target_form`、`target_journal_type`、`target_body_length`、`must_keep`、`must_avoid` 都已写入。
+- `target_language`、`target_form`、`target_journal_type`、`target_body_length`、`figure_table_preference`、`reference_handling_preference`、`must_keep`、`must_avoid` 都已写入。
 - `latex_template_id` 已写入。
 - 已做完整 readback。
 - `user_confirmed=true`。
@@ -113,8 +120,8 @@
 
 1. 审视原稿的表达风格、结构习惯、语气和论述方式。
 2. 在 `Source Style` 中记录已有风格特征、优点和惯用表达。
-3. 在 `Problems To Fix` 中记录需要纠正的风格、规范和表达问题。
-4. 在 `Target Style Guidance` 中形成面向目标稿的可执行风格原则。
+3. 在 `Problems To Fix` 中记录需要纠正的风格、规范和表达问题，包括 caption、table title、citation sentence 与 references presentation 的问题。
+4. 在 `Target Style Guidance` 中形成面向目标稿的可执行风格原则，包括 supporting elements 的表达方式。
 5. 在 `Open Questions` 中记录仍未确认的风格偏好或表达边界。
 
 ### Stage 3 Question Triggers
@@ -158,7 +165,9 @@
 4. 在 `Target Outline` 中形成目标稿大纲。
 5. 在 `Length Allocation` 中记录各部分篇幅分配。
 6. 在 `Omit / Merge Strategy` 中记录压缩、合并、删除策略。
-7. 在 `Approval` 中记录是否已获用户批准。
+7. 在 `Figure / Table Plan` 中记录图表保留、改写、合并、删除和占位策略。
+8. 在 `Reference Plan` 中记录引用保留、BibTeX / citekey 延续、压缩与删除策略。
+9. 在 `Approval` 中记录是否已获用户批准。
 
 ### Stage 4 Question Triggers
 
@@ -166,6 +175,8 @@
 - 目标大纲存在多个可行版本。
 - 篇幅分配依赖用户取舍。
 - 删改策略会影响用户要求保留的重点。
+- 图表或表格的保留/改写策略会影响论证力度。
+- 引用和参考文献删改会影响学术支撑边界。
 - 当前方案已成形，但还未得到明确批准。
 
 ### Stage 4 Question Boundaries
@@ -179,7 +190,7 @@
 
 ### Do Not Advance Until
 
-- `Core Message`、`Priority Map`、`Target Outline`、`Length Allocation`、`Omit / Merge Strategy` 都已写入可执行内容。
+- `Core Message`、`Priority Map`、`Target Outline`、`Length Allocation`、`Omit / Merge Strategy`、`Figure / Table Plan`、`Reference Plan` 都已写入可执行内容。
 - `Approval` 已显式记录 `Status: approved`。
 
 ## Stage 5. 最终撰写
@@ -193,21 +204,24 @@
 
 ### Required Script Calls
 
-- 无。
+- 进入最终写作前，必须先运行 `init_final_draft.py --artifact-root <ARTIFACT_ROOT>`。
 
 ### LLM Tasks
 
-1. 先通过 `init_final_draft.py` 执行 drafting preflight，并初始化 `final-draft.tex` 的单文件骨架。
-2. 按 `Target Outline` 顺序逐段写作，把内容持续落到 `final-draft.tex`。
-3. 完成整稿整合，统一标题、摘要、章节层级、过渡关系和 LaTeX 结构。
-4. 做整稿校对，检查术语一致性、风格一致性、长度分配遵循情况以及方案遵循情况。
-5. 若发现上游工件仍有关键缺口，回退到相应阶段补齐，而不是继续把当前稿件视为正式成稿。
+1. 按 `Target Outline` 顺序逐段写作，把内容持续落到 `final-draft.tex`，同时遵循 `Figure / Table Plan` 与 `Reference Plan`。
+2. 完成整稿整合，统一标题、摘要、章节层级、过渡关系、LaTeX 结构以及 supporting elements 的嵌入方式。
+3. 对已批准保留的图、表、引用和参考文献做完整迁移；若当前轮次无法精修，则保留清晰占位。
+4. 生成 `rewrite-report.md`，总结本轮转写过程，并为最终稿每个章节/小节提供章节级原文参照，对关键段落和关键元素提供更细说明。
+5. 做整稿与报告联合校对，检查术语一致性、风格一致性、长度分配遵循情况以及方案遵循情况，并确认 supporting elements 没有被静默丢弃，且报告没有脱离真源。
+6. 若发现上游工件仍有关键缺口，回退到相应阶段补齐，而不是继续把当前稿件视为正式成稿。
 
 ### Outputs
 
-- 生成并保留 `artifacts/<document-slug>/final-draft.tex`。
+- 生成并保留 `.paper-condenser-tmp/<document-slug>/final-draft.tex`。
+- 生成并保留 `.paper-condenser-tmp/<document-slug>/rewrite-report.md`。
 
 ### Do Not Advance Until
 
 - 已确认不存在未补齐的关键方案缺口。
 - `final-draft.tex` 已作为单文件 LaTeX 成稿落盘。
+- `rewrite-report.md` 已作为正式伴随报告落盘。
