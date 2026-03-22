@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Condenser"
+  short_description: "Interactive journal-paper condensation workflow"
+  default_prompt: "Use $paper-condenser to help me plan a condensed journal-paper rewrite from a long manuscript."
