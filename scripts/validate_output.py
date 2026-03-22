@@ -15,6 +15,14 @@ from typing import Any
 DIGEST_FILENAME = "digest.md"
 REFERENCES_FILENAME = "references.json"
 CITATION_ANALYSIS_FILENAME = "citation_analysis.json"
+STAGE_ERROR_CODES = {
+    "references_stage_failed",
+    "references_merge_failed",
+    "citation_scope_failed",
+    "citation_semantics_failed",
+    "citation_report_failed",
+    "citation_merge_failed",
+}
 
 
 def utc_now_iso() -> str:
@@ -314,6 +322,24 @@ def _extract_preprocess_expected_mentions(preprocess_artifact: Path | None) -> t
     return expected, None
 
 
+def _validate_error_obj(error_val: object) -> list[str]:
+    if error_val is None:
+        return []
+    if not isinstance(error_val, dict):
+        return ["error must be object or null"]
+
+    errors: list[str] = []
+    code = error_val.get("code")
+    message = error_val.get("message")
+    if not isinstance(code, str) or not code.strip():
+        errors.append("error.code must be non-empty string")
+    elif code in STAGE_ERROR_CODES and code != code.strip():
+        errors.append("error.code must not contain leading/trailing whitespace")
+    if not isinstance(message, str) or not message.strip():
+        errors.append("error.message must be non-empty string")
+    return errors
+
+
 def _count_citation_mentions(citation_analysis_obj: object) -> int | None:
     if not isinstance(citation_analysis_obj, dict):
         return None
@@ -446,6 +472,8 @@ def _normalize_top_level(
     source_path: Path | None,
     output_root: Path,
     preprocess_artifact: Path | None = None,
+    references_merged: Path | None = None,
+    citation_merged: Path | None = None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     warnings: list[str] = []
     errors: list[str] = []
@@ -557,11 +585,11 @@ def _normalize_top_level(
             warnings.append("warnings coerced to array")
 
     error_val = out.get("error")
-    if error_val is not None and not isinstance(error_val, dict):
-        errors.append("error must be object or null")
-        if fix:
-            out["error"] = {"code": "INVALID_ERROR_FIELD", "message": "error was not object/null"}
-            warnings.append("error replaced with object")
+    error_errors = _validate_error_obj(error_val)
+    errors.extend(error_errors)
+    if fix and error_errors and not isinstance(error_val, dict):
+        out["error"] = {"code": "INVALID_ERROR_FIELD", "message": "error was not object/null"}
+        warnings.append("error replaced with object")
 
     def maybe_relocate_text_artifact(key: str, filename: str) -> None:
         if not fix or source_path is None:
@@ -628,6 +656,16 @@ def _normalize_top_level(
             except Exception as e:  # noqa: BLE001
                 errors.append(f"references_path unreadable JSON: {e}")
 
+    if references_merged is not None:
+        if not references_merged.exists():
+            errors.append(f"references merged artifact does not exist: {references_merged}")
+        else:
+            try:
+                refs_merged_obj = json.loads(references_merged.read_text(encoding="utf-8"))
+                errors.extend(_validate_references_items(refs_merged_obj))
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"references merged artifact unreadable JSON: {e}")
+
     expected_mentions, expected_mentions_error = _extract_preprocess_expected_mentions(preprocess_artifact)
     if expected_mentions_error:
         errors.append(expected_mentions_error)
@@ -651,6 +689,16 @@ def _normalize_top_level(
                         )
             except Exception as e:  # noqa: BLE001
                 errors.append(f"citation_analysis_path unreadable JSON: {e}")
+
+    if citation_merged is not None:
+        if not citation_merged.exists():
+            errors.append(f"citation merged artifact does not exist: {citation_merged}")
+        else:
+            try:
+                citation_merged_obj = json.loads(citation_merged.read_text(encoding="utf-8"))
+                errors.extend(_validate_citation_analysis_obj(citation_merged_obj))
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"citation merged artifact unreadable JSON: {e}")
 
     if fix:
         out["warnings"] = _as_str_list(out.get("warnings")) + warnings
@@ -677,6 +725,8 @@ def main() -> int:
         default=None,
         help="Optional citation preprocess JSON path for mention coverage check",
     )
+    parser.add_argument("--references-merged", default=None, help="Optional staged references merged JSON path")
+    parser.add_argument("--citation-merged", default=None, help="Optional staged citation merged JSON path")
     args = parser.parse_args()
 
     in_path = Path(args.in_path) if args.in_path else None
@@ -688,6 +738,8 @@ def main() -> int:
     out_dir = Path(args.out_dir).expanduser() if args.out_dir else None
     output_root = _resolve_output_root(out_dir, source_path)
     preprocess_artifact = Path(args.preprocess_artifact).expanduser() if args.preprocess_artifact else None
+    references_merged = Path(args.references_merged).expanduser() if args.references_merged else None
+    citation_merged = Path(args.citation_merged).expanduser() if args.citation_merged else None
 
     obj = _load_input(in_path)
 
@@ -698,6 +750,8 @@ def main() -> int:
             source_path=None,
             output_root=output_root,
             preprocess_artifact=preprocess_artifact,
+            references_merged=references_merged,
+            citation_merged=citation_merged,
         )
         report = {"ok": len(errors) == 0, "errors": errors}
         print(json.dumps(report, ensure_ascii=False))
@@ -709,6 +763,8 @@ def main() -> int:
         source_path=source_path,
         output_root=output_root,
         preprocess_artifact=preprocess_artifact,
+        references_merged=references_merged,
+        citation_merged=citation_merged,
     )
     _, _, post_errors = _normalize_top_level(
         fixed,
@@ -716,6 +772,8 @@ def main() -> int:
         source_path=None,
         output_root=output_root,
         preprocess_artifact=preprocess_artifact,
+        references_merged=references_merged,
+        citation_merged=citation_merged,
     )
     if post_errors:
         fixed.setdefault("warnings", [])
