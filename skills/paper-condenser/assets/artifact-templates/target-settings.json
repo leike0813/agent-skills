@@ -1,0 +1,13 @@
+{
+  "target_language": "",
+  "target_form": "",
+  "target_journal_type": "",
+  "latex_template_id": "",
+  "target_body_length": {
+    "value": 0,
+    "unit": ""
+  },
+  "must_keep": [],
+  "must_avoid": [],
+  "user_confirmed": false
+}
