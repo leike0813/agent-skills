@@ -1,0 +1,180 @@
+{
+  "type": "object",
+  "properties": {
+    "language": {
+      "type": "string"
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "section_title": {
+          "type": "string"
+        },
+        "line_start": {
+          "type": "integer"
+        },
+        "line_end": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "section_title",
+        "line_start",
+        "line_end"
+      ],
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "grouped_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "function": {
+            "type": "string"
+          },
+          "function_label": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "citation_label": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "function": {
+                  "type": "string"
+                },
+                "function_label": {
+                  "type": "string"
+                },
+                "ref_index": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "ref_number": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "citation_label",
+                "summary",
+                "function",
+                "function_label",
+                "ref_index",
+                "ref_number"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "function",
+          "function_label",
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "ordered_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "citation_label": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "function": {
+            "type": "string"
+          },
+          "function_label": {
+            "type": "string"
+          },
+          "ref_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "ref_number": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "citation_label",
+          "summary",
+          "function",
+          "function_label",
+          "ref_index",
+          "ref_number"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "unmapped_mentions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "marker": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "snippet": {
+            "type": "string"
+          },
+          "line_start": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "line_end": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "marker",
+          "reason",
+          "snippet",
+          "line_start",
+          "line_end"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "language",
+    "scope",
+    "summary",
+    "grouped_items",
+    "ordered_items",
+    "unmapped_mentions"
+  ],
+  "additionalProperties": false
+}

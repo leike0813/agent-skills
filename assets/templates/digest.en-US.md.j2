@@ -1,0 +1,43 @@
+{#-
+Digest template constraints:
+
+- LLM writes structured digest slots only.
+- The renderer owns the final headings, section order, and Markdown layout.
+- This template consumes `digest_slots + section_summaries`, not pre-rendered section Markdown.
+-#}
+## TL;DR
+{% for paragraph in digest_slots.tldr.paragraphs %}
+{{ paragraph }}
+{% endfor %}
+
+## Research Question & Contributions
+{% if digest_slots.research_question_and_contributions.research_question %}
+- Research question: {{ digest_slots.research_question_and_contributions.research_question }}
+{% endif %}
+{% for item in digest_slots.research_question_and_contributions.contributions %}
+- {{ item }}
+{% endfor %}
+
+## Method Highlights
+{% for item in digest_slots.method_highlights["items"] %}
+- {{ item }}
+{% endfor %}
+
+## Key Results
+{% for item in digest_slots.key_results["items"] %}
+- {{ item }}
+{% endfor %}
+
+## Limitations & Reproducibility
+{% for item in digest_slots.limitations_and_reproducibility["items"] %}
+- {{ item }}
+{% endfor %}
+
+## Section-by-Section Summary
+{% for section in section_summaries %}
+### {{ section.source_heading }}
+{% for item in section["items"] %}
+- {{ item }}
+{% endfor %}
+
+{% endfor %}
