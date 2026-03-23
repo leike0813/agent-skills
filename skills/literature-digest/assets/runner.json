@@ -11,7 +11,9 @@
     "language": "python",
     "version": "3.11",
     "dependencies": [
-      "pymupdf4llm"
+      "pymupdf4llm",
+      "jinja2",
+      "jsonschema"
     ],
     "default_options": {
       "hard_timeout_seconds": 1800
