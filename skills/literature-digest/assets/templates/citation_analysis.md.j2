@@ -1,0 +1,45 @@
+{#-
+Suggested report structure:
+
+- The script derives final report text from structured DB content.
+- LLM does not write `report_md` directly.
+- The same rendered string is used for both `citation_analysis.json.report_md` and `citation_analysis.md`.
+-#}
+{% set is_en = language.lower().startswith('en') %}
+## {{ "Citation Signals In Review Scope" if is_en else "文献综述章节引文线索" }}
+
+### {{ "Summary" if is_en else "总体总结" }}
+{{ summary }}
+
+### {{ "Scope" if is_en else "范围" }}
+- {{ "Section" if is_en else "章节" }}: {{ scope.section_title }}
+- {{ "Lines" if is_en else "行号" }}: {{ scope.line_start }}-{{ scope.line_end }}
+
+### {{ "By Function" if is_en else "按功能归类" }}
+{% if grouped_items %}
+{% for group in grouped_items %}
+#### {{ group.function_label }}
+{% for item in group["items"] %}
+- {{ item.citation_label }} {{ item.summary }}
+{% endfor %}
+
+{% endfor %}
+{% else %}
+- {{ "No stable mapped citations in this scope." if is_en else "本范围内未检测到稳定映射的引用。" }}
+{% endif %}
+
+### {{ "By Citation Label" if is_en else "按引用编号/作者-年份列举" }}
+{% if ordered_items %}
+{% for item in ordered_items %}
+- {{ item.citation_label }} {{ item.summary }}
+{% endfor %}
+{% else %}
+- {{ "No mapped citation items available." if is_en else "当前没有可列举的已映射引用。" }}
+{% endif %}
+
+{% if unmapped_mentions %}
+### {{ "Unmapped Mentions" if is_en else "未映射引用" }}
+{% for mention in unmapped_mentions %}
+- {{ mention.marker }}{% if mention.reason %} ({{ mention.reason }}){% endif %}{% if mention.snippet %}: {{ mention.snippet }}{% endif %}
+{% endfor %}
+{% endif %}

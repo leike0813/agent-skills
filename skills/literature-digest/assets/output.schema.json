@@ -16,6 +16,11 @@
             "x-type": "artifact",
             "x-role": "citation-analysis"
         },
+        "citation_analysis_report_path": {
+            "type": "string",
+            "x-type": "artifact",
+            "x-role": "citation-analysis-report"
+        },
         "provenance": {
             "type": "object",
             "properties": {
