@@ -30,6 +30,8 @@
   - 参考文献条目：从 references 范围切分出的原始条目
 - `reference_batches`
   - 参考文献条目批次边界与状态
+- `reference_parse_candidates`
+  - 参考文献预解析候选：每个 `entry_index` 的多组 pattern 切分结果，供 agent 选择 `selected_pattern`
 - `reference_items`
   - 参考文献项：最终 `references.json` 的结构化行
 - `citation_mentions`
@@ -59,6 +61,7 @@
 
 - `section_scopes` 定义 references 与 citation 的分析范围
 - `reference_batches` / `citation_batches` 记录批次边界与状态
+- `reference_parse_candidates` 决定 references refine 时可被选择的合法 pattern 集合
 - `digest_slots`、`digest_section_summaries`、`reference_items`、`citation_workset_items`、`citation_items`、`citation_summary`、`citation_unmapped_mentions` 共同决定最终发布是否可进行
 - `citation_mention_links` 必须完整解释已稳定映射的 mention -> reference 关系
 - `citation_items` 只负责语义判断，不再承载 reference snapshot 或 mention 列表真源

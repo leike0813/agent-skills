@@ -80,6 +80,25 @@
           "type": "string",
           "minLength": 1
         },
+        "timeline": {
+          "type": "object",
+          "properties": {
+            "early": {
+              "type": "object"
+            },
+            "mid": {
+              "type": "object"
+            },
+            "recent": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "early",
+            "mid",
+            "recent"
+          ]
+        },
         "report_md": {
           "type": "string"
         }
@@ -87,6 +106,7 @@
       "required": [
         "meta",
         "summary",
+        "timeline",
         "items",
         "unmapped_mentions",
         "report_md"

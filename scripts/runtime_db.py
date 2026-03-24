@@ -180,6 +180,21 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS reference_parse_candidates (
+            entry_index INTEGER NOT NULL,
+            candidate_index INTEGER NOT NULL,
+            pattern TEXT NOT NULL,
+            author_text TEXT NOT NULL,
+            author_candidates_json TEXT NOT NULL,
+            title_candidate TEXT NOT NULL,
+            container_candidate TEXT NOT NULL,
+            year_candidate INTEGER,
+            confidence REAL NOT NULL,
+            metadata_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (entry_index, candidate_index)
+        );
+
         CREATE TABLE IF NOT EXISTS citation_mentions (
             mention_id TEXT PRIMARY KEY,
             marker TEXT NOT NULL,
@@ -249,6 +264,12 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY CHECK (id = 1),
             summary_text TEXT NOT NULL,
             basis_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS citation_timeline (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            timeline_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
 
@@ -635,6 +656,24 @@ def store_reference_entries(connection: sqlite3.Connection, entries: list[dict[s
     touch_runtime(connection)
 
 
+def fetch_reference_entries(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT entry_index, raw, year, metadata_json FROM reference_entries ORDER BY entry_index ASC"
+    ).fetchall()
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        entry = json.loads(str(row["metadata_json"]))
+        entry.update(
+            {
+                "entry_index": int(row["entry_index"]),
+                "raw": str(row["raw"]),
+                "year": int(row["year"]) if row["year"] is not None else None,
+            }
+        )
+        entries.append(entry)
+    return entries
+
+
 def store_reference_batch(
     connection: sqlite3.Connection,
     *,
@@ -660,6 +699,65 @@ def store_reference_batch(
         (batch_kind, batch_index, status, entry_start, entry_end, _json_dump(metadata or {}), now),
     )
     touch_runtime(connection)
+
+
+def store_reference_parse_candidates(connection: sqlite3.Connection, candidates: list[dict[str, Any]]) -> None:
+    connection.execute("DELETE FROM reference_parse_candidates")
+    now = utc_now_iso()
+    for candidate in candidates:
+        connection.execute(
+            """
+            INSERT INTO reference_parse_candidates (
+                entry_index, candidate_index, pattern, author_text, author_candidates_json,
+                title_candidate, container_candidate, year_candidate, confidence, metadata_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(candidate["entry_index"]),
+                int(candidate["candidate_index"]),
+                str(candidate["pattern"]),
+                str(candidate.get("author_text", "")),
+                _json_dump(candidate.get("author_candidates", [])),
+                str(candidate.get("title_candidate", "")),
+                str(candidate.get("container_candidate", "")),
+                int(candidate["year_candidate"]) if candidate.get("year_candidate") is not None else None,
+                float(candidate.get("confidence", 0.0)),
+                _json_dump(candidate.get("metadata", {})),
+                now,
+            ),
+        )
+    touch_runtime(connection)
+
+
+def fetch_reference_parse_candidates(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT entry_index, candidate_index, pattern, author_text, author_candidates_json,
+               title_candidate, container_candidate, year_candidate, confidence, metadata_json
+        FROM reference_parse_candidates
+        ORDER BY entry_index ASC, candidate_index ASC
+        """
+    ).fetchall()
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        metadata = json.loads(str(row["metadata_json"]))
+        candidate = dict(metadata)
+        candidate.update(
+            {
+                "entry_index": int(row["entry_index"]),
+                "candidate_index": int(row["candidate_index"]),
+                "pattern": str(row["pattern"]),
+                "author_text": str(row["author_text"]),
+                "author_candidates": json.loads(str(row["author_candidates_json"])),
+                "title_candidate": str(row["title_candidate"]),
+                "container_candidate": str(row["container_candidate"]),
+                "year_candidate": int(row["year_candidate"]) if row["year_candidate"] is not None else None,
+                "confidence": float(row["confidence"]),
+                "metadata": metadata,
+            }
+        )
+        candidates.append(candidate)
+    return candidates
 
 
 def store_reference_items(connection: sqlite3.Connection, items: list[dict[str, Any]]) -> None:
@@ -983,11 +1081,82 @@ def store_citation_summary(connection: sqlite3.Connection, summary_text: str, ba
     touch_runtime(connection)
 
 
+def store_citation_timeline(connection: sqlite3.Connection, timeline: dict[str, Any]) -> None:
+    now = utc_now_iso()
+    connection.execute(
+        """
+        INSERT INTO citation_timeline (id, timeline_json, updated_at)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            timeline_json = excluded.timeline_json,
+            updated_at = excluded.updated_at
+        """,
+        (_json_dump(timeline), now),
+    )
+    touch_runtime(connection)
+
+
 def fetch_citation_summary(connection: sqlite3.Connection) -> dict[str, Any] | None:
     row = connection.execute("SELECT summary_text, basis_json FROM citation_summary WHERE id = 1").fetchone()
     if row is None:
         return None
     return {"summary": str(row["summary_text"]), "basis": json.loads(str(row["basis_json"]))}
+
+
+def fetch_citation_timeline(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    row = connection.execute("SELECT timeline_json FROM citation_timeline WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    return json.loads(str(row["timeline_json"]))
+
+
+def _author_year_label(reference: dict[str, Any]) -> str:
+    authors = reference.get("author")
+    first_author = ""
+    if isinstance(authors, list) and authors:
+        first_author = str(authors[0]).strip()
+    year = reference.get("year")
+    if first_author and year is not None:
+        return f"{first_author}, {year}"
+    title = str(reference.get("title", "")).strip()
+    return title or "[unlabeled]"
+
+
+def _citation_sort_key(item: dict[str, Any]) -> tuple[int, int, int]:
+    mentions = item.get("mentions")
+    if isinstance(mentions, list) and mentions:
+        mention_positions: list[tuple[int, int]] = []
+        for mention in mentions:
+            if not isinstance(mention, dict):
+                continue
+            line_start = mention.get("line_start")
+            line_end = mention.get("line_end")
+            if isinstance(line_start, int) and isinstance(line_end, int):
+                mention_positions.append((line_start, line_end))
+        if mention_positions:
+            mention_positions.sort()
+            first = mention_positions[0]
+            return first[0], first[1], int(item.get("ref_index", 0))
+    return (10**9, 10**9, int(item.get("ref_index", 0)))
+
+
+def _build_citation_label_map(items: list[dict[str, Any]]) -> dict[int, str]:
+    label_map: dict[int, str] = {}
+    ay_items = [item for item in items if item.get("ref_number") is None]
+    ay_items.sort(key=_citation_sort_key)
+    ay_counter = 1
+    for item in items:
+        ref_index = int(item["ref_index"])
+        ref_number = item.get("ref_number")
+        if ref_number is not None:
+            label_map[ref_index] = f"[{ref_number}]"
+        else:
+            label_map[ref_index] = ""
+    for item in ay_items:
+        ref_index = int(item["ref_index"])
+        label_map[ref_index] = f"[AY-{ay_counter}]"
+        ay_counter += 1
+    return label_map
 
 
 def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") -> dict[str, Any]:
@@ -1011,6 +1180,11 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
         """
     ).fetchone()
     summary_row = fetch_citation_summary(connection)
+    timeline_row = fetch_citation_timeline(connection) or {
+        "early": {"summary": "", "ref_indexes": []},
+        "mid": {"summary": "", "ref_indexes": []},
+        "recent": {"summary": "", "ref_indexes": []},
+    }
 
     items: list[dict[str, Any]] = []
     for workset in workset_items:
@@ -1028,6 +1202,17 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
             }
         )
         items.append(item)
+
+    label_map = _build_citation_label_map(items)
+    for item in items:
+        reference = dict(item.get("reference", {}))
+        item["citation_label"] = label_map.get(int(item["ref_index"]), "[unlabeled]")
+        item["author_year_label"] = _author_year_label(reference)
+        keywords = item.get("keywords")
+        if not isinstance(keywords, list):
+            item["keywords"] = []
+        else:
+            item["keywords"] = [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
 
     covered_sections_val = scope_metadata.get("covered_sections", [scope["section_title"]])
     if isinstance(covered_sections_val, list):
@@ -1059,6 +1244,7 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
             ),
         },
         "summary": "" if summary_row is None else str(summary_row["summary"]),
+        "timeline": timeline_row,
         "items": items,
         "unmapped_mentions": fetch_citation_unmapped_mentions(connection),
         "report_md": report_md,
@@ -1076,20 +1262,6 @@ def build_digest_render_context(connection: sqlite3.Connection) -> dict[str, Any
 
 def build_references_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
     return {"items": fetch_reference_items(connection)}
-
-
-def _citation_label(reference: dict[str, Any], ref_number: int | None) -> str:
-    if ref_number is not None:
-        return f"[{ref_number}]"
-    authors = reference.get("author")
-    first_author = ""
-    if isinstance(authors, list) and authors:
-        first_author = str(authors[0]).strip()
-    year = reference.get("year")
-    if first_author and year is not None:
-        return f"({first_author}, {year})"
-    title = str(reference.get("title", "")).strip()
-    return title or "[unlabeled]"
 
 
 def _function_label(function_value: Any) -> str:
@@ -1112,6 +1284,8 @@ def _function_label(function_value: Any) -> str:
 
 def build_citation_report_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
     payload = fetch_citation_payload(connection, report_md="")
+    summary_row = fetch_citation_summary(connection) or {"summary": "", "basis": {}}
+    summary_basis = dict(summary_row.get("basis", {}))
     ordered_items: list[dict[str, Any]] = []
     grouped_lookup: dict[str, dict[str, Any]] = {}
     grouped_items: list[dict[str, Any]] = []
@@ -1121,7 +1295,10 @@ def build_citation_report_render_context(connection: sqlite3.Connection) -> dict
         function_value = str(item.get("function", "")).strip()
         function_label = _function_label(function_value)
         report_item = {
-            "citation_label": _citation_label(reference, item.get("ref_number")),
+            "citation_label": str(item.get("citation_label", "[unlabeled]")),
+            "author_year_label": str(item.get("author_year_label", "")).strip(),
+            "title": str(reference.get("title", "")).strip(),
+            "keywords": list(item.get("keywords", [])),
             "summary": str(item.get("summary", "")).strip(),
             "function": function_value,
             "function_label": function_label,
@@ -1139,6 +1316,31 @@ def build_citation_report_render_context(connection: sqlite3.Connection) -> dict
             grouped_items.append(grouped_lookup[group_key])
         grouped_lookup[group_key]["items"].append(report_item)
 
+    keyed_items = {int(item["ref_index"]): item for item in ordered_items if item.get("ref_index") is not None}
+    key_references: list[dict[str, Any]] = []
+    key_ref_indexes = summary_basis.get("key_ref_indexes", [])
+    if isinstance(key_ref_indexes, list):
+        for ref_index in key_ref_indexes:
+            if not isinstance(ref_index, int):
+                continue
+            keyed_report_item: dict[str, Any] | None = keyed_items.get(ref_index)
+            if keyed_report_item is None:
+                continue
+            reference_lookup = next((item for item in payload["items"] if int(item.get("ref_index", -1)) == ref_index), None)
+            title = ""
+            if reference_lookup is not None:
+                title = str(dict(reference_lookup.get("reference", {})).get("title", "")).strip()
+            key_references.append(
+                {
+                    "citation_label": keyed_report_item["citation_label"],
+                    "author_year_label": keyed_report_item["author_year_label"],
+                    "title": title,
+                    "ref_index": keyed_report_item["ref_index"],
+                    "ref_number": keyed_report_item["ref_number"],
+                    "function_label": keyed_report_item["function_label"],
+                }
+            )
+
     unmapped_mentions: list[dict[str, Any]] = []
     for mention in payload["unmapped_mentions"]:
         unmapped_mentions.append(
@@ -1151,12 +1353,44 @@ def build_citation_report_render_context(connection: sqlite3.Connection) -> dict
             }
         )
 
+    timeline_payload = payload.get("timeline", {})
+    timeline_context: dict[str, Any] = {}
+    keyed_reference_items = {int(item["ref_index"]): item for item in payload["items"] if item.get("ref_index") is not None}
+    for bucket_key in ("early", "mid", "recent"):
+        bucket = timeline_payload.get(bucket_key, {})
+        bucket_summary = str(dict(bucket).get("summary", "")).strip()
+        bucket_ref_indexes = dict(bucket).get("ref_indexes", [])
+        refs: list[dict[str, Any]] = []
+        if isinstance(bucket_ref_indexes, list):
+            for ref_index in bucket_ref_indexes:
+                if not isinstance(ref_index, int):
+                    continue
+                item = keyed_reference_items.get(ref_index)
+                if item is None:
+                    continue
+                refs.append(
+                    {
+                        "citation_label": str(item.get("citation_label", "[unlabeled]")),
+                        "author_year_label": str(item.get("author_year_label", "")).strip(),
+                        "title": str(dict(item.get("reference", {})).get("title", "")).strip(),
+                        "ref_index": ref_index,
+                    }
+                )
+        timeline_context[bucket_key] = {
+            "summary": bucket_summary,
+            "ref_indexes": [ref for ref in bucket_ref_indexes if isinstance(ref, int)] if isinstance(bucket_ref_indexes, list) else [],
+            "items": refs,
+        }
+
     return {
         "language": payload["meta"]["language"],
         "scope": payload["meta"]["scope"],
         "summary": str(payload.get("summary", "")).strip(),
+        "summary_basis": summary_basis,
+        "key_references": key_references,
         "grouped_items": grouped_items,
         "ordered_items": ordered_items,
+        "timeline": timeline_context,
         "unmapped_mentions": unmapped_mentions,
     }
 
