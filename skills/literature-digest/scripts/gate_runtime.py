@@ -38,8 +38,8 @@ STAGE_RULES: dict[str, dict[str, Any]] = {
         "required_writes": ["digest_slots", "digest_section_summaries"],
     },
     "stage_4_references": {
-        "required_reads": ["source_documents.normalized_source"],
-        "required_writes": ["reference_entries", "reference_batches", "reference_items"],
+        "required_reads": ["source_documents.normalized_source", "section_scopes.references_scope"],
+        "required_writes": ["reference_entries", "reference_batches", "reference_parse_candidates", "reference_items"],
     },
     "stage_5_citation": {
         "required_reads": ["source_documents.normalized_source", "section_scopes.citation_scope"],
@@ -49,6 +49,7 @@ STAGE_RULES: dict[str, dict[str, Any]] = {
             "citation_workset_items",
             "citation_batches",
             "citation_items",
+            "citation_timeline",
             "citation_summary",
             "citation_unmapped_mentions",
         ],
@@ -61,6 +62,7 @@ STAGE_RULES: dict[str, dict[str, Any]] = {
             "section_scopes.citation_scope",
             "citation_workset_items",
             "citation_items",
+            "citation_timeline",
             "citation_summary",
             "citation_unmapped_mentions",
         ],
@@ -144,16 +146,33 @@ ACTION_SQL_EXAMPLES: dict[str, list[dict[str, str]]] = {
             "notes": "Store one summary row per source section in final order.",
         },
     ],
-    "persist_references": [
+    "prepare_references_workset": [
         {
-            "purpose": "inspect extracted raw entries",
-            "sql": "SELECT entry_index, raw FROM reference_entries ORDER BY entry_index;",
-            "notes": "Use before filling structured reference_items rows.",
+            "purpose": "inspect references scope before deterministic preparse",
+            "sql": "SELECT scope_key, section_title, line_start, line_end FROM section_scopes WHERE scope_key = 'references_scope';",
+            "notes": "Stage 4 workset preparation must only read the stored references_scope.",
         },
         {
-            "purpose": "persist structured references",
+            "purpose": "persist reference parse candidates",
+            "sql": "INSERT INTO reference_parse_candidates (entry_index, candidate_index, pattern, author_text, author_candidates_json, title_candidate, container_candidate, year_candidate, confidence, metadata_json, updated_at) VALUES (:entry_index, :candidate_index, :pattern, :author_text, :author_candidates_json, :title_candidate, :container_candidate, :year_candidate, :confidence, :metadata_json, :updated_at);",
+            "notes": "Keep every viable split candidate so the agent can choose a pattern instead of reparsing from raw text.",
+        },
+        {
+            "purpose": "inspect prepared candidate counts by entry",
+            "sql": "SELECT entry_index, COUNT(*) AS candidate_count FROM reference_parse_candidates GROUP BY entry_index ORDER BY entry_index;",
+            "notes": "Use after preparation to confirm ambiguous entries retained multiple patterns.",
+        },
+    ],
+    "persist_references": [
+        {
+            "purpose": "inspect prepared candidates before agent refinement",
+            "sql": "SELECT entry_index, candidate_index, pattern, author_text, title_candidate, year_candidate FROM reference_parse_candidates ORDER BY entry_index, candidate_index;",
+            "notes": "The agent must choose a selected_pattern that already exists in this candidate set.",
+        },
+        {
+            "purpose": "persist refined reference items",
             "sql": "INSERT INTO reference_items (ref_index, author_json, title, year, raw, confidence, metadata_json, updated_at) VALUES (:ref_index, :author_json, :title, :year, :raw, :confidence, :metadata_json, :updated_at);",
-            "notes": "The final `references.json` renderer reads these rows directly.",
+            "notes": "ref_index is derived deterministically from entry_index after the selected_pattern is validated.",
         },
     ],
     "prepare_citation_workset": [
@@ -190,11 +209,23 @@ ACTION_SQL_EXAMPLES: dict[str, list[dict[str, str]]] = {
             "notes": "Each ref_index may appear only once and must already exist in citation_workset_items.",
         },
     ],
+    "persist_citation_timeline": [
+        {
+            "purpose": "inspect semantic items before timeline synthesis",
+            "sql": "SELECT ref_index, function, summary, confidence FROM citation_items ORDER BY ref_index;",
+            "notes": "Timeline analysis is a separate stage-5 task that runs after item semantics exist.",
+        },
+        {
+            "purpose": "persist the citation timeline",
+            "sql": "INSERT INTO citation_timeline (id, timeline_json, updated_at) VALUES (1, :timeline_json, :updated_at) ON CONFLICT(id) DO UPDATE SET timeline_json = excluded.timeline_json, updated_at = excluded.updated_at;",
+            "notes": "Store the structured early/mid/recent timeline before the global summary is written.",
+        },
+    ],
     "persist_citation_summary": [
         {
-            "purpose": "inspect semantic items before writing the global summary",
-            "sql": "SELECT ref_index, function, summary, confidence FROM citation_items ORDER BY ref_index;",
-            "notes": "The global summary must synthesize persisted item-level analyses.",
+            "purpose": "inspect semantic items and timeline before writing the global summary",
+            "sql": "SELECT (SELECT COUNT(*) FROM citation_items) AS citation_items, (SELECT COUNT(*) FROM citation_timeline) AS citation_timeline;",
+            "notes": "The global summary must synthesize persisted item-level analyses together with the stored timeline.",
         },
         {
             "purpose": "persist the global citation summary",
@@ -229,8 +260,8 @@ ACTION_SQL_EXAMPLES: dict[str, list[dict[str, str]]] = {
     "render_and_validate": [
         {
             "purpose": "verify all render inputs are present",
-            "sql": "SELECT (SELECT COUNT(*) FROM digest_slots) AS digest_slots, (SELECT COUNT(*) FROM digest_section_summaries) AS digest_section_summaries, (SELECT COUNT(*) FROM reference_items) AS reference_items, (SELECT COUNT(*) FROM citation_workset_items) AS citation_workset_items, (SELECT COUNT(*) FROM citation_items) AS citation_items, (SELECT COUNT(*) FROM citation_summary) AS citation_summary, (SELECT COUNT(*) FROM citation_unmapped_mentions) AS citation_unmapped_mentions;",
-            "notes": "Final rendering reads structured digest slots, reference items, citation workset, semantic items, summary, and unmapped mentions from the database.",
+            "sql": "SELECT (SELECT COUNT(*) FROM digest_slots) AS digest_slots, (SELECT COUNT(*) FROM digest_section_summaries) AS digest_section_summaries, (SELECT COUNT(*) FROM reference_items) AS reference_items, (SELECT COUNT(*) FROM citation_workset_items) AS citation_workset_items, (SELECT COUNT(*) FROM citation_items) AS citation_items, (SELECT COUNT(*) FROM citation_timeline) AS citation_timeline, (SELECT COUNT(*) FROM citation_summary) AS citation_summary, (SELECT COUNT(*) FROM citation_unmapped_mentions) AS citation_unmapped_mentions;",
+            "notes": "Final rendering reads structured digest slots, reference items, citation workset, semantic items, timeline, summary, and unmapped mentions from the database.",
         },
         {
             "purpose": "inspect registered public artifacts",
@@ -267,9 +298,9 @@ def _instruction_refs(stage: str, next_action: str) -> list[dict[str, str]]:
         refs[0]["section"] = "Outline and scope extraction"
     elif next_action == "persist_digest":
         refs[0]["section"] = "Digest generation"
-    elif next_action == "persist_references":
+    elif next_action in {"prepare_references_workset", "persist_references"}:
         refs[0]["section"] = "References extraction"
-    elif next_action in {"prepare_citation_workset", "persist_citation_semantics", "persist_citation_summary"}:
+    elif next_action in {"prepare_citation_workset", "persist_citation_semantics", "persist_citation_timeline", "persist_citation_summary"}:
         refs[0]["section"] = "Citation pipeline"
     elif next_action == "render_and_validate":
         refs[0]["section"] = "Render and validate"
@@ -308,7 +339,7 @@ def _emit(payload: dict[str, Any], exit_code: int = 0) -> int:
     return exit_code
 
 
-def _missing_prerequisites(connection, stage: str) -> list[str]:  # type: ignore[no-untyped-def]
+def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str]:  # type: ignore[no-untyped-def]
     inputs = fetch_runtime_inputs(connection)
     missing: list[str] = []
 
@@ -330,6 +361,13 @@ def _missing_prerequisites(connection, stage: str) -> list[str]:  # type: ignore
         row = connection.execute("SELECT 1 FROM source_documents WHERE doc_key = 'normalized_source' LIMIT 1").fetchone()
         if row is None:
             missing.append("source_documents.normalized_source")
+        if connection.execute("SELECT 1 FROM section_scopes WHERE scope_key = 'references_scope' LIMIT 1").fetchone() is None:
+            missing.append("section_scopes.references_scope")
+        if next_action == "persist_references":
+            if count("reference_entries") == 0:
+                missing.append("reference_entries")
+            if count("reference_parse_candidates") == 0:
+                missing.append("reference_parse_candidates")
     elif stage == "stage_5_citation":
         row = connection.execute("SELECT 1 FROM source_documents WHERE doc_key = 'normalized_source' LIMIT 1").fetchone()
         if row is None:
@@ -338,6 +376,15 @@ def _missing_prerequisites(connection, stage: str) -> list[str]:  # type: ignore
             missing.append("section_scopes.citation_scope")
         if count("reference_items") == 0:
             missing.append("reference_items")
+        if next_action == "persist_citation_semantics" and count("citation_workset_items") == 0:
+            missing.append("citation_workset_items")
+        if next_action == "persist_citation_timeline" and count("citation_items") == 0:
+            missing.append("citation_items")
+        if next_action == "persist_citation_summary":
+            if count("citation_items") == 0:
+                missing.append("citation_items")
+            if count("citation_timeline") == 0:
+                missing.append("citation_timeline")
     elif stage == "stage_6_render_and_validate":
         if count("digest_slots") == 0:
             missing.append("digest_slots")
@@ -349,6 +396,8 @@ def _missing_prerequisites(connection, stage: str) -> list[str]:  # type: ignore
             missing.append("citation_workset_items")
         if count("citation_items") == 0:
             missing.append("citation_items")
+        if count("citation_timeline") == 0:
+            missing.append("citation_timeline")
         if count("citation_summary") == 0:
             missing.append("citation_summary")
     elif stage == "stage_7_completed":
@@ -445,11 +494,11 @@ def main() -> int:
                 exit_code=2,
             )
 
-        missing = _missing_prerequisites(connection, current_stage)
         rules = STAGE_RULES[current_stage]
         stage_gate = str(state["stage_gate"])
         next_action = str(state["next_action"])
         status_summary = str(state["status_summary"])
+        missing = _missing_prerequisites(connection, current_stage, next_action)
 
         if missing:
             stage_gate = "blocked"

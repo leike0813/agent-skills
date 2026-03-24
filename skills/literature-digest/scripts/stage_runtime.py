@@ -36,10 +36,13 @@ from runtime_db import (  # noqa: E402
     fetch_citation_mention_links,
     fetch_citation_mentions,
     fetch_citation_summary,
+    fetch_citation_timeline,
     fetch_citation_unmapped_mentions,
     fetch_citation_workset_items,
     fetch_latest_error,
+    fetch_reference_entries,
     fetch_reference_items,
+    fetch_reference_parse_candidates,
     fetch_runtime_inputs,
     fetch_section_scope,
     fetch_source_document,
@@ -53,6 +56,7 @@ from runtime_db import (  # noqa: E402
     store_citation_mention_links,
     store_citation_mentions,
     store_citation_summary,
+    store_citation_timeline,
     store_citation_unmapped_mentions,
     store_citation_workset_items,
     store_digest_section_summaries,
@@ -61,6 +65,7 @@ from runtime_db import (  # noqa: E402
     store_reference_batch,
     store_reference_entries,
     store_reference_items,
+    store_reference_parse_candidates,
     store_section_scope,
     store_source_document,
 )
@@ -71,6 +76,8 @@ SOURCE_MD_FILENAME = "source.md"
 SOURCE_META_FILENAME = "source_meta.json"
 CITATION_EXPORT_FILENAME = "citation_workset_export.json"
 CITATION_REVIEW_EXPORT_FILENAME = "citation_workset_review.json"
+REFERENCES_EXPORT_FILENAME = "references_workset_export.json"
+REFERENCES_REVIEW_EXPORT_FILENAME = "references_workset_review.json"
 PDF_SIGNATURE = b"%PDF-"
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
@@ -94,6 +101,9 @@ DATE_LIKE_RE = re.compile(
     re.IGNORECASE,
 )
 TERMINAL_PUBLICATION_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b(?!\.\d)")
+REFERENCE_ENTRY_START_RE = re.compile(r"^(?:\[\d+\]|\d+[\.\)])\s*")
+COMMA_STYLE_AUTHOR_RE = re.compile(r"[A-Z][A-Za-z'`-]+,\s*(?:[A-Z][A-Za-z.-]*\.?(?:\s*[A-Z][A-Za-z.-]*\.?)*)")
+LEADING_PUNCTUATION_RE = re.compile(r"^[,.;:]\s*")
 
 OUTLINE_NODE_REQUIRED_KEYS = (
     "node_id",
@@ -111,7 +121,11 @@ SCOPE_REQUIRED_KEYS = (
 )
 
 WARNING_REFERENCE_LOW_CONFIDENCE = "reference_parse_low_confidence"
+WARNING_REFERENCE_PATTERN_AMBIGUOUS = "reference_pattern_ambiguous"
+WARNING_REFERENCE_TITLE_BOUNDARY_SUSPECT = "reference_title_boundary_suspect"
+WARNING_REFERENCE_AUTHOR_OVERSPLIT = "reference_author_oversplit_detected"
 WARNING_CITATION_FALSE_POSITIVE_FILTERED = "citation_false_positive_filtered"
+WARNING_CITATION_TIMELINE_MISSING_YEAR = "citation_timeline_missing_year"
 WARNING_SCOPE_FALLBACK_USED = "scope_fallback_used"
 WARNING_DIGEST_UNDERCOVERAGE = "digest_undercoverage"
 LITERAL_STRING_RE = re.compile(r"\((?:\\.|[^\\)])*\)")
@@ -129,6 +143,7 @@ STAGE_ERROR_CODES = {
     "references_merge_failed",
     "citation_scope_failed",
     "citation_semantics_failed",
+    "citation_timeline_failed",
     "citation_report_failed",
     "citation_merge_failed",
     "normalize_source_failed",
@@ -704,6 +719,375 @@ def _extract_terminal_publication_year(raw: str) -> int | None:
     return matches[-1]
 
 
+def _strip_reference_number_prefix(raw: str) -> tuple[str, int | None]:
+    text = raw.strip()
+    detected_ref_number = _extract_detected_reference_number(text)
+    if detected_ref_number is not None:
+        text = REFERENCE_ENTRY_START_RE.sub("", text, count=1).strip()
+    return text, detected_ref_number
+
+
+def _normalize_reference_entry_text(raw: str) -> str:
+    return re.sub(r"\s+", " ", raw.strip())
+
+
+def _split_reference_entries(lines: list[str], scope: Scope) -> list[dict[str, Any]]:
+    start_index = max(scope.line_start - 1, 0)
+    end_index = min(scope.line_end, len(lines))
+    scoped_lines = lines[start_index:end_index]
+    if scoped_lines:
+        first_stripped = scoped_lines[0].strip()
+        first_title = re.sub(r"^#{1,6}\s+", "", first_stripped).strip()
+        if first_title.lower() == scope.section_title.strip().lower():
+            scoped_lines = scoped_lines[1:]
+            start_index += 1
+    chunks: list[dict[str, Any]] = []
+    current_lines: list[str] = []
+    current_start: int | None = None
+
+    def flush(entry_end_line: int) -> None:
+        nonlocal current_lines, current_start
+        if not current_lines or current_start is None:
+            current_lines = []
+            current_start = None
+            return
+        raw = _normalize_reference_entry_text(" ".join(current_lines))
+        if raw:
+            chunks.append(
+                {
+                    "raw": raw,
+                    "line_start": current_start,
+                    "line_end": entry_end_line,
+                }
+            )
+        current_lines = []
+        current_start = None
+
+    for offset, line in enumerate(scoped_lines, start=scope.line_start):
+        stripped = line.strip()
+        if not stripped:
+            flush(offset - 1)
+            continue
+        is_new_entry = REFERENCE_ENTRY_START_RE.match(stripped) is not None
+        if is_new_entry and current_lines:
+            flush(offset - 1)
+        if current_start is None:
+            current_start = offset
+        current_lines.append(stripped)
+    flush(scope.line_end)
+
+    if not chunks:
+        for offset, line in enumerate(scoped_lines, start=scope.line_start):
+            stripped = line.strip()
+            if stripped:
+                chunks.append({"raw": _normalize_reference_entry_text(stripped), "line_start": offset, "line_end": offset})
+
+    entries: list[dict[str, Any]] = []
+    for entry_index, chunk in enumerate(chunks):
+        raw = str(chunk["raw"])
+        normalized_text, detected_ref_number = _strip_reference_number_prefix(raw)
+        entries.append(
+            {
+                "entry_index": entry_index,
+                "raw": raw,
+                "year": _extract_terminal_publication_year(raw),
+                "metadata": {
+                    "line_start": int(chunk["line_start"]),
+                    "line_end": int(chunk["line_end"]),
+                    "normalized_entry_text": normalized_text,
+                    "detected_ref_number": detected_ref_number,
+                },
+            }
+        )
+    return entries
+
+
+def _split_author_candidates(author_text: str) -> list[str]:
+    text = author_text.strip().strip(" ,;:")
+    if not text:
+        return []
+    comma_style = [match.group(0).strip().rstrip(" ,;:") for match in COMMA_STYLE_AUTHOR_RE.finditer(text)]
+    if comma_style:
+        return comma_style
+    if ";" in text:
+        return [part.strip().rstrip(" ,;:") for part in text.split(";") if part.strip()]
+    if " and " in text.lower():
+        return [part.strip().rstrip(" ,;:") for part in re.split(r"\band\b|&", text, flags=re.IGNORECASE) if part.strip()]
+    return [text]
+
+
+def _normalize_author_boundary_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.casefold())
+
+
+def _candidate_author_boundaries_are_stable(candidate_authors: list[str]) -> bool:
+    normalized = [_normalize_author_boundary_text(author) for author in candidate_authors if _normalize_author_boundary_text(author)]
+    if not normalized:
+        return False
+    return len(normalized) > 1 or any("," in author for author in candidate_authors)
+
+
+def _detect_reference_author_oversplit(submitted_authors: list[str], candidate_authors: list[str]) -> str | None:
+    if not _candidate_author_boundaries_are_stable(candidate_authors):
+        return None
+
+    submitted_norm = [_normalize_author_boundary_text(author) for author in submitted_authors if _normalize_author_boundary_text(author)]
+    candidate_norm = [_normalize_author_boundary_text(author) for author in candidate_authors if _normalize_author_boundary_text(author)]
+    if not submitted_norm or not candidate_norm or submitted_norm == candidate_norm:
+        return None
+
+    submitted_index = 0
+    segment_counts: list[int] = []
+    for candidate in candidate_norm:
+        combined = ""
+        start = submitted_index
+        while submitted_index < len(submitted_norm) and len(combined) < len(candidate):
+            combined += submitted_norm[submitted_index]
+            submitted_index += 1
+            if combined == candidate:
+                break
+        if combined != candidate:
+            return None
+        segment_counts.append(submitted_index - start)
+
+    if submitted_index != len(submitted_norm):
+        return None
+    if not any(count > 1 for count in segment_counts):
+        return None
+    return (
+        "author[] must preserve prepared candidate boundaries; reuse pattern_candidate.author_candidates "
+        "and only lightly normalize formatting instead of splitting surnames and initials into separate elements"
+    )
+
+
+def _make_reference_candidate(
+    *,
+    entry_index: int,
+    pattern: str,
+    author_text: str,
+    title_candidate: str,
+    container_candidate: str,
+    year_candidate: int | None,
+    confidence: float,
+    split_basis: str,
+) -> dict[str, Any]:
+    return {
+        "entry_index": entry_index,
+        "pattern": pattern,
+        "author_text": author_text.strip().strip(" ,;:"),
+        "author_candidates": _split_author_candidates(author_text),
+        "title_candidate": title_candidate.strip().strip(" ."),
+        "container_candidate": container_candidate.strip().strip(" ."),
+        "year_candidate": year_candidate,
+        "confidence": confidence,
+        "metadata": {
+            "split_basis": split_basis,
+        },
+    }
+
+
+def _candidate_authors_colon_title_in_year(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<authors>.+?):\s*(?P<title>.+?)(?:\.\s*In:\s*(?P<container>.+?))?\s*\((?P<year>(?:19|20)\d{2})\)\s*\.?$",
+        text,
+    )
+    if match is None:
+        return None
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="authors_colon_title_in_year",
+        author_text=match.group("authors"),
+        title_candidate=match.group("title"),
+        container_candidate=match.group("container") or "",
+        year_candidate=int(match.group("year")),
+        confidence=0.92 if terminal_year == int(match.group("year")) else 0.84,
+        split_basis="authors block before ':' and title before optional In:/year tail",
+    )
+
+
+def _candidate_authors_period_title_period_venue_year(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<authors>.+?)\.\s+(?P<title>.+?)\.(?:\s+(?P<container>.+?))?(?:\s*\(?((?P<year>(?:19|20)\d{2}))\)?)?\.?$",
+        text,
+    )
+    if match is None:
+        return None
+    year = int(match.group("year")) if match.group("year") else terminal_year
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="authors_period_title_period_venue_year",
+        author_text=match.group("authors"),
+        title_candidate=match.group("title"),
+        container_candidate=match.group("container") or "",
+        year_candidate=year,
+        confidence=0.75 if year is not None else 0.62,
+        split_basis="first sentence as authors, second sentence as title, trailing sentence/year as container",
+    )
+
+
+def _candidate_authors_year_paren_title_venue(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<authors>.+?)\s*\((?P<year>(?:19|20)\d{2})\)\.?\s+(?P<title>.+?)(?:\.\s+(?P<container>.+))?$",
+        text,
+    )
+    if match is None:
+        return None
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="authors_year_paren_title_venue",
+        author_text=match.group("authors"),
+        title_candidate=match.group("title"),
+        container_candidate=match.group("container") or "",
+        year_candidate=int(match.group("year")) if match.group("year") else terminal_year,
+        confidence=0.8,
+        split_basis="authors before year parentheses, title after year marker",
+    )
+
+
+def _candidate_thesis_or_book_tail_year(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    if terminal_year is None:
+        return None
+    head = re.sub(rf"[\s,.;:()]*{terminal_year}[\s,.;:()]*$", "", text).strip()
+    if not head:
+        return None
+    if ":" in head:
+        author_text, title_candidate = head.split(":", 1)
+    elif ". " in head:
+        author_text, title_candidate = head.split(". ", 1)
+    else:
+        return None
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="thesis_or_book_tail_year",
+        author_text=author_text,
+        title_candidate=title_candidate,
+        container_candidate="",
+        year_candidate=terminal_year,
+        confidence=0.58,
+        split_basis="tail year stripped first, remaining text split on ':' or first period",
+    )
+
+
+def _candidate_fallback_raw_split(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any]:
+    if ":" in text:
+        author_text, title_candidate = text.split(":", 1)
+    elif ". " in text:
+        author_text, title_candidate = text.split(". ", 1)
+    else:
+        author_text, title_candidate = text, ""
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="fallback_raw_split",
+        author_text=author_text,
+        title_candidate=title_candidate,
+        container_candidate="",
+        year_candidate=terminal_year,
+        confidence=0.35,
+        split_basis="fallback split using ':' or first sentence boundary",
+    )
+
+
+def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = str(entry.get("raw", ""))
+    text, _ = _strip_reference_number_prefix(raw)
+    text = _normalize_reference_entry_text(text)
+    entry_index = int(entry["entry_index"])
+    terminal_year = _extract_terminal_publication_year(raw)
+    candidate_builders = [
+        _candidate_authors_period_title_period_venue_year,
+        _candidate_authors_colon_title_in_year,
+        _candidate_authors_year_paren_title_venue,
+        _candidate_thesis_or_book_tail_year,
+    ]
+    seen: set[tuple[str, str, str, int | None]] = set()
+    candidates: list[dict[str, Any]] = []
+    for candidate_index, builder in enumerate(candidate_builders, start=0):
+        candidate = builder(entry_index, text, terminal_year)
+        if candidate is None:
+            continue
+        key = (
+            str(candidate["pattern"]),
+            str(candidate["author_text"]),
+            str(candidate["title_candidate"]),
+            candidate.get("year_candidate"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate["candidate_index"] = len(candidates)
+        candidates.append(candidate)
+    fallback = _candidate_fallback_raw_split(entry_index, text, terminal_year)
+    fallback_key = (
+        str(fallback["pattern"]),
+        str(fallback["author_text"]),
+        str(fallback["title_candidate"]),
+        fallback.get("year_candidate"),
+    )
+    if fallback_key not in seen:
+        fallback["candidate_index"] = len(candidates)
+        candidates.append(fallback)
+    return candidates
+
+
+def _build_reference_workset_export(
+    *,
+    entries: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    batches: list[dict[str, Any]],
+) -> dict[str, Any]:
+    candidates_by_entry: dict[int, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        candidates_by_entry.setdefault(int(candidate["entry_index"]), []).append(candidate)
+    export_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        metadata = dict(entry.get("metadata", {}))
+        numbering = dict(metadata.get("numbering", {}))
+        export_entries.append(
+            {
+                "entry_index": int(entry["entry_index"]),
+                "raw": str(entry["raw"]),
+                "detected_ref_number": numbering.get("detected_ref_number"),
+                "numbering": numbering,
+                "patterns": candidates_by_entry.get(int(entry["entry_index"]), []),
+            }
+        )
+    return {
+        "meta": {
+            "generated_at": utc_now_iso(),
+            "entry_count": len(export_entries),
+            "candidate_count": len(candidates),
+            "batch_count": len(batches),
+        },
+        "entries": export_entries,
+        "batches": batches,
+    }
+
+
+def _build_reference_review_view(workset_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "meta": dict(workset_payload.get("meta", {})),
+        "entries": [
+            {
+                "entry_index": entry.get("entry_index"),
+                "detected_ref_number": entry.get("detected_ref_number"),
+                "raw": entry.get("raw", ""),
+                "pattern_summaries": [
+                    {
+                        "candidate_index": pattern.get("candidate_index"),
+                        "pattern": pattern.get("pattern"),
+                        "author_text": pattern.get("author_text", ""),
+                        "title_candidate": pattern.get("title_candidate", ""),
+                        "year_candidate": pattern.get("year_candidate"),
+                        "confidence": pattern.get("confidence"),
+                    }
+                    for pattern in entry.get("patterns", [])
+                ],
+            }
+            for entry in workset_payload.get("entries", [])
+        ],
+    }
+
+
 def _build_citation_review_view(workset_payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "meta": {
@@ -1127,6 +1511,26 @@ def _require_string_list(value: object, field_name: str) -> tuple[list[str] | No
     return out, None
 
 
+def _normalize_keyword_list(value: object, field_name: str) -> tuple[list[str] | None, str | None]:
+    keywords, error = _require_string_list(value, field_name)
+    if error is not None or keywords is None:
+        return None, error
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for keyword in keywords:
+        stripped = keyword.strip()
+        if not stripped:
+            continue
+        dedupe_key = stripped.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(stripped)
+    if not normalized:
+        return None, f"{field_name} must contain at least one non-empty keyword"
+    return normalized, None
+
+
 def _validate_digest_payload(payload: dict[str, Any]) -> tuple[dict[str, dict[str, Any]] | None, list[dict[str, Any]] | None, str | None]:
     if "sections" in payload:
         return None, None, "deprecated payload key 'sections' is not supported; use digest_slots + section_summaries"
@@ -1268,10 +1672,30 @@ def _validate_citation_semantics_payload(
         ref_index = item.get("ref_index")
         if not isinstance(ref_index, int):
             return None, "items.ref_index must be integer"
+        topic = item.get("topic")
+        if not isinstance(topic, str) or not topic.strip():
+            return None, "items.topic must be non-empty string"
+        usage = item.get("usage")
+        if not isinstance(usage, str) or not usage.strip():
+            return None, "items.usage must be non-empty string"
+        summary = item.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            return None, "items.summary must be non-empty string"
+        keywords, keyword_error = _normalize_keyword_list(item.get("keywords"), "items.keywords")
+        if keyword_error is not None or keywords is None:
+            return None, keyword_error or "items.keywords invalid"
+        is_key_reference = item.get("is_key_reference")
+        if not isinstance(is_key_reference, bool):
+            return None, "items.is_key_reference must be boolean"
         if ref_index in seen_ref_indexes:
             return None, "duplicate ref_index in citation semantics payload"
         seen_ref_indexes.add(ref_index)
-        normalized_items.append(dict(item))
+        normalized_item = dict(item)
+        normalized_item["topic"] = topic.strip()
+        normalized_item["usage"] = usage.strip()
+        normalized_item["summary"] = summary.strip()
+        normalized_item["keywords"] = keywords
+        normalized_items.append(normalized_item)
 
     if seen_ref_indexes != expected_ref_indexes:
         missing = sorted(expected_ref_indexes - seen_ref_indexes)
@@ -1283,6 +1707,108 @@ def _validate_citation_semantics_payload(
             details.append(f"unknown ref_index values: {extra}")
         return None, "; ".join(details) if details else "citation semantics payload does not match workset items"
     return normalized_items, None
+
+
+def _validate_citation_summary_basis(
+    basis: object,
+    workset_items: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(basis, dict):
+        return None, "basis must be object"
+
+    research_threads_raw = basis.get("research_threads")
+    if not isinstance(research_threads_raw, list):
+        return None, "basis.research_threads must be array"
+    research_threads = [str(item).strip() for item in research_threads_raw if str(item).strip()]
+    if len(research_threads) < 2:
+        return None, "basis.research_threads must contain at least 2 non-empty strings"
+
+    argument_shape_raw = basis.get("argument_shape")
+    if not isinstance(argument_shape_raw, list):
+        return None, "basis.argument_shape must be array"
+    argument_shape = [str(item).strip() for item in argument_shape_raw if str(item).strip()]
+    if len(argument_shape) < 2:
+        return None, "basis.argument_shape must contain at least 2 non-empty strings"
+
+    key_ref_indexes_raw = basis.get("key_ref_indexes")
+    if not isinstance(key_ref_indexes_raw, list) or not key_ref_indexes_raw:
+        return None, "basis.key_ref_indexes must be non-empty integer array"
+    key_ref_indexes: list[int] = []
+    for item in key_ref_indexes_raw:
+        if not isinstance(item, int):
+            return None, "basis.key_ref_indexes must be non-empty integer array"
+        key_ref_indexes.append(item)
+
+    expected_ref_indexes = {int(item["ref_index"]) for item in workset_items}
+    unknown = sorted(index for index in key_ref_indexes if index not in expected_ref_indexes)
+    if unknown:
+        return None, f"basis.key_ref_indexes contains unknown ref_index values: {unknown}"
+
+    normalized_basis = dict(basis)
+    normalized_basis["research_threads"] = research_threads
+    normalized_basis["argument_shape"] = argument_shape
+    normalized_basis["key_ref_indexes"] = key_ref_indexes
+    return normalized_basis, None
+
+
+def _validate_citation_timeline_payload(
+    payload: dict[str, Any],
+    workset_items: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[str], str | None]:
+    timeline = payload.get("timeline")
+    if not isinstance(timeline, dict):
+        return None, [], "timeline must be object"
+
+    known_ref_indexes = {int(item["ref_index"]) for item in workset_items}
+    dated_ref_indexes: set[int] = set()
+    undated_ref_indexes: set[int] = set()
+    for item in workset_items:
+        reference = dict(item.get("reference", {}))
+        ref_index = int(item["ref_index"])
+        if isinstance(reference.get("year"), int):
+            dated_ref_indexes.add(ref_index)
+        else:
+            undated_ref_indexes.add(ref_index)
+
+    normalized_timeline: dict[str, Any] = {}
+    seen_ref_indexes: dict[int, str] = {}
+    bucketed_ref_indexes: set[int] = set()
+
+    for bucket_name in ("early", "mid", "recent"):
+        bucket = timeline.get(bucket_name)
+        if not isinstance(bucket, dict):
+            return None, [], f"timeline.{bucket_name} must be object"
+        summary = bucket.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            return None, [], f"timeline.{bucket_name}.summary must be non-empty string"
+        ref_indexes = bucket.get("ref_indexes")
+        if not isinstance(ref_indexes, list):
+            return None, [], f"timeline.{bucket_name}.ref_indexes must be array"
+        normalized_ref_indexes: list[int] = []
+        for ref_index in ref_indexes:
+            if not isinstance(ref_index, int):
+                return None, [], f"timeline.{bucket_name}.ref_indexes must contain integers"
+            if ref_index not in known_ref_indexes:
+                return None, [], f"timeline.{bucket_name}.ref_indexes contains unknown ref_index {ref_index}"
+            if ref_index in seen_ref_indexes:
+                return None, [], f"ref_index {ref_index} appears in multiple timeline buckets: {seen_ref_indexes[ref_index]} and {bucket_name}"
+            seen_ref_indexes[ref_index] = bucket_name
+            normalized_ref_indexes.append(ref_index)
+            bucketed_ref_indexes.add(ref_index)
+        normalized_timeline[bucket_name] = {
+            "summary": summary.strip(),
+            "ref_indexes": normalized_ref_indexes,
+        }
+
+    missing_dated = sorted(dated_ref_indexes - bucketed_ref_indexes)
+    if missing_dated:
+        return None, [], f"timeline must include every dated citation item exactly once; missing ref_index values: {missing_dated}"
+
+    warnings: list[str] = []
+    missing_year_refs = sorted(undated_ref_indexes - bucketed_ref_indexes)
+    if missing_year_refs:
+        warnings.append(f"{WARNING_CITATION_TIMELINE_MISSING_YEAR}: ref_indexes={missing_year_refs}")
+    return normalized_timeline, warnings, None
 
 
 def _collect_render_semantic_warnings(connection) -> list[str]:  # type: ignore[no-untyped-def]
@@ -2007,7 +2533,13 @@ def _handle_persist_digest(args: argparse.Namespace) -> int:
         store_digest_section_summaries(connection, section_summaries)
         for warning in coverage_warnings:
             add_runtime_warning_once(connection, warning)
-        _set_success_state(connection, stage="stage_4_references", substep="persist_references", next_action="persist_references", status="digest sections persisted")
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep="prepare_references_workset",
+            next_action="prepare_references_workset",
+            status="digest sections persisted",
+        )
         connection.commit()
     print(
         json.dumps(
@@ -2022,79 +2554,268 @@ def _handle_persist_digest(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_persist_references(args: argparse.Namespace) -> int:
+def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path) if args.db_path else default_db_path()
-    payload = _read_json_payload(args.payload_file)
-    entries = payload.get("entries", [])
-    batches = payload.get("batches", [])
-    items = payload.get("items", [])
+    out_path = Path(args.out_path) if args.out_path else Path.cwd() / TMP_DIRNAME / REFERENCES_EXPORT_FILENAME
+    review_path = out_path.with_name(
+        REFERENCES_REVIEW_EXPORT_FILENAME if out_path.name == REFERENCES_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}"
+    )
     with connect_db(db_path) as connection:
-        if not isinstance(entries, list) or not isinstance(batches, list) or not isinstance(items, list):
-            set_runtime_error(connection, "references_stage_failed", "entries, batches, and items must be arrays", "stage_4_references")
+        source_doc = fetch_source_document(connection, "normalized_source")
+        scope_row = fetch_section_scope(connection, "references_scope")
+        if source_doc is None:
+            set_runtime_error(connection, "references_stage_failed", "normalized source missing", "stage_4_references")
             connection.commit()
-            print(json.dumps({"error": {"code": "references_stage_failed", "message": "entries, batches, and items must be arrays"}}, ensure_ascii=False))
+            print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": "normalized source missing"}}, ensure_ascii=False))
             return 2
-        for index, entry in enumerate(entries):
-            if not isinstance(entry, dict) or "entry_index" not in entry or "raw" not in entry:
-                message = f"entries[{index}] must include entry_index and raw"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
-                connection.commit()
-                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
-                return 2
-        for index, batch in enumerate(batches):
-            if not isinstance(batch, dict) or any(key not in batch for key in ("batch_index", "entry_start", "entry_end")):
-                message = f"batches[{index}] must include batch_index, entry_start, and entry_end"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
-                connection.commit()
-                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
-                return 2
-        for index, item in enumerate(items):
-            if not isinstance(item, dict) or any(key not in item for key in ("ref_index", "author", "title", "year", "raw", "confidence")):
-                message = f"items[{index}] must include ref_index, author, title, year, raw, and confidence"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
-                connection.commit()
-                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
-                return 2
-        normalized_entries, numbering_warnings, has_numbering_anomaly = _detect_reference_numbering([dict(entry) for entry in entries])
-        normalized_items, normalization_warnings = _normalize_reference_items_with_entry_metadata([dict(item) for item in items], normalized_entries)
+        if scope_row is None:
+            set_runtime_error(connection, "references_stage_failed", "references_scope missing", "stage_4_references")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": "references_scope missing"}}, ensure_ascii=False))
+            return 2
+        scope = _db_scope_to_scope(scope_row)
+        lines = str(source_doc["content"]).splitlines()
+        if scope.line_start < 1 or scope.line_end < scope.line_start or scope.line_end > len(lines):
+            message = "references_scope is out of bounds for normalized source"
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        entries = _split_reference_entries(lines, scope)
+        normalized_entries, numbering_warnings, has_numbering_anomaly = _detect_reference_numbering(entries)
+        candidates: list[dict[str, Any]] = []
+        ambiguity_warnings: list[str] = []
+        boundary_warnings: list[str] = []
+        for entry in normalized_entries:
+            entry_candidates = _generate_reference_candidates(entry)
+            if len(entry_candidates) > 1:
+                ambiguity_warnings.append(f"{WARNING_REFERENCE_PATTERN_AMBIGUOUS}: entry_index={entry['entry_index']}")
+            for candidate in entry_candidates:
+                title_candidate = str(candidate.get("title_candidate", "")).strip()
+                if not title_candidate or LEADING_PUNCTUATION_RE.match(title_candidate):
+                    boundary_warnings.append(f"{WARNING_REFERENCE_TITLE_BOUNDARY_SUSPECT}: entry_index={entry['entry_index']} pattern={candidate['pattern']}")
+                candidates.append(candidate)
+        batches: list[dict[str, Any]] = []
+        if normalized_entries:
+            chunk_size = 15
+            for batch_index, start in enumerate(range(0, len(normalized_entries), chunk_size)):
+                end = min(start + chunk_size - 1, len(normalized_entries) - 1)
+                batches.append(
+                    {
+                        "batch_kind": "references_workset",
+                        "batch_index": batch_index,
+                        "status": "prepared",
+                        "entry_start": start,
+                        "entry_end": end,
+                        "metadata": {"entry_count": end - start + 1},
+                    }
+                )
         store_reference_entries(connection, normalized_entries)
         for batch in batches:
-            batch_obj = dict(batch)
             store_reference_batch(
                 connection,
-                batch_kind=str(batch_obj.get("batch_kind", "references")),
-                batch_index=int(batch_obj["batch_index"]),
-                status=str(batch_obj.get("status", "completed")),
-                entry_start=int(batch_obj["entry_start"]),
-                entry_end=int(batch_obj["entry_end"]),
-                metadata=dict(batch_obj.get("metadata", {})),
+                batch_kind=str(batch["batch_kind"]),
+                batch_index=int(batch["batch_index"]),
+                status=str(batch["status"]),
+                entry_start=int(batch["entry_start"]),
+                entry_end=int(batch["entry_end"]),
+                metadata=dict(batch.get("metadata", {})),
             )
-        store_reference_items(connection, normalized_items)
-        for warning in [*numbering_warnings, *normalization_warnings]:
+        store_reference_parse_candidates(connection, candidates)
+        for warning in [*numbering_warnings, *ambiguity_warnings, *boundary_warnings]:
             add_runtime_warning_once(connection, warning)
-        source_doc = fetch_source_document(connection, "normalized_source")
-        if source_doc is not None:
-            metadata = dict(source_doc.get("metadata", {}))
-            metadata["reference_numbering_reliability"] = "low" if has_numbering_anomaly else "high"
-            store_source_document(
-                connection,
-                doc_key="normalized_source",
-                content=str(source_doc["content"]),
-                metadata=metadata,
-            )
-        _set_success_state(connection, stage="stage_5_citation", substep="prepare_citation_workset", next_action="prepare_citation_workset", status="references persisted")
+        metadata = dict(source_doc.get("metadata", {}))
+        metadata["reference_numbering_reliability"] = "low" if has_numbering_anomaly else "high"
+        store_source_document(connection, doc_key="normalized_source", content=str(source_doc["content"]), metadata=metadata)
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep="persist_references",
+            next_action="persist_references",
+            status="reference workset prepared",
+        )
         connection.commit()
+
+    workset_payload = _build_reference_workset_export(entries=normalized_entries, candidates=candidates, batches=batches)
+    review_payload = _build_reference_review_view(workset_payload)
+    if not args.persist_db_only:
+        _write_json(out_path, workset_payload)
+        _write_json(review_path, review_payload)
     print(
         json.dumps(
             {
-                "stored_reference_items": len(normalized_items),
+                "stored_reference_entries": len(normalized_entries),
+                "stored_reference_candidates": len(candidates),
                 "numbering_warnings": numbering_warnings,
-                "warnings": list(dict.fromkeys([*numbering_warnings, *normalization_warnings])),
+                "warnings": list(dict.fromkeys([*numbering_warnings, *ambiguity_warnings, *boundary_warnings])),
+                "workset_path": str(out_path) if not args.persist_db_only else "",
+                "review_path": str(review_path) if not args.persist_db_only else "",
                 "error": None,
             },
             ensure_ascii=False,
         )
     )
+    return 0
+
+
+def _handle_persist_references(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    payload = _read_json_payload(args.payload_file)
+    items = payload.get("items", [])
+    with connect_db(db_path) as connection:
+        if "entries" in payload or "batches" in payload:
+            message = "persist_references now accepts only items[] keyed by entry_index + selected_pattern"
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        if not isinstance(items, list):
+            set_runtime_error(connection, "references_stage_failed", "items must be array", "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "references_stage_failed", "message": "items must be array"}}, ensure_ascii=False))
+            return 2
+
+        entries = fetch_reference_entries(connection)
+        candidates = fetch_reference_parse_candidates(connection)
+        if not entries or not candidates:
+            message = "reference workset missing; prepare_references_workset must run first"
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+
+        entry_metadata = {int(entry["entry_index"]): dict(entry.get("metadata", {})) for entry in entries}
+        candidates_by_entry: dict[int, dict[str, dict[str, Any]]] = {}
+        for candidate in candidates:
+            candidates_by_entry.setdefault(int(candidate["entry_index"]), {})[str(candidate["pattern"])] = candidate
+
+        normalized_items: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                message = f"items[{index}] must be object"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            required_keys = ("entry_index", "selected_pattern", "author", "title", "year", "raw", "confidence")
+            missing = [key for key in required_keys if key not in item]
+            if missing:
+                message = f"items[{index}] missing required keys: {missing}"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            entry_index = item.get("entry_index")
+            selected_pattern = str(item.get("selected_pattern"))
+            if not isinstance(entry_index, int):
+                message = f"items[{index}].entry_index must be integer"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            if entry_index not in candidates_by_entry:
+                message = f"items[{index}].entry_index has no prepared candidates"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            if not selected_pattern:
+                message = f"items[{index}].selected_pattern must be non-empty"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            if selected_pattern not in candidates_by_entry[entry_index]:
+                message = f"items[{index}].selected_pattern does not match prepared candidates"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+
+            title = str(item.get("title", "")).strip()
+            if not title:
+                message = f"items[{index}].title must be non-empty"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            if LEADING_PUNCTUATION_RE.match(title):
+                message = f"items[{index}].title has suspicious leading punctuation"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+
+            candidate_obj = candidates_by_entry[entry_index][selected_pattern]
+            author = _as_str_list(item.get("author"))
+            oversplit_message = _detect_reference_author_oversplit(
+                author,
+                _as_str_list(candidate_obj.get("author_candidates")),
+            )
+            if oversplit_message is not None:
+                warning = f"{WARNING_REFERENCE_AUTHOR_OVERSPLIT}: entry_index={entry_index} pattern={selected_pattern}"
+                add_runtime_warning_once(connection, warning)
+                message = f"items[{index}].author invalid: {oversplit_message}"
+                set_runtime_error(connection, "reference_author_refinement_invalid", message, "stage_4_references")
+                connection.commit()
+                print(
+                    json.dumps(
+                        {
+                            "error": {
+                                "code": "reference_author_refinement_invalid",
+                                "message": message,
+                            }
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            year = _as_int_or_none(item.get("year"))
+            raw = str(item.get("raw", ""))
+            confidence = _as_confidence(item.get("confidence"), 0.1)
+            metadata = dict(item.get("metadata", {}))
+            metadata["entry_index"] = entry_index
+            metadata["selected_pattern"] = selected_pattern
+            metadata["pattern_candidate"] = candidate_obj
+            numbering = dict(entry_metadata.get(entry_index, {}).get("numbering", {}))
+            if numbering:
+                metadata["numbering"] = numbering
+                metadata["detected_ref_number"] = numbering.get("detected_ref_number")
+                if numbering.get("warnings"):
+                    metadata.setdefault("warnings", []).extend(list(numbering.get("warnings", [])))
+            normalized_item = {
+                "ref_index": entry_index,
+                "author": author,
+                "title": title,
+                "year": year,
+                "raw": raw,
+                "confidence": confidence,
+                "metadata": metadata,
+            }
+            normalized_item = _normalize_reference_item(normalized_item, warnings)
+            normalized_metadata_obj = normalized_item.get("metadata", {})
+            normalized_metadata = dict(normalized_metadata_obj) if isinstance(normalized_metadata_obj, dict) else {}
+            detected_terminal_year = _extract_terminal_publication_year(raw)
+            if detected_terminal_year is not None and normalized_item.get("year") != detected_terminal_year:
+                normalized_metadata.setdefault("normalization_notes", []).append(
+                    f"publication year normalized from {normalized_item.get('year')} to trailing year {detected_terminal_year}"
+                )
+                normalized_item["year"] = detected_terminal_year
+            normalized_confidence = _as_confidence(normalized_item.get("confidence"), 0.1)
+            normalized_item["confidence"] = normalized_confidence
+            if normalized_confidence < 0.6 or normalized_item.get("year") is None:
+                normalized_metadata.setdefault("warnings", []).append(WARNING_REFERENCE_LOW_CONFIDENCE)
+                warnings.append(WARNING_REFERENCE_LOW_CONFIDENCE)
+            normalized_item["metadata"] = normalized_metadata
+            normalized_items.append(normalized_item)
+
+        store_reference_items(connection, normalized_items)
+        for warning in list(dict.fromkeys(warnings)):
+            add_runtime_warning_once(connection, warning)
+        _set_success_state(connection, stage="stage_5_citation", substep="prepare_citation_workset", next_action="prepare_citation_workset", status="references persisted")
+        connection.commit()
+    print(json.dumps({"stored_reference_items": len(normalized_items), "warnings": list(dict.fromkeys(warnings)), "error": None}, ensure_ascii=False))
     return 0
 
 
@@ -2360,9 +3081,36 @@ def _handle_persist_citation_semantics(args: argparse.Namespace) -> int:
             item_obj["metadata"] = metadata
             final_items.append(item_obj)
         store_citation_items(connection, final_items)
-        _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_summary", next_action="persist_citation_summary", status="citation semantics persisted")
+        _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_timeline", next_action="persist_citation_timeline", status="citation semantics persisted")
         connection.commit()
     print(json.dumps({"stored_citation_items": len(final_items), "error": None}, ensure_ascii=False))
+    return 0
+
+
+def _handle_persist_citation_timeline(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    payload = _read_json_payload(args.payload_file)
+
+    with connect_db(db_path) as connection:
+        citation_items = fetch_citation_items(connection)
+        if not citation_items:
+            set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
+            return 2
+        workset_items = fetch_citation_workset_items(connection)
+        normalized_timeline, warnings, error = _validate_citation_timeline_payload(payload, workset_items)
+        if error is not None or normalized_timeline is None:
+            set_runtime_error(connection, "citation_timeline_failed", error or "invalid citation timeline payload", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_timeline_failed", "message": error or "invalid citation timeline payload"}}, ensure_ascii=False))
+            return 2
+        store_citation_timeline(connection, normalized_timeline)
+        for warning in warnings:
+            add_runtime_warning_once(connection, warning)
+        _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_summary", next_action="persist_citation_summary", status="citation timeline persisted")
+        connection.commit()
+    print(json.dumps({"stored_citation_timeline": True, "warnings": warnings, "error": None}, ensure_ascii=False))
     return 0
 
 
@@ -2370,25 +3118,34 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path) if args.db_path else default_db_path()
     payload = _read_json_payload(args.payload_file)
     summary = payload.get("summary")
-    basis = payload.get("basis", {})
+    basis = payload.get("basis")
 
     with connect_db(db_path) as connection:
-        if not fetch_citation_items(connection):
+        citation_items = fetch_citation_items(connection)
+        if not citation_items:
             set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_5_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
+            return 2
+        citation_timeline = fetch_citation_timeline(connection)
+        if citation_timeline is None:
+            set_runtime_error(connection, "citation_timeline_failed", "citation timeline missing; persist_citation_timeline must run first", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_timeline_failed", "message": "citation timeline missing; persist_citation_timeline must run first"}}, ensure_ascii=False))
             return 2
         if not isinstance(summary, str) or not summary.strip():
             set_runtime_error(connection, "citation_semantics_failed", "summary must be non-empty string", "stage_5_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "summary must be non-empty string"}}, ensure_ascii=False))
             return 2
-        if not isinstance(basis, dict):
-            set_runtime_error(connection, "citation_semantics_failed", "basis must be object when provided", "stage_5_citation")
+        workset_items = fetch_citation_workset_items(connection)
+        normalized_basis, error = _validate_citation_summary_basis(basis, workset_items)
+        if error is not None or normalized_basis is None:
+            set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation summary basis", "stage_5_citation")
             connection.commit()
-            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "basis must be object when provided"}}, ensure_ascii=False))
+            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": error or "invalid citation summary basis"}}, ensure_ascii=False))
             return 2
-        store_citation_summary(connection, summary.strip(), basis)
+        store_citation_summary(connection, summary.strip(), normalized_basis)
         _set_success_state(connection, stage="stage_6_render_and_validate", substep="render_and_validate", next_action="render_and_validate", status="citation summary persisted")
         connection.commit()
     print(json.dumps({"stored_citation_summary": True, "error": None}, ensure_ascii=False))
@@ -2544,6 +3301,12 @@ def build_parser() -> argparse.ArgumentParser:
     digest.add_argument("--payload-file", default="")
     digest.set_defaults(handler=_handle_persist_digest)
 
+    references_workset = subparsers.add_parser("prepare_references_workset")
+    references_workset.add_argument("--db-path", default="")
+    references_workset.add_argument("--out", dest="out_path", default="")
+    references_workset.add_argument("--persist-db-only", action="store_true")
+    references_workset.set_defaults(handler=_handle_prepare_references_workset)
+
     references = subparsers.add_parser("persist_references")
     references.add_argument("--db-path", default="")
     references.add_argument("--payload-file", default="")
@@ -2565,6 +3328,11 @@ def build_parser() -> argparse.ArgumentParser:
     citation.add_argument("--db-path", default="")
     citation.add_argument("--payload-file", default="")
     citation.set_defaults(handler=_handle_persist_citation_semantics)
+
+    citation_timeline = subparsers.add_parser("persist_citation_timeline")
+    citation_timeline.add_argument("--db-path", default="")
+    citation_timeline.add_argument("--payload-file", default="")
+    citation_timeline.set_defaults(handler=_handle_persist_citation_timeline)
 
     citation_summary = subparsers.add_parser("persist_citation_summary")
     citation_summary.add_argument("--db-path", default="")

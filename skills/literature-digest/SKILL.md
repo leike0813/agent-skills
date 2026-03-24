@@ -117,15 +117,19 @@ compatibility: Requires local filesystem read access to source_path; no network 
 - `entries`
   - 中文名：原始参考文献条目
   - 定义：从 references 范围切分出的原始条目列表。
-  - 适用动作：`persist_references`
+  - 适用动作：`prepare_references_workset`
 - `batches`
   - 中文名：批次定义
   - 定义：脚本或 LLM 用来描述分批处理边界与成员的列表。
-  - 适用动作：`persist_references`、`persist_citation_semantics`
+  - 适用动作：`prepare_references_workset`
 - `items`
   - 中文名：结构化条目列表
   - 定义：当前动作真正写入的核心对象数组；具体字段随动作不同而变化。
   - 适用动作：`persist_references`、`persist_citation_semantics`
+- `selected_pattern`
+  - 中文名：选定候选 pattern
+  - 定义：agent 在 references 预解析候选中选中的切分模式标识。
+  - 适用动作：`persist_references`
 - `mention_id`
   - 中文名：引文标记 ID
   - 定义：一条 citation mention 的唯一标识。
@@ -138,6 +142,22 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 中文名：引文功能类别
   - 定义：对某条 workset item 的语义归类，允许值由脚本枚举校验。
   - 适用动作：`persist_citation_semantics`
+- `topic`
+  - 中文名：引文主题
+  - 定义：该被引工作在当前综述范围内代表的主题、路线或研究对象。
+  - 适用动作：`persist_citation_semantics`
+- `usage`
+  - 中文名：引用用途
+  - 定义：原文在当前 scope 中为什么引用这篇文献、借它完成什么论证。
+  - 适用动作：`persist_citation_semantics`
+- `keywords`
+  - 中文名：引文关键词
+  - 定义：概括该被引工作在当前综述范围中代表的主题词、方法词或任务词的短词组列表。
+  - 适用动作：`persist_citation_semantics`
+- `is_key_reference`
+  - 中文名：关键文献标记
+  - 定义：标记该 workset item 是否属于当前综述范围内必须点出的关键文献。
+  - 适用动作：`persist_citation_semantics`
 - `summary`
   - 中文名：总结文本
   - 定义：上下文相关的自然语言总结；在 `persist_citation_semantics` 中指条目级摘要，在 `persist_citation_summary` 中指全局总结。
@@ -148,8 +168,12 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 适用动作：`persist_citation_semantics`
 - `basis`
   - 中文名：总结依据
-  - 定义：描述全局 summary 依据的可选结构化补充信息。
+  - 定义：描述全局 summary 依据的结构化补充信息，至少包括研究脉络、论述动作和关键文献索引。
   - 适用动作：`persist_citation_summary`
+- `timeline`
+  - 中文名：时间线分析
+  - 定义：把当前综述范围内的已分析引文划分为 `early` / `mid` / `recent` 三段并分别给出时间段总结。
+  - 适用动作：`persist_citation_timeline`
 - `instruction_refs`
   - 中文名：附录阅读指引
   - 定义：gate 指定的当前阶段应按需阅读的文档路径与节标题列表。
@@ -322,61 +346,84 @@ python scripts/stage_runtime.py persist_digest --payload-file /tmp/digest_payloa
 }
 ```
 - 完成后应该看到的 gate 结果：
-  - `next_action` 应推进为 `persist_references`
+  - `next_action` 应推进为 `prepare_references_workset`
 - 本步最常见错误：
   - 仍提交旧的 `sections[]`
   - 直接写接近最终成品的 Markdown，而不是结构化槽位
 
-### 5. `persist_references`
+### 5. `prepare_references_workset`
 
 - 何时执行：
-  - `persist_digest` 成功后，且 gate 返回 `persist_references`
+  - `persist_digest` 成功后，且 gate 返回 `prepare_references_workset`
+- 调用命令：
+```bash
+python scripts/stage_runtime.py prepare_references_workset --out /tmp/references_workset.json
+```
+- 必须提供的参数 / payload：
+  - 无业务 payload；本步只读标准化文本与 `references_scope`
+- 各输出字段含义：
+  - `workset_path`：完整 references workset 导出路径；每个条目带 `patterns[]`
+  - `review_path`：轻量审阅视图路径；只保留 `entry_index / detected_ref_number / raw / pattern_summaries`
+  - `stored_reference_entries`：本次切分出的 raw 条目数量
+  - `stored_reference_candidates`：本次生成的 candidate 总数
+  - `warnings`：编号异常、pattern 歧义、title 边界可疑等 warning
+- 最小合法示例：
+```bash
+python scripts/stage_runtime.py prepare_references_workset --out /tmp/references_workset.json
+```
+- 完成后应该看到的 gate 结果：
+  - `next_action` 应推进为 `persist_references`
+- 本步最常见错误：
+  - 误以为本步需要 agent 直接填写最终 references 结果
+  - 只保留一个“看起来最像”的切分结果，而没有保留多组候选
+  - 忽略 `review_path`，直接回原文重复做人肉切分
+
+### 6. `persist_references`
+
+- 何时执行：
+  - `prepare_references_workset` 成功后，且 gate 返回 `persist_references`
 - 调用命令：
 ```bash
 python scripts/stage_runtime.py persist_references --payload-file /tmp/references_payload.json
 ```
 - 必须提供的参数 / payload：
-  - `entries`
-  - `batches`
   - `items`
 - 各 payload 字段含义：
-  - `entries[*].entry_index`：原始条目的稳定顺序编号，建议从 `0` 连续递增
-  - `entries[*].raw`：原始参考文献条目文本；这是后续编号检查与年份归一的依据
-  - `batches[*].batch_index`：references 批次编号
-  - `batches[*].entry_start` / `entry_end`：该批次覆盖的 `entry_index` 闭区间
-  - `items[*].ref_index`：最终结构化文献项编号，默认与 `entry_index` 对齐
-  - `items[*].author`：作者数组；若拆分不稳，可保守写成单元素数组，例如 `["Smith, J.; Doe, K."]`
+  - `items[*].entry_index`：要 refine 的原始条目编号
+  - `items[*].selected_pattern`：从 workset 候选中显式选中的 `pattern`
+  - `items[*].author`：refine 后的完整作者数组；若 `pattern_candidate.author_candidates` 已给出稳定作者边界，就必须直接复用该边界，不得再次把 `Al-Rfou, R.` 之类作者拆成 `["Al-Rfou", "R."]`
+  - `items[*].title`：refine 后的标题；不得以前导逗号、句点、分号或冒号开头
   - `items[*].year`：优先取条目末尾出版年份；不要误取 arXiv 编号前缀
-  - `items[*].confidence`：对当前结构化质量的总体置信度；不稳时应主动降低
+  - `items[*].raw`：对应原始 references 条目文本
+  - `items[*].confidence`：对该条最终结构化结果的置信度
 - 最小合法示例：
 ```json
 {
-  "entries": [
-    {"entry_index": 0, "raw": "[1] Smith J. Paper title. 2020."}
-  ],
-  "batches": [
-    {"batch_index": 0, "entry_start": 0, "entry_end": 0}
-  ],
   "items": [
     {
-      "ref_index": 0,
-      "author": ["Smith, J."],
-      "title": "Paper title",
-      "year": 2020,
-      "raw": "[1] Smith J. Paper title. 2020.",
-      "confidence": 0.92
+      "entry_index": 10,
+      "selected_pattern": "authors_colon_title_in_year",
+      "author": ["Gu, J.", "Bradbury, J.", "Xiong, C.", "Li, V.O.", "Socher, R."],
+      "title": "Non-autoregressive neural machine translation",
+      "year": 2018,
+      "raw": "[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR (2018)",
+      "confidence": 0.9
     }
   ]
 }
 ```
+- 作者边界合法/非法对照：
+  - 合法：`["Al-Rfou, R.", "Choe, D.", "Constant, N.", "Guo, M.", "Jones, L."]`
+  - 非法：`["Al-Rfou", "R.", "Choe", "D.", "Constant", "N.", "Guo", "M.", "Jones", "L."]`
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `prepare_citation_workset`
 - 本步最常见错误：
-  - 把 `entries` 和 `items` 混成一层
-  - 遇到作者拆分不稳时仍强行细拆，结果比保守模式更错
-  - 把 arXiv 标识中的数字前缀误填成出版年份
-
-### 6. `prepare_citation_workset`
+  - 继续提交旧的 `entries + batches + items`
+  - `selected_pattern` 不存在于预解析候选中
+  - 只拆出第一作者，导致剩余作者吞进 `title`
+  - 已有稳定 `author_candidates` 时又把一个作者拆成多个数组元素
+  - `title` 带前导标点
+### 7. `prepare_citation_workset`
 
 - 何时执行：
   - `persist_references` 成功后，且 gate 返回 `prepare_citation_workset`
@@ -405,7 +452,7 @@ python scripts/stage_runtime.py prepare_citation_workset --out /tmp/workset.json
   - 误以为 workset 需要由 agent 手工拼装
   - 忽略轻量审阅视图，反复让模型消费完整大 payload
 
-### 7. `persist_citation_semantics`
+### 8. `persist_citation_semantics`
 
 - 何时执行：
   - `prepare_citation_workset` 成功后，且 gate 返回 `persist_citation_semantics`
@@ -418,7 +465,11 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
 - 各 payload 字段含义：
   - `items[*].ref_index`：对应哪条 citation workset item
   - `items[*].function`：条目级语义类别
-  - `items[*].summary`：该参考文献在当前 scope 中的作用总结
+  - `items[*].topic`：这篇文献在当前综述范围里代表的主题、路线或对象
+  - `items[*].usage`：原文为什么在这里引用它，用它支撑什么论证
+  - `items[*].keywords`：2-5 个短词组，提炼该文献在当前综述范围中的任务、方法、对象或路线；不能把标题整句原样抄进来
+  - `items[*].summary`：该参考文献在当前 scope 中的具体作用总结，必须先写“本文如何使用它”，不能只写泛化功能标签
+  - `items[*].is_key_reference`：这篇文献是否属于当前范围里必须点出的关键文献
   - `items[*].confidence`：本条语义判断的置信度
 - 最小合法示例：
 ```json
@@ -426,49 +477,108 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
   "items": [
     {
       "ref_index": 12,
-      "function": "background",
-      "summary": "该工作被用来界定问题背景并说明研究起点。",
+      "function": "historical",
+      "topic": "早期注意力机制",
+      "usage": "原文用它交代 transformer 之前的注意力思想来源，作为技术谱系起点。",
+      "keywords": ["attention", "pre-transformer", "historical lineage"],
+      "summary": "该工作被用来追溯 transformer 之前的注意力思想来源，帮助原文把自身方法放回更早的技术谱系中。",
+      "is_key_reference": true,
       "confidence": 0.86
     }
   ]
 }
 ```
 - 完成后应该看到的 gate 结果：
-  - `next_action` 应推进为 `persist_citation_summary`
+  - `next_action` 应推进为 `persist_citation_timeline`
 - 本步最常见错误：
   - 重做 mention-reference join
+  - 把不同文献都写成“提供背景支持/作为方法对比”这类批量套话
+  - 把 `summary` 写成文献简介，而不是“原文如何使用这篇文献”
+  - 漏掉 `keywords`，或把 `keywords` 写成整句
   - 传入 `report_md`、`mentions`、`reference` 等旧字段
 
-### 8. `persist_citation_summary`
+### 9. `persist_citation_timeline`
 
 - 何时执行：
-  - `persist_citation_semantics` 成功后，且 gate 返回 `persist_citation_summary`
+  - `persist_citation_semantics` 成功后，且 gate 返回 `persist_citation_timeline`
+- 调用命令：
+```bash
+python scripts/stage_runtime.py persist_citation_timeline --payload-file /tmp/citation_timeline.json
+```
+- 必须提供的参数 / payload：
+  - `timeline`
+- 各 payload 字段含义：
+  - `timeline.early` / `timeline.mid` / `timeline.recent`：时间线的三个固定时间段
+  - `timeline.*.summary`：该时间段在当前综述范围内的研究脉络总结
+  - `timeline.*.ref_indexes`：落入该时间段的 `ref_index` 列表
+- 最小合法示例：
+```json
+{
+  "timeline": {
+    "early": {
+      "summary": "早期工作主要奠定了基础建模思想与任务定义。",
+      "ref_indexes": [2, 8]
+    },
+    "mid": {
+      "summary": "中期工作把这些思想推向更成熟的检测与匹配路线。",
+      "ref_indexes": [15, 24]
+    },
+    "recent": {
+      "summary": "近期工作则更直接地收束到本文所处的方法脉络。",
+      "ref_indexes": [38]
+    }
+  }
+}
+```
+- 完成后应该看到的 gate 结果：
+  - `next_action` 应推进为 `persist_citation_summary`
+- 本步最常见错误：
+  - 缺少 `early` / `mid` / `recent` 任一 bucket
+  - 让同一个 `ref_index` 同时出现在多个 bucket
+  - 忘记把所有有稳定年份的条目都归入时间线
+
+### 10. `persist_citation_summary`
+
+- 何时执行：
+  - `persist_citation_timeline` 成功后，且 gate 返回 `persist_citation_summary`
 - 调用命令：
 ```bash
 python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/citation_summary.json
 ```
 - 必须提供的参数 / payload：
   - `summary`
-  - `basis` 可选
+  - `basis`
 - 各 payload 字段含义：
-  - `summary`：对当前 citation scope 内整体引文组织方式的全局自然语言总结
-  - `basis`：可选的补充依据，例如分组思路或证据摘要
+  - `summary`：对当前 citation scope 内整体引文组织方式的全局自然语言总结；必须围绕原文如何使用这些文献来组织研究脉络，而不是做功能占比统计
+  - `basis.research_threads`：本段综述串起的 2-4 条研究脉络
+  - `basis.argument_shape`：原文组织这些文献的 2-4 个叙述动作，例如先铺背景、再对比主流范式、最后引出本文路线
+  - `basis.key_ref_indexes`：当前范围内最关键的 1-5 个 `ref_index`；renderer 会据此生成“关键文献”小节
 - 最小合法示例：
 ```json
 {
-  "summary": "本节主要把既有工作分成问题背景、方法对比与数据资源三类，其中背景性引用占主导。",
+  "summary": "本节先用早期注意力与序列建模工作铺出技术背景，再把直接集合预测与基于后处理的检测路线并置比较，最后借几篇关键 transformer 与匹配式检测文献把本文的方法路线明确出来。",
   "basis": {
-    "grouping": ["background", "baseline", "dataset"]
+    "research_threads": [
+      "从早期 attention / seq2seq 到 transformer 的建模脉络",
+      "从依赖 NMS 的检测器到直接集合预测路线的演进"
+    ],
+    "argument_shape": [
+      "先铺技术背景",
+      "再比较主流检测范式",
+      "最后引出本文路线"
+    ],
+    "key_ref_indexes": [2, 15, 38]
   }
 }
 ```
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `render_and_validate`
 - 本步最常见错误：
+  - 把这里写成按功能数量、百分比或条目数的统计型 summary
   - 把这里写成按功能分组后的完整报告正文
-  - 重复粘贴每条 item 的 summary，而没有给出全局归纳
+  - 重复粘贴每条 item 的 summary，而没有给出原文组织 related work 的全局归纳
 
-### 9. `render_and_validate --mode render`
+### 11. `render_and_validate --mode render`
 
 - 何时执行：
   - `persist_citation_summary` 成功后，且 gate 返回 `render_and_validate`
@@ -500,6 +610,10 @@ python scripts/stage_runtime.py render_and_validate --mode render
 - citation 语义阶段不得重做 mention-reference join，只能消费 DB 中已有 `citation_workset_items`
 - citation 阶段不得直接写 `report_md`
 - `citation_analysis.summary` 是必填全局字段
+- `persist_citation_semantics.items[*]` 必须包含 `topic`、`usage`、`keywords`、`is_key_reference`
+- `persist_citation_timeline.timeline` 必须包含 `early`、`mid`、`recent`
+- `persist_citation_summary.basis` 必须包含 `research_threads`、`argument_shape`、`key_ref_indexes`
+- 对 author-year 型引用，renderer 会按首次出现顺序合成 `[AY-k]`，避免与原始 numeric `[n]` 冲突
 
 ## 按需读取附录
 

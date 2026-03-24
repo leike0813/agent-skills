@@ -17,6 +17,7 @@
 全局约束：
 
 - gate 一旦确认某项前置状态已经存在于 DB，后续主路径阶段不得再通过 CLI / JSON 重新指定它
+- stage 5 的固定顺序是：`prepare_citation_workset` → `persist_citation_semantics` → `persist_citation_timeline` → `persist_citation_summary` → `render_and_validate`
 - 例如：
   - `runtime_inputs.source_path` 一旦在 bootstrap 写入，`normalize_source` 只能读取它
   - `section_scopes.citation_scope` 一旦在 stage 2 写入，`prepare_citation_workset` 只能读取它
@@ -102,9 +103,11 @@ stdout 只输出一个 JSON 对象，字段固定为：
 - `normalize_source`
 - `persist_outline_and_scopes`
 - `persist_digest`
+- `prepare_references_workset`
 - `persist_references`
 - `prepare_citation_workset`
 - `persist_citation_semantics`
+- `persist_citation_timeline`
 - `persist_citation_summary`
 - `render_and_validate`
 - `repair_workflow_state`
@@ -171,6 +174,10 @@ gate 至少检查这些关键前置：
   - `outline_nodes`
 - `stage_4_references`
   - `source_documents.normalized_source`
+  - `section_scopes.references_scope`
+  - 当 `next_action = persist_references` 时，还要求：
+    - `reference_entries`
+    - `reference_parse_candidates`
 - `stage_5_citation`
   - `source_documents.normalized_source`
   - `section_scopes.citation_scope`
@@ -213,9 +220,9 @@ gate 至少检查这些关键前置：
 ```json
 {
   "current_stage": "stage_4_references",
-  "current_substep": "persist_references",
+  "current_substep": "prepare_references_workset",
   "stage_gate": "ready",
-  "next_action": "persist_references"
+  "next_action": "prepare_references_workset"
 }
 ```
 

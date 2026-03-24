@@ -28,6 +28,50 @@
       "type": "string",
       "minLength": 1
     },
+    "summary_basis": {
+      "type": "object"
+    },
+    "key_references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "citation_label": {
+            "type": "string"
+          },
+          "author_year_label": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "ref_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "ref_number": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "function_label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "citation_label",
+          "author_year_label",
+          "title",
+          "ref_index",
+          "ref_number",
+          "function_label"
+        ],
+        "additionalProperties": false
+      }
+    },
     "grouped_items": {
       "type": "array",
       "items": {
@@ -46,6 +90,18 @@
               "properties": {
                 "citation_label": {
                   "type": "string"
+                },
+                "author_year_label": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "keywords": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 "summary": {
                   "type": "string"
@@ -71,6 +127,9 @@
               },
               "required": [
                 "citation_label",
+                "author_year_label",
+                "title",
+                "keywords",
                 "summary",
                 "function",
                 "function_label",
@@ -97,6 +156,18 @@
           "citation_label": {
             "type": "string"
           },
+          "author_year_label": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "summary": {
             "type": "string"
           },
@@ -121,6 +192,9 @@
         },
         "required": [
           "citation_label",
+          "author_year_label",
+          "title",
+          "keywords",
           "summary",
           "function",
           "function_label",
@@ -129,6 +203,26 @@
         ],
         "additionalProperties": false
       }
+    },
+    "timeline": {
+      "type": "object",
+      "properties": {
+        "early": {
+          "$ref": "#/$defs/timeline_bucket"
+        },
+        "mid": {
+          "$ref": "#/$defs/timeline_bucket"
+        },
+        "recent": {
+          "$ref": "#/$defs/timeline_bucket"
+        }
+      },
+      "required": [
+        "early",
+        "mid",
+        "recent"
+      ],
+      "additionalProperties": false
     },
     "unmapped_mentions": {
       "type": "array",
@@ -172,9 +266,64 @@
     "language",
     "scope",
     "summary",
+    "summary_basis",
+    "key_references",
     "grouped_items",
     "ordered_items",
+    "timeline",
     "unmapped_mentions"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "timeline_item": {
+      "type": "object",
+      "properties": {
+        "citation_label": {
+          "type": "string"
+        },
+        "author_year_label": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "ref_index": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "citation_label",
+        "author_year_label",
+        "title",
+        "ref_index"
+      ],
+      "additionalProperties": false
+    },
+    "timeline_bucket": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "ref_indexes": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/timeline_item"
+          }
+        }
+      },
+      "required": [
+        "summary",
+        "ref_indexes",
+        "items"
+      ],
+      "additionalProperties": false
+    }
+  }
 }

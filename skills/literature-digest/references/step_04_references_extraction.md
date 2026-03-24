@@ -164,25 +164,67 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 
 ## References 阶段持久化要求
 
+按 `SKILL.md` 的“参数词表（全项目统一）”定义，本阶段已经改成两段式：
+
+1. `prepare_references_workset`
+   - 脚本从 `source_documents.normalized_source` 与 `section_scopes.references_scope` 中切分 raw entry
+   - 脚本为每个 `entry` 生成多组 `patterns[]` 候选，并写入 `reference_parse_candidates`
+2. `persist_references`
+   - agent 只在候选中选择 `selected_pattern`
+   - agent 在选中候选的基础上 refine 完整 `author[] / title / year`
+   - 脚本校验后写入最终 `reference_items`
+
+### `prepare_references_workset` 预解析契约
+
+脚本必须至少尝试以下 pattern：
+
+- `authors_period_title_period_venue_year`
+- `authors_colon_title_in_year`
+- `authors_year_paren_title_venue`
+- `thesis_or_book_tail_year`
+- `fallback_raw_split`
+
+若一个条目命中多个 pattern，必须全部保留，不得只留下“最像的一条”。
+
+完整导出中的每个条目必须带：
+
+- `entry_index`
+- `raw`
+- `detected_ref_number`
+- `patterns[]`
+
+每个 `pattern` 候选至少带：
+
+- `candidate_index`
+- `pattern`
+- `author_text`
+- `author_candidates`
+- `title_candidate`
+- `year_candidate`
+- `confidence`
+- `metadata.split_basis`
+
+轻量审阅视图只保留：
+
+- `entry_index`
+- `detected_ref_number`
+- `raw`
+- `pattern_summaries`
+
 ### `persist_references` 结构化持久化契约
 
 本阶段输入必须是结构化 payload：
 
 ```json
 {
-  "entries": [
-    { "entry_index": 0, "raw": "[1] Smith. Paper A. 2020." }
-  ],
-  "batches": [
-    { "batch_index": 0, "entry_start": 0, "entry_end": 0 }
-  ],
   "items": [
     {
-      "ref_index": 0,
-      "author": ["Smith"],
-      "title": "Paper A",
-      "year": 2020,
-      "raw": "[1] Smith. Paper A. 2020.",
+      "entry_index": 10,
+      "selected_pattern": "authors_colon_title_in_year",
+      "author": ["Gu, J.", "Bradbury, J.", "Xiong, C.", "Li, V.O.", "Socher, R."],
+      "title": "Non-autoregressive neural machine translation",
+      "year": 2018,
+      "raw": "[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR (2018)",
       "confidence": 0.9
     }
   ]
@@ -190,18 +232,20 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 ```
 
 用途：
-- 从 `section_scopes.references_scope` 读取参考文献范围
-- 将 raw entry 顺序写入 `reference_entries`
-- 将批次边界与进度写入 `reference_batches`
-- 将结构化结果写入 `reference_items`
+- 从 `reference_parse_candidates` 中显式选择 `selected_pattern`
+- 将 refine 后的结构化结果写入 `reference_items`
 - 仅在顺序、字段与门禁校验通过后，才允许后续 render 阶段发布最终 `references.json`
 
 要求：
 - 条目顺序必须保持原文顺序
-- `reference_entries` 与 `reference_items` 的 `ref_index` 必须可稳定对应
+- `ref_index` 由脚本按 `entry_index` 稳定生成
 - references 范围只能来自 `section_scopes.references_scope`，不得在本阶段重新显式传入 scope
 - merge 失败时不得发布最终 `references.json`
-- 当作者拆分不稳时，允许 `author` 为单元素数组；这是合法的保守模式，不应被视为格式错误
+- 若 `selected_pattern` 缺失、无效，或 `title` 以前导逗号/句点/分号/冒号开头，必须直接失败
+- 保守模式现在是 candidate 级：可以先保住 `author_text` 边界稳定，但最终 `author[]` 仍应尽量完整，不能默认只留第一作者
+- 若 `pattern_candidate.author_candidates` 已经给出稳定作者边界，最终 `author[]` 必须保持同级边界；允许轻微规范化，但不得把 `Gu, J.`、`Al-Rfou, R.` 这类作者再次拆成多个数组元素
+- 一句话硬规则：已经稳定的单个作者边界，最终 `author[]` 不得再次拆成多个数组元素
+- 脚本会拦截明显的二次误拆，并以 `reference_author_refinement_invalid` 失败，而不是静默自动修正
 
 ### 编号质量检查
 
@@ -223,10 +267,62 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 - references 的内部真源是：
   - `reference_entries`
   - `reference_batches`
+  - `reference_parse_candidates`
   - `reference_items`
 - `references.json` 是 `stage_6_render_and_validate` 从 `reference_items` 渲染得到的公开产物
 - `prepare_citation_workset` 必须直接复用 `reference_items` 做 mention -> reference 解析，不得重新回到原始 references 文本做重复关联
 - 本阶段不直接发布公开文件，也不得把 `references.json` 当作后续内部分析真源
+
+### 多作者冒号体例示例
+
+对如下条目：
+
+```text
+[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR (2018)
+```
+
+脚本至少应保留一个 `authors_colon_title_in_year` 候选，使 agent 能够在 refine 时得到：
+
+```json
+{
+  "author": ["Gu, J.", "Bradbury, J.", "Xiong, C.", "Li, V.O.", "Socher, R."],
+  "title": "Non-autoregressive neural machine translation",
+  "year": 2018
+}
+```
+
+不得出现“只拆出第一作者，剩余作者全吞进 title”的退化结果。
+
+对如下候选：
+
+```json
+{
+  "author_candidates": ["Al-Rfou, R.", "Choe, D.", "Constant, N.", "Guo, M.", "Jones, L."],
+  "pattern": "authors_colon_title_in_year",
+  "title_candidate": "Character-level language modeling with deeper self-attention",
+  "year_candidate": 2019
+}
+```
+
+最终合法 refine：
+
+```json
+{
+  "author": ["Al-Rfou, R.", "Choe, D.", "Constant, N.", "Guo, M.", "Jones, L."],
+  "title": "Character-level language modeling with deeper self-attention",
+  "year": 2019
+}
+```
+
+最终非法 refine：
+
+```json
+{
+  "author": ["Al-Rfou", "R.", "Choe", "D.", "Constant", "N.", "Guo", "M.", "Jones", "L."],
+  "title": "Character-level language modeling with deeper self-attention",
+  "year": 2019
+}
+```
 
 ## 当前阶段动作提示
 

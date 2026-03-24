@@ -35,9 +35,11 @@ python scripts/stage_runtime.py <subcommand> [args...]
 - `normalize_source`
 - `persist_outline_and_scopes`
 - `persist_digest`
+- `prepare_references_workset`
 - `persist_references`
 - `prepare_citation_workset`
 - `persist_citation_semantics`
+- `persist_citation_timeline`
 - `persist_citation_summary`
 - `render_and_validate --mode render`
 
@@ -46,6 +48,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
 - 一旦某项信息已由前序阶段写入 DB，后续主路径 subcommand 不得再通过 CLI / JSON 重传或覆盖
 - 例如：
   - `normalize_source` 只能读 `source_path`
+  - `prepare_references_workset` 只能读前序已确定的 `references_scope`
   - `prepare_citation_workset` 只能读前序已确定的 `citation_scope`
   - `render_and_validate --mode render` 只能读 DB，不能显式指定 `source_path` 或 `out_dir`
 
@@ -207,7 +210,7 @@ python scripts/stage_runtime.py persist_outline_and_scopes \
     - `line_end`
     - `parent_node_id`
 - `references_scope`
-  - 必填。references 抽取范围定义，供 `persist_references` 直接使用。
+  - 必填。references 抽取范围定义，供 `prepare_references_workset` 直接使用。
   - 唯一合法形状：
     - `section_title`
     - `line_start`
@@ -388,6 +391,69 @@ python scripts/stage_runtime.py persist_digest \
 - 固定槽位缺失
 - `section_summaries` 顺序或结构不合法
 
+## `prepare_references_workset`
+
+### 命令
+
+```bash
+python scripts/stage_runtime.py prepare_references_workset \
+  [--db-path PATH] \
+  [--out PATH] \
+  [--persist-db-only]
+```
+
+### 支持的输入方式
+
+- 不接受业务 payload
+- 只依赖前序已入库决策：标准化文本与 `references_scope`
+
+### 输出字段说明
+
+- `workset_path`
+  - 完整 workset 导出路径；每个 entry 带 `patterns[]`
+- `review_path`
+  - 轻量审阅视图路径；只保留 `entry_index`、`detected_ref_number`、`raw`、`pattern_summaries`
+- `stored_reference_entries`
+  - 写入 `reference_entries` 的 raw 条目数
+- `stored_reference_candidates`
+  - 写入 `reference_parse_candidates` 的候选总数
+- `warnings`
+  - 编号异常、pattern 歧义、title 边界可疑等 warning 列表
+
+### 最小合法示例
+
+```bash
+python scripts/stage_runtime.py prepare_references_workset --out /tmp/references_workset.json
+```
+
+### 典型非法示例
+
+```bash
+python scripts/stage_runtime.py prepare_references_workset --payload-file /tmp/references_payload.json
+```
+
+原因：本步不接受业务 payload，references workset 必须完全由脚本从 DB 决策生成。
+
+### 成功输出
+
+```json
+{
+  "stored_reference_entries": 1,
+  "stored_reference_candidates": 2,
+  "numbering_warnings": [],
+  "warnings": ["reference_pattern_ambiguous: entry_index=0"],
+  "workset_path": "/tmp/references_workset.json",
+  "review_path": "/tmp/references_workset_review.json",
+  "error": null
+}
+```
+
+### 常见失败原因
+
+- `references_scope` 缺失或越界
+- 标准化文本中 references 区块为空
+- 误以为脚本只会保留一个“最像”的 pattern
+
 ## `persist_references`
 
 ### 命令
@@ -407,44 +473,33 @@ python scripts/stage_runtime.py persist_references \
 
 ```json
 {
-  "entries": [],
-  "batches": [],
   "items": []
 }
 ```
 
 ### 字段说明
 
-- `entries`
-  - 必填。原始 references 条目数组。
-  - 每项至少应包含：`entry_index`、`raw`。
-- `batches`
-  - 必填。references 处理批次定义。
-  - 每项至少应包含：`batch_index`、`entry_start`、`entry_end`。
 - `items`
   - 必填。最终结构化参考文献项数组。
-  - 每项至少应包含：`ref_index`、`author`、`title`、`year`、`raw`、`confidence`。
-  - 当作者细拆不稳时，`author` 允许保守为单元素数组。
+  - 每项至少应包含：`entry_index`、`selected_pattern`、`author`、`title`、`year`、`raw`、`confidence`。
+  - `selected_pattern` 必须能在 `reference_parse_candidates` 中找到对应候选。
+  - 若所选 `pattern_candidate.author_candidates` 已给出稳定作者边界，则 `author` 必须保持同级边界；脚本只允许轻微规范化，不允许再次拆开单个作者。
+  - `ref_index` 由脚本按 `entry_index` 稳定生成，不需要 agent 单独填写。
   - `year` 优先取条目末尾出版年份，不要误取 arXiv 编号前缀。
 
 ### 最小合法示例
 
 ```json
 {
-  "entries": [
-    {"entry_index": 0, "raw": "[1] Smith J. Paper title. 2020."}
-  ],
-  "batches": [
-    {"batch_index": 0, "entry_start": 0, "entry_end": 0}
-  ],
   "items": [
     {
-      "ref_index": 0,
-      "author": ["Smith, J."],
-      "title": "Paper title",
-      "year": 2020,
-      "raw": "[1] Smith J. Paper title. 2020.",
-      "confidence": 0.92
+      "entry_index": 10,
+      "selected_pattern": "authors_colon_title_in_year",
+      "author": ["Gu, J.", "Bradbury, J.", "Xiong, C.", "Li, V.O.", "Socher, R."],
+      "title": "Non-autoregressive neural machine translation",
+      "year": 2018,
+      "raw": "[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR (2018)",
+      "confidence": 0.9
     }
   ]
 }
@@ -455,19 +510,26 @@ python scripts/stage_runtime.py persist_references \
 ```json
 {
   "items": [
-    {"title": "Paper title"}
+    {
+      "entry_index": 0,
+      "selected_pattern": "authors_colon_title_in_year",
+      "author": ["Al-Rfou", "R.", "Choe", "D."],
+      "title": "Character-level language modeling with deeper self-attention",
+      "year": 2019,
+      "raw": "1. Al-Rfou, R., Choe, D.: Character-level language modeling with deeper self-attention. In: AAAI Conference on Artificial Intelligence (2019)",
+      "confidence": 0.92
+    }
   ]
 }
 ```
 
-原因：缺少 `entries` / `batches`，且 item 不满足最小字段要求。
+原因：`author` 把已稳定的 `author_candidates` 再次拆碎，脚本会以 `reference_author_refinement_invalid` 失败。
 
 ### 成功输出
 
 ```json
 {
   "stored_reference_items": 1,
-  "numbering_warnings": [],
   "warnings": [],
   "error": null
 }
@@ -475,7 +537,9 @@ python scripts/stage_runtime.py persist_references \
 
 ### 常见失败原因
 
-- `items` 缺少 `raw` 或 `confidence`
+- 把 `pattern_candidate.author_candidates` 再次拆成“姓 + 缩写”碎片
+- `selected_pattern` 缺失或与 prepared candidate 不匹配
+- `title` 以前导标点开头
 - 把 arXiv 标识中的数字前缀误判成出版年
 
 ## `prepare_citation_workset`
@@ -588,8 +652,16 @@ python scripts/stage_runtime.py persist_citation_semantics \
   - 必填。指向一条 `citation_workset_item`。
 - `items[*].function`
   - 必填。条目级引文功能类别；脚本会校验枚举。
+- `items[*].topic`
+  - 必填。该文献在当前综述范围内代表的主题、路线或对象。
+- `items[*].usage`
+  - 必填。原文为什么在这里引用它，用于做什么论证。
+- `items[*].keywords`
+  - 必填。非空短词组数组；脚本会 trim、去空、去重、保序。不能把标题整句原样拆词。
 - `items[*].summary`
-  - 必填。该参考文献在当前 citation scope 中的作用总结。
+  - 必填。该参考文献在当前 citation scope 中的作用总结；必须先写“原文如何使用它”，不能只写泛化标签同义改写。
+- `items[*].is_key_reference`
+  - 必填。是否属于当前综述范围内需要在全局总结中显式点出的关键文献。
 - `items[*].confidence`
   - 必填。0~1 置信度。
 
@@ -600,8 +672,12 @@ python scripts/stage_runtime.py persist_citation_semantics \
   "items": [
     {
       "ref_index": 12,
-      "function": "background",
-      "summary": "该工作被用来界定问题背景并说明研究起点。",
+      "function": "historical",
+      "topic": "早期注意力机制",
+      "usage": "原文借它回溯 transformer 之前的注意力思想来源，为后续 transformer 论述铺垫背景。",
+      "keywords": ["attention", "historical lineage", "pre-transformer"],
+      "summary": "该工作被用来交代 transformer 之前的注意力思想来源，帮助原文把自身方法放回更早的技术谱系中。",
+      "is_key_reference": true,
       "confidence": 0.86
     }
   ]
@@ -617,14 +693,13 @@ python scripts/stage_runtime.py persist_citation_semantics \
       "ref_index": 12,
       "function": "background",
       "summary": "……",
-      "confidence": 0.86,
-      "mentions": []
+      "confidence": 0.86
     }
   ]
 }
 ```
 
-原因：旧字段 `mentions`、`reference`、`report_md` 已禁止出现在本步 payload 中。
+原因：缺少 `topic`、`usage`、`keywords`、`is_key_reference`；同时旧字段 `mentions`、`reference`、`report_md` 已禁止出现在本步 payload 中。
 
 ### 成功输出
 
@@ -639,7 +714,100 @@ python scripts/stage_runtime.py persist_citation_semantics \
 
 - 缺少 `ref_index`
 - `function` 不合法且未被脚本正常归一
+- `topic` / `usage` 为空
+- `keywords` 为空、包含空字符串，或被写成整句
+- `is_key_reference` 不是布尔值
+- 把不同文献都写成“提供背景支持/作为方法对比”式的批量套话
 - 传入了 `mentions`、`reference`、`report_md` 等旧字段
+
+## `persist_citation_timeline`
+
+### 命令
+
+```bash
+python scripts/stage_runtime.py persist_citation_timeline \
+  [--db-path PATH] \
+  [--payload-file FILE]
+```
+
+### 支持的输入方式
+
+- `--payload-file FILE`
+- stdin JSON
+
+### Payload 顶层结构
+
+```json
+{
+  "timeline": {
+    "early": { "summary": "", "ref_indexes": [] },
+    "mid": { "summary": "", "ref_indexes": [] },
+    "recent": { "summary": "", "ref_indexes": [] }
+  }
+}
+```
+
+### 字段说明
+
+- `timeline.early` / `timeline.mid` / `timeline.recent`
+  - 必填。固定三段时间线 bucket。
+- `timeline.*.summary`
+  - 必填。该时段在当前综述范围内的研究脉络总结。
+- `timeline.*.ref_indexes`
+  - 必填。落入该时间段的 `ref_index` 数组。
+- bucket 边界由 agent 判断，不使用固定年份阈值。
+- 所有有稳定年份的 citation items 必须恰好进入一个 bucket。
+- 无稳定年份的条目允许不进入 timeline；脚本会记录 `citation_timeline_missing_year` warning。
+
+### 最小合法示例
+
+```json
+{
+  "timeline": {
+    "early": {
+      "summary": "早期工作主要奠定了基础建模思想与任务定义。",
+      "ref_indexes": [2, 8]
+    },
+    "mid": {
+      "summary": "中期工作把这些思想推进到更成熟的检测与匹配路线。",
+      "ref_indexes": [15, 24]
+    },
+    "recent": {
+      "summary": "近期工作更直接收束到与本文最接近的路线。",
+      "ref_indexes": [38]
+    }
+  }
+}
+```
+
+### 典型非法示例
+
+```json
+{
+  "timeline": {
+    "early": { "summary": "early", "ref_indexes": [2] },
+    "mid": { "summary": "mid", "ref_indexes": [2] }
+  }
+}
+```
+
+原因：缺少 `recent`；同一 `ref_index` 不允许出现在多个 bucket。
+
+### 成功输出
+
+```json
+{
+  "stored_citation_timeline": true,
+  "warnings": [],
+  "error": null
+}
+```
+
+### 常见失败原因
+
+- 缺少 `early` / `mid` / `recent`
+- 同一 `ref_index` 出现在多个 bucket
+- 有稳定年份的条目没有进入任何 bucket
 
 ## `persist_citation_summary`
 
@@ -668,17 +836,33 @@ python scripts/stage_runtime.py persist_citation_summary \
 ### 字段说明
 
 - `summary`
-  - 必填。scope 级自然语言总括，最终会进入 `citation_analysis.json.summary`。
+  - 必填。scope 级自然语言总括，最终会进入 `citation_analysis.json.summary`；必须围绕原文如何使用相关工作来梳理研究脉络，而不是做功能统计。
 - `basis`
-  - 可选。说明总括依据的补充结构。
+  - 必填。说明总括依据的结构化对象。
+  - `basis.research_threads`
+    - 必填。2 条及以上研究脉络。
+  - `basis.argument_shape`
+    - 必填。2 条及以上原文组织这些文献的叙述动作。
+  - `basis.key_ref_indexes`
+    - 必填。非空整数数组；每个 `ref_index` 都必须能在当前 `citation_workset_items` 中找到。
+- `persist_citation_summary` 只能在 `persist_citation_timeline` 之后执行。
 
 ### 最小合法示例
 
 ```json
 {
-  "summary": "本节主要把既有工作分成问题背景、方法对比与数据资源三类，其中背景性引用占主导。",
+  "summary": "本节先铺设 transformer 之前的注意力与序列建模背景，再对比依赖后处理的检测路线与直接集合预测路线，最后把几篇关键文献串成本文方法的直接来路。",
   "basis": {
-    "grouping": ["background", "baseline", "dataset"]
+    "research_threads": [
+      "从注意力与 seq2seq 到 transformer 的建模脉络",
+      "从依赖后处理的检测器到直接集合预测路线的演进"
+    ],
+    "argument_shape": [
+      "先铺技术背景",
+      "再比较主流检测范式",
+      "最后引出本文路线"
+    ],
+    "key_ref_indexes": [2, 15, 38]
   }
 }
 ```
@@ -688,12 +872,12 @@ python scripts/stage_runtime.py persist_citation_summary \
 ```json
 {
   "basis": {
-    "grouping": ["background"]
+    "research_threads": ["只有一条线索"]
   }
 }
 ```
 
-原因：缺少必填 `summary`。
+原因：缺少必填 `summary`，且 `basis` 结构不完整。
 
 ### 成功输出
 
@@ -707,6 +891,10 @@ python scripts/stage_runtime.py persist_citation_summary \
 ### 常见失败原因
 
 - `summary` 为空字符串
+- `basis` 缺少 `research_threads`、`argument_shape` 或 `key_ref_indexes`
+- `basis.key_ref_indexes` 引用不存在的 `ref_index`
+- timeline 尚未写入
+- 把 `summary` 写成背景/基线/对比数量统计
 - 把这里写成完整 `report_md`
 
 ## `render_and_validate`
@@ -723,6 +911,10 @@ python scripts/stage_runtime.py render_and_validate [--db-path PATH] --mode rend
 
 - 不接受外部业务 payload
 - 正式发布只从 DB 派生最终成品
+- `citation_analysis.md` / `citation_analysis.json.report_md` 会共同包含由 renderer 生成的“关键文献”与“时间线分析”小节
+- numeric 型引用保留原始 `[n]`
+- author-year 型引用在最终渲染时按首次出现顺序合成 `[AY-k]`
+- `author_year_label` 优先由 `第一作者 + 年份` 派生；缺作者或年份时回退到标题
 
 #### 最小合法示例
 
