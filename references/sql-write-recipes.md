@@ -138,13 +138,13 @@
   - 每条 `raw_thread_source_spans` 都满足 offset 与 span_text 对原文的精确匹配
   - 若存在语义重复但被摘要层去重的原文位置，应写入 `span_role='duplicate_filtered'` 以保证覆盖可见性
   - Stage 3 字符级覆盖率主指标（含 `duplicate_filtered`）不得低于 hard `30%`；若介于 `30%-50%`，属于软提示，需与用户复核
-  - `06-review-comment-coverage.md` 已可供用户审阅
+  - `07-review-comment-coverage.md` 已可供用户审阅
   - `gate-and-render` 返回 Stage 3 coverage confirmation 请求
 
 ## `recipe_stage3_clear_coverage_confirmation`
 
 - 适用阶段：`stage_3`
-- 何时使用：用户确认 `06-review-comment-coverage.md` 后，清除 Stage 3 覆盖率确认门禁
+- 何时使用：用户确认 `07-review-comment-coverage.md` 后，清除 Stage 3 覆盖率确认门禁
 - 必须更新的表：
   - `workflow_pending_user_confirmations`
   - `workflow_state`
@@ -155,7 +155,7 @@
   3. `UPDATE resume_brief ...`
   4. `UPDATE workflow_state SET current_stage = 'stage_3', stage_gate = 'ready', active_comment_id = NULL, next_action = 'enter_stage_4' WHERE id = 1`
 - 进入这条 recipe 之前应先确认：
-  - `06-review-comment-coverage.md` 已面向用户展示
+  - `07-review-comment-coverage.md` 已面向用户展示
   - 用户已确认 Stage 3 的覆盖率与映射结果
 - 写后门槛：
   - `gate-and-render` 返回允许进入 Stage 4
@@ -298,7 +298,7 @@
   - 动作需要一个以上位置或需要比 workboard 更细的定位
 - 写后门槛：
   - 多位置动作的定位关系已显式可追溯
-  - 不再依赖口头说明或隐含位置推断
+  - 多位置动作的定位关系必须显式落库
 
 ## `recipe_stage5_replace_strategy_evidence`
 
@@ -457,19 +457,19 @@
   4. `UPDATE resume_brief ...`
 - 写后门槛：
   - 每个 `evidence_gap = yes` 的 comment 至少有一条 suggestion row
-  - `14-supplement-suggestion-plan.md` 可被用户审阅
+  - `09-supplement-suggestion-plan.md` 可被用户审阅
 
 ## `recipe_stage5_replace_manuscript_drafts`
 
 - 适用阶段：`stage_5`
 - 何时使用：需要为当前 comment 的 action/location 写入或替换 manuscript draft 真源时
 - 必须更新的表：
-  - `strategy_action_manuscript_drafts`
+  - `strategy_action_manuscript_execution_items`
   - `resume_brief`
   - 视情况更新 `resume_recent_decisions`
 - 推荐 SQL 顺序：
   1. `PRAGMA foreign_keys = ON`
-  2. `DELETE FROM strategy_action_manuscript_drafts WHERE comment_id = ?`
+  2. `DELETE FROM strategy_action_manuscript_execution_items WHERE comment_id = ?`
   3. 按 `(comment_id, action_order, location_order)` 批量插入新的 draft 行
   4. `UPDATE resume_brief ...`
   5. 视情况更新 `resume_recent_decisions`
@@ -478,23 +478,23 @@
   - 这些文本只是 Stage 5 草案，不是 Stage 6 最终落稿版本
 - 写后门槛：
   - 当前 comment 每个需要的 action/location 都已有 manuscript draft 行
-  - 之后才允许把 `manuscript_draft_done` 置为 `yes`
+  - 之后才允许把 `manuscript_execution_items_done` 置为 `yes`
 
 ## `recipe_stage5_replace_execution_drafts`
 
 - 适用阶段：`stage_5`
 - 何时使用：当前策略已经确认，需要一次性写入 manuscript draft 与 response draft 时
 - 必须更新的表：
-  - `strategy_action_manuscript_drafts`
+  - `strategy_action_manuscript_execution_items`
   - `comment_response_drafts`
   - `comment_completion_status`
   - `resume_brief`
 - 推荐 SQL 顺序：
   1. `PRAGMA foreign_keys = ON`
-  2. `DELETE FROM strategy_action_manuscript_drafts WHERE comment_id = ?`
+  2. `DELETE FROM strategy_action_manuscript_execution_items WHERE comment_id = ?`
   3. 重写当前 comment 的 manuscript draft rows
   4. `INSERT ... ON CONFLICT(comment_id) DO UPDATE` 到 `comment_response_drafts`
-  5. `UPDATE comment_completion_status SET manuscript_draft_done = 'yes', response_draft_done = 'yes' WHERE comment_id = ?`
+  5. `UPDATE comment_completion_status SET manuscript_execution_items_done = 'yes', response_draft_done = 'yes' WHERE comment_id = ?`
   6. `UPDATE resume_brief ...`
 - 进入这条 recipe 之前应先确认：
   - `user_strategy_confirmed = yes`
@@ -548,10 +548,10 @@
   - 当前条目才可视为可完成态
   - 若上述任一条件缺失，不得通过该 recipe 把条目标记完成
 
-## `recipe_stage6_upsert_style_profiles`
+## `recipe_stage2_upsert_style_profiles`
 
-- 适用阶段：`stage_6`
-- 何时使用：开始最终成文前，需要先提炼 manuscript 与 response_letter 的全局风格画像时
+- 适用阶段：`stage_2`
+- 何时使用：完成原稿结构分析后，需要同步建立 manuscript 与 response_letter 的全局风格基线时
 - 必须更新的表：
   - `style_profiles`
   - `style_profile_rules`
@@ -562,115 +562,91 @@
   2. `INSERT ... ON CONFLICT(profile_target) DO UPDATE` 到 `style_profiles`
   3. `DELETE FROM style_profile_rules WHERE profile_target IN ('manuscript', 'response_letter')`
   4. 批量插入新的 `style_profile_rules`
-  5. 更新 `resume_brief` 与 `resume_recent_decisions`
-
-## `recipe_stage6_replace_action_copy_variants`
-
-- 适用阶段：`stage_6`
-- 何时使用：为每个 `strategy_card_actions` 的每个 `target_location` 生成 3 个 manuscript-side 最终落稿文本版本时
-- 必须更新的表：
-  - `action_copy_variants`
-  - `resume_recent_decisions`
-- 推荐 SQL 顺序：
-  1. `PRAGMA foreign_keys = ON`
-  2. 按 `(comment_id, action_order, location_order)` 删除旧版本
-  3. 为每个 target location 批量插入 `v1` / `v2` / `v3` 三个最终落稿文本版本
-  4. 更新 `resume_recent_decisions`
-
-## `recipe_stage6_select_action_copy_variants`
-
-- 适用阶段：`stage_6`
-- 何时使用：用户已确认每个 action 的每个 `target_location` 的最终 manuscript 文案版本，需要落库时
-- 必须更新的表：
-  - `selected_action_copy_variants`
-  - `workflow_pending_user_confirmations`
-  - `resume_recent_decisions`
-- 推荐 SQL 顺序：
-  1. `PRAGMA foreign_keys = ON`
-  2. 以 `(comment_id, action_order, location_order)` 为范围删除旧选择
-  3. 插入新的 `selected_action_copy_variants`
-  4. 清理已完成的版本选择确认项
-  5. 更新 `resume_recent_decisions`
-
-## `recipe_stage6_upsert_response_thread_rows`
-
-- 适用阶段：`stage_6`
-- 何时使用：需要把已选 manuscript 文案和 Stage 5 草案回映为 thread-level 4 列最终表格行时
-- 必须更新的表：
-  - `response_thread_resolution_links`
-  - `response_thread_rows`
-  - `resume_recent_decisions`
-- 推荐 SQL 顺序：
-  1. `PRAGMA foreign_keys = ON`
-  2. 替换 `response_thread_resolution_links`
-  3. 结合 Stage 5 已确认的策略与草案替换 `response_thread_rows`
-  4. 更新 `resume_recent_decisions`
-
-## `recipe_stage6_replace_export_patches`
-
-- 适用阶段：`stage_6`
-- 何时使用：需要为完整 manuscript 导出准备可执行 patch 真源时
-- 必须更新的表：
-  - `export_patch_sets`
-  - `export_patches`
-  - `resume_recent_decisions`
-- 推荐 SQL 顺序：
-  1. `PRAGMA foreign_keys = ON`
-  2. 按 `artifact_kind` 替换 `export_patch_sets`
-  3. 按 `patch_set_id` 删除旧的 `export_patches`
-  4. 批量插入新的 `export_patches`
-  5. 更新 `resume_recent_decisions`
-- 进入这条 recipe 之前应先确认：
-  - `response_thread_rows` 已稳定
-  - 每个修改位置都已选定最终落稿文本
-  - 每条 patch 都有显式 `anchor_text`
+  5. `UPDATE resume_brief ...`
+  6. 插入 `resume_recent_decisions`
 - 写后门槛：
-  - `marked_manuscript` 与 `clean_manuscript` 各自都有 patch set
-  - 每个 patch set 至少有一条 patch
+  - `03-style-profile.md` 已可供 Stage 6 读取
 
-## `recipe_stage6_export_marked_manuscript`
+## `recipe_stage5_build_revision_backlog`
 
-- 适用阶段：`stage_6`
-- 何时使用：thread-level rows 与 export patches 已稳定，需要先导出带 `changes` 标注的完整稿件供用户复核时
+- 适用阶段：`stage_5`
+- 何时使用：全部策略卡达到可执行状态，需要为 Stage 6 建立 revision backlog 时
 - 必须更新的表：
-  - `export_artifacts`
-  - `workflow_pending_user_confirmations`
+  - `revision_plan_actions`
+  - `revision_plan_dependencies`
   - `resume_brief`
-  - `resume_open_loops`
   - `resume_recent_decisions`
 - 推荐 SQL 顺序：
   1. `PRAGMA foreign_keys = ON`
-  2. 调用 `review-master/scripts/export_manuscript_variants.py --artifact-root <ARTIFACT_ROOT> --patch-set-id <MARKED_PATCH_SET_ID>`
-  3. 更新 `export_artifacts` 中 `marked_manuscript`
-  4. 写入最终复核相关的 `workflow_pending_user_confirmations`
-  5. 更新 `resume_brief` 与 `resume_open_loops`
-  6. 更新 `resume_recent_decisions`
+  2. 删除并重写当前稳定范围内的 `revision_plan_dependencies`
+  3. 删除并重写当前稳定范围内的 `revision_plan_actions`
+  4. `UPDATE resume_brief ...`
+  5. 插入 `resume_recent_decisions`
 - 写后门槛：
-  - `marked_manuscript` 已导出
-  - 导出结果是完整稿件，而非局部摘录
-  - 下一步必须先让用户复核
+  - 每个已确认可执行策略至少派生一条 plan action
+  - `11-manuscript-revision-guide.md` 与 `12-manuscript-execution-graph.md` 可供 Stage 6 读取
 
-## `recipe_stage6_export_clean_manuscript`
+## `recipe_stage6_commit_revision_round`
 
 - 适用阶段：`stage_6`
-- 何时使用：marked manuscript 已经复核，最终确认已通过，需要导出 clean manuscript 与双格式 response letter 时
+- 何时使用：一轮明确的 `working_manuscript` 修改已经发生，需要把增量修改写入 revision audit 真源时
+- 必须更新的表：
+  - `revision_action_logs`
+  - `revision_action_log_plan_links`
+  - `revision_action_log_thread_links`
+  - `revision_action_log_file_diffs`
+  - `working_copy_file_state`
+  - `resume_brief`
+  - 视情况更新 `resume_recent_decisions`
+- 推荐 SQL 顺序：
+  1. `PRAGMA foreign_keys = ON`
+  2. 写入一条 `revision_action_logs`
+  3. 批量插入对应的 plan/thread links
+  4. 批量插入文件级 diff 摘录
+  5. 刷新 `working_copy_file_state`
+  6. `UPDATE resume_brief ...`
+  7. 视情况更新 `resume_recent_decisions`
+- 写后门槛：
+  - 本轮修改已可追溯到明确的 `log_id`
+  - 本轮涉及的文件状态已刷新到最新审计状态
+
+## `recipe_stage6_refresh_response_rows`
+
+- 适用阶段：`stage_6`
+- 何时使用：revision audit 更新后，需要刷新 thread-level response rows 与覆盖关系时
+- 必须更新的表：
+  - `response_thread_action_log_links`
+  - `response_thread_rows`
+  - `resume_brief`
+  - 视情况更新 `resume_recent_decisions`
+- 推荐 SQL 顺序：
+  1. `PRAGMA foreign_keys = ON`
+  2. 替换当前稳定范围内的 `response_thread_action_log_links`
+  3. 替换对应 `response_thread_rows`
+  4. `UPDATE resume_brief ...`
+  5. 视情况更新 `resume_recent_decisions`
+- 写后门槛：
+  - 每条已闭环 thread 都能在 response rows 中回映
+  - `14-response-coverage-matrix.md` 可正确展示覆盖状态
+
+## `recipe_stage6_finalize_outputs`
+
+- 适用阶段：`stage_6`
+- 何时使用：所有 revision plan action 已结案、response 覆盖已闭环，需要确认最终输出时
 - 必须更新的表：
   - `export_artifacts`
-  - `workflow_pending_user_confirmations`
-  - `workflow_global_blockers`
   - `workflow_state`
   - `resume_brief`
-  - `resume_open_loops`
   - `resume_recent_decisions`
+  - 视情况清理 `resume_open_loops`
 - 推荐 SQL 顺序：
   1. `PRAGMA foreign_keys = ON`
-  2. 调用 `review-master/scripts/export_manuscript_variants.py --artifact-root <ARTIFACT_ROOT> --patch-set-id <CLEAN_PATCH_SET_ID>`
-  3. 更新 `export_artifacts` 中 `clean_manuscript`、`response_markdown`、`response_latex`
-  4. `DELETE FROM workflow_pending_user_confirmations`
-  5. `DELETE FROM workflow_global_blockers`
-  6. `UPDATE workflow_state SET current_stage = 'stage_6', stage_gate = 'ready', active_comment_id = NULL, next_action = 'stage_6_completed' WHERE id = 1`
-  7. 更新 `resume_brief`、清理 `resume_open_loops`
-  8. 更新 `resume_recent_decisions`
+  2. 更新 `export_artifacts` 中 `working_manuscript`、`response_markdown`、`response_latex`
+  3. 若环境可用，补充 `latexdiff_manuscript`
+  4. `UPDATE workflow_state SET current_stage = 'stage_6', stage_gate = 'ready', active_comment_id = NULL, next_action = 'stage_6_completed' WHERE id = 1`
+  5. `UPDATE resume_brief ...`
+  6. 插入最终 `resume_recent_decisions`
+  7. 视情况清理 `resume_open_loops`
 - 写后门槛：
-  - `clean_manuscript` 与用户确认后的 `marked_manuscript` 内容一致，只去掉标记
-  - `response_latex` 是带 front matter 的完整可编译文件
+  - `working_manuscript`、`response_markdown`、`response_latex` 已稳定
+  - 若存在 `latexdiff_manuscript`，它已作为辅助产物可读取

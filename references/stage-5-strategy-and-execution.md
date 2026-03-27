@@ -13,13 +13,14 @@
 - 让 Stage 5 的策略卡、补材判断与草案统一使用工作语言
 - 把局部 blocker 留在 comment 作用域，而不是把整个 Stage 5 都锁死
 - 允许用户显式切换当前焦点 comment，但禁止静默切换
+- 在 Stage 5 完成时形成 `11-manuscript-revision-guide.md` 与 `12-manuscript-execution-graph.md`
 
 ## 进入条件
 
 只有满足以下条件，才允许进入 Stage 5：
 
 - Stage 4 已完成
-- `07-atomic-comment-workboard.md` 已形成
+- `08-atomic-comment-workboard.md` 已形成
 - Stage 4 默认确认门禁已通过
 - `gate-and-render` 核心脚本已允许进入 `stage_5`
 - 当前准备处理的 `comment_id` 已在 workboard 中具备足够 planning 信息
@@ -29,16 +30,17 @@
 进入每条 item 的 Stage 5 前，至少要读：
 
 - `response-strategy-cards/{comment_id}.md`（若已存在）
-- `07-atomic-comment-workboard.md`
-- `05-thread-to-atomic-mapping.md`
-- `10-response-letter-outline.md`
+- `08-atomic-comment-workboard.md`
+- `06-thread-to-atomic-mapping.md`
+- `09-supplement-suggestion-plan.md`
+- `10-supplement-intake-plan.md`
 - 当前 `instruction_payload.resume_packet`
 - 当前 `01-agent-resume.md`
 
 必要时回读：
 
 - `02-manuscript-structure-summary.md`
-- `03-raw-review-thread-list.md`
+- `04-raw-review-thread-list.md`
 - 原始 reviewer / editor 输入
 
 ## 子流程
@@ -53,7 +55,7 @@
   - `strategy_action_target_locations`
   - `strategy_card_evidence_items`
   - `supplement_*`
-  - `strategy_action_manuscript_drafts`
+  - `strategy_action_manuscript_execution_items`
   - `comment_response_drafts`
   - `comment_blockers`
   - `comment_completion_status`
@@ -104,7 +106,7 @@ Stage 5 默认要求逐条策略确认。
 
 - 把 `user_strategy_confirmed` 重置为 `no`
 - 重建 `strategy_card_pending_confirmations`
-- 清空旧的 `strategy_action_manuscript_drafts`
+- 清空旧的 `strategy_action_manuscript_execution_items`
 - 清空旧的 `comment_response_drafts`
 - 重新请求用户确认
 
@@ -135,30 +137,29 @@ global blocker 的处理规则：
 
 在策略确认完成后，才允许形成：
 
-- `strategy_action_manuscript_drafts`
-  - 以 `comment_id + action_order + location_order` 为粒度
-  - 保存当前条目的 manuscript 草案与简短 rationale
+- `strategy_action_manuscript_execution_items`
+  - 以 `comment_id + action_order + item_order` 为粒度
+  - 保存当前条目的 manuscript execution items 与简短 rationale
 - `comment_response_drafts`
   - 以 `comment_id` 为粒度
   - 保存当前条目的 response 草案与简短 rationale
 
-这些草案是 Stage 5 真源，不是 Stage 6 的最终导出文本。
+这些真源用于派生 Stage 6 的 revision backlog、revision audit 和 response 覆盖闭环。
 
 若仍存在 evidence gap，当前条目仍可继续保留 blocker；但 draft authoring 的前置条件始终是“策略已确认”，而不是“blocker 已全部关闭”。
 
 语言规则：
 
 - `strategy_cards`、`strategy_card_actions`、`strategy_card_evidence_items`、`supplement_intake_items.decision_rationale`、`comment_blockers` 使用工作语言
-- `strategy_action_manuscript_drafts` 与 `comment_response_drafts` 也使用工作语言
+- `strategy_action_manuscript_execution_items` 与 `comment_response_drafts` 也使用工作语言
 - reviewer / editor 原文摘录与 source span 仍保持原语言
 
-Stage 6 会在这些草案基础上继续完成：
+Stage 6 会在这些真源基础上继续完成：
 
-- style profile
-- manuscript final-copy variants
-- selected variants
-- thread-level response rows
-- export patches
+- `revision_plan_actions`
+- `revision_action_logs`
+- `response_thread_rows`
+- 最终 `working_manuscript` 与双格式 response letter
 
 ### 6. 写入完成状态
 
@@ -166,14 +167,14 @@ Stage 6 会在这些草案基础上继续完成：
 
 - 策略卡完成
 - 证据判断完成
-- `manuscript_draft_done = yes`
+- `manuscript_execution_items_done = yes`
 - `response_draft_done = yes`
 - 一一对应检查通过
 
 其中：
 
-- `manuscript_draft_done = yes`
-  - 只表示当前 comment 需要的 `strategy_action_manuscript_drafts` 已形成
+- `manuscript_execution_items_done = yes`
+  - 只表示当前 comment 需要的 `strategy_action_manuscript_execution_items` 已形成
 - `response_draft_done = yes`
   - 只表示当前 comment 的 `comment_response_drafts` 已形成
 
@@ -244,9 +245,10 @@ Stage 5 的一一对应检查至少要回答：
 
 - `response-strategy-cards/{comment_id}.md`
 - 必要时同时展示：
-  - `07-atomic-comment-workboard.md`
-  - `05-thread-to-atomic-mapping.md`
-  - `10-response-letter-outline.md`
+  - `08-atomic-comment-workboard.md`
+  - `06-thread-to-atomic-mapping.md`
+  - `09-supplement-suggestion-plan.md`
+  - `10-supplement-intake-plan.md`
 
 ## 完成定义
 
@@ -271,8 +273,9 @@ Stage 5 到这里为止，必须已经完成：
 Stage 5 不负责：
 
 - 最终成文润色
-- final-copy variants 三选一
-- thread-level 最终 row 组装
-- marked / clean manuscript 导出
+- revision audit 记录
+- thread-level response row 组装
+- `working_manuscript` 最终交付
+- 可选 `latexdiff_manuscript`
 
 这些工作都留给 Stage 6。

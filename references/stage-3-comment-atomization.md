@@ -11,7 +11,7 @@
 - 先保留 reviewer / editor 的原始条目层
 - 再把这些原始条目整理为内部执行所需的 canonical atomic item
 - 明确原始意见块到 atomic item 的拆分、合并与去重关系
-- 生成一份面向用户审阅的 `06-review-comment-coverage.md`，让用户确认原始审稿意见已被充分覆盖（`primary/supporting` 红色高亮，`duplicate_filtered` 橙色高亮，未覆盖片段保持默认文本色）
+- 生成一份面向用户审阅的 `07-review-comment-coverage.md`，让用户确认原始审稿意见已被充分覆盖（`primary/supporting` 红色高亮，`duplicate_filtered` 橙色高亮，未覆盖片段保持默认文本色）
 - 计算 Stage 3 字符级覆盖率（全字符口径，主指标包含 `duplicate_filtered`），并在视图与 `instruction_payload.coverage_review_metrics` 中展示阈值判定（hard=`30%`，soft=`50%`）
 
 ## 进入条件
@@ -23,7 +23,7 @@
 ## 必读材料
 
 - `02-manuscript-structure-summary.md`
-- `03-raw-review-thread-list.md`
+- `04-raw-review-thread-list.md`
 - `review-master/references/sql-write-recipes.md`
 - `review-master/references/workflow-state-machine.md`
 - `review-master/references/stage-3-comment-atomization.md`
@@ -103,7 +103,7 @@
   - `raw_thread_source_spans`
 - 写库后立即运行 `gate-and-render`
 - 读取最新的 `instruction_payload`
-- 先向用户展示 `06-review-comment-coverage.md`、`03-raw-review-thread-list.md` 和 `05-thread-to-atomic-mapping.md`
+- 先向用户展示 `07-review-comment-coverage.md`、`04-raw-review-thread-list.md` 和 `06-thread-to-atomic-mapping.md`
 - 只有当用户确认覆盖率审阅结果且 gate 明确允许时，才进入 Stage 4
 
 ## 稳定 ID 规则
@@ -112,7 +112,7 @@
   - 固定格式：`<reviewer_id>_thread_<3-digit-seq>`
 - `comment_id`
   - 固定格式：`atomic_<3-digit-seq>`
-- `comment_id` 不再编码 reviewer 身份，因为一个 canonical atomic item 可以被多个 reviewer thread 共享
+- `comment_id` 使用稳定的原子意见序列编号；reviewer 来源通过 `raw_thread_atomic_links` 与 `atomic_comment_source_spans` 表达
 
 ## 何时必须向用户提问
 
@@ -122,10 +122,10 @@
 
 ## 用户可读视图
 
-- `03-raw-review-thread-list.md`
+- `04-raw-review-thread-list.md`
 - `04-atomic-review-comment-list.md`
-- `05-thread-to-atomic-mapping.md`
-- `06-review-comment-coverage.md`
+- `06-thread-to-atomic-mapping.md`
+- `07-review-comment-coverage.md`
 
 ## 禁止动作
 
@@ -142,7 +142,7 @@
 - 每个 `comment_id` 至少被一个 `thread_id` 引用
 - `atomic_comment_source_spans` 足以解释每个合并来源
 - `raw_thread_source_spans` 能把每个 `thread_id` 精确锚定到原文 offset（`span_text == original_text[start_offset:end_offset]`），且每个 `thread_id` 至少有一条 `span_role='primary'`
-- `06-review-comment-coverage.md` 已生成，且覆盖映射附录能稳定映射到 `thread_id` / `comment_id`
+- `07-review-comment-coverage.md` 已生成，且覆盖映射附录能稳定映射到 `thread_id` / `comment_id`
 - gate 若提示“仅标题覆盖、正文疑似漏抽”，需与用户复核并按需补写 `supporting` span；该提示默认不作为硬阻断
 - gate 若提示全局字符覆盖率低于 hard（`30%`），必须先回写 Stage 3 真源并重跑；`[30%, 50%)` 属于软提示，需与用户复核但不单独阻断
 - 用户已确认 Stage 3 覆盖率审阅结果

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
 import sys
@@ -13,11 +14,18 @@ from workspace_db import (
     AGENT_RESUME_MD,
     ACTION_COPY_VARIANTS_MD,
     ALLOWED_EVIDENCE_GAP,
+    ALLOWED_CHANGE_KIND,
+    ALLOWED_COPY_ROLE,
+    ALLOWED_MANUSCRIPT_EXECUTION_ITEM_CATEGORY,
     ALLOWED_ARTIFACT_STATUS,
     ALLOWED_LOCATION_ROLE,
+    ALLOWED_OPERATOR_ROLE,
     ALLOWED_PRIORITY,
     ALLOWED_PROFILE_TARGET,
+    ALLOWED_RESPONSE_RESOLUTION_KIND,
     ALLOWED_RESPONSE_ROLE,
+    ALLOWED_REVISION_LOG_STATUS,
+    ALLOWED_REVISION_PLAN_STATUS,
     ALLOWED_RESUME_STATUS,
     ALLOWED_SOURCE_KIND,
     ALLOWED_SPAN_ROLE,
@@ -35,10 +43,16 @@ from workspace_db import (
     EXPORT_PATCH_PLAN_MD,
     FINAL_CHECKLIST_MD,
     MANUSCRIPT_SUMMARY_MD,
+    MANUSCRIPT_COPY_ROOT,
     RAW_REVIEW_THREADS_MD,
     REPAIR_PRIORITY,
     REVIEW_COMMENT_COVERAGE_MD,
+    RESPONSE_COVERAGE_MATRIX_MD,
     RESPONSE_LETTER_OUTLINE_MD,
+    REVISION_ACTION_LOG_MD,
+    REVISION_EXECUTION_GRAPH_MD,
+    REVISION_GUIDE_MD,
+    SOURCE_SNAPSHOT_DIR,
     SUPPLEMENT_SUGGESTION_PLAN_MD,
     SUPPLEMENT_INTAKE_PLAN_MD,
     RESPONSE_TABLE_PREVIEW_MD,
@@ -49,6 +63,7 @@ from workspace_db import (
     STRATEGY_CARD_DIR,
     TARGET_LOCATION_RE,
     THREAD_TO_ATOMIC_MAPPING_MD,
+    WORKING_MANUSCRIPT_DIR,
     artifact_paths,
     build_stage3_character_coverage_metrics,
     connect_db,
@@ -156,17 +171,21 @@ def build_presence_report(artifact_root: Path) -> tuple[dict[str, dict[str, Any]
             "path": str(paths["style_profile_md"]),
             "status": "present" if paths["style_profile_md"].exists() else "missing",
         },
-        "action_copy_variants_view": {
-            "path": str(paths["action_copy_variants_md"]),
-            "status": "present" if paths["action_copy_variants_md"].exists() else "missing",
+        "revision_guide_view": {
+            "path": str(paths["revision_guide_md"]),
+            "status": "present" if paths["revision_guide_md"].exists() else "missing",
         },
-        "response_letter_outline_view": {
-            "path": str(paths["response_letter_outline_md"]),
-            "status": "present" if paths["response_letter_outline_md"].exists() else "missing",
+        "revision_execution_graph_view": {
+            "path": str(paths["revision_execution_graph_md"]),
+            "status": "present" if paths["revision_execution_graph_md"].exists() else "missing",
         },
-        "export_patch_plan_view": {
-            "path": str(paths["export_patch_plan_md"]),
-            "status": "present" if paths["export_patch_plan_md"].exists() else "missing",
+        "revision_action_log_view": {
+            "path": str(paths["revision_action_log_md"]),
+            "status": "present" if paths["revision_action_log_md"].exists() else "missing",
+        },
+        "response_coverage_matrix_view": {
+            "path": str(paths["response_coverage_matrix_md"]),
+            "status": "present" if paths["response_coverage_matrix_md"].exists() else "missing",
         },
         "response_letter_table_preview_md_view": {
             "path": str(paths["response_table_preview_md"]),
@@ -192,6 +211,18 @@ def build_presence_report(artifact_root: Path) -> tuple[dict[str, dict[str, Any]
             "path": str(paths["strategy_card_dir"]),
             "status": "present" if paths["strategy_card_dir"].exists() else "missing",
             "count": len(list(paths["strategy_card_dir"].glob("*.md"))) if paths["strategy_card_dir"].exists() else 0,
+        },
+        "manuscript_copy_root": {
+            "path": str(paths["manuscript_copy_root"]),
+            "status": "present" if paths["manuscript_copy_root"].exists() else "missing",
+        },
+        "source_snapshot_root": {
+            "path": str(paths["source_snapshot_root"]),
+            "status": "present" if paths["source_snapshot_root"].exists() else "missing",
+        },
+        "working_manuscript_root": {
+            "path": str(paths["working_manuscript_root"]),
+            "status": "present" if paths["working_manuscript_root"].exists() else "missing",
         },
         "runtime_localization": {
             "path": str(paths["localization_root"]),
@@ -252,6 +283,23 @@ def compact_excerpt(value: str, *, limit: int = 120) -> str:
     return compact
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def collect_relative_file_hashes(root: Path) -> dict[str, str]:
+    if not root.exists():
+        return {}
+    payload: dict[str, str] = {}
+    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+        payload[str(path.relative_to(root))] = file_sha256(path)
+    return payload
+
+
 def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
     raw_thread_links = fetch_all(
         connection,
@@ -297,12 +345,12 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY comment_id, action_order, location_order
         """,
     )
-    strategy_action_manuscript_drafts = fetch_all(
+    strategy_action_manuscript_execution_items = fetch_all(
         connection,
         """
-        SELECT comment_id, action_order, location_order, draft_text, rationale
-        FROM strategy_action_manuscript_drafts
-        ORDER BY comment_id, action_order, location_order
+        SELECT comment_id, action_order, item_order, category, content_text, rationale, target_scope_note
+        FROM strategy_action_manuscript_execution_items
+        ORDER BY comment_id, action_order, item_order
         """,
     )
     comment_response_drafts = fetch_all(
@@ -329,6 +377,63 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         connection,
         "SELECT profile_target, rule_order, rule_type, rule_text FROM style_profile_rules ORDER BY profile_target, rule_order",
     )
+    workspace_manuscript_copies = fetch_all(
+        connection,
+        """
+        SELECT copy_role, source_kind, source_root, copy_root, main_entry_relative_path
+        FROM workspace_manuscript_copies
+        ORDER BY copy_role
+        """,
+    )
+    revision_plan_actions = fetch_all(
+        connection,
+        """
+        SELECT plan_action_id, plan_order, comment_id, action_order, execution_category, title, objective,
+               suggested_change, evidence_requirement, status
+        FROM revision_plan_actions
+        ORDER BY plan_order, plan_action_id
+        """,
+    )
+    revision_plan_dependencies = fetch_all(
+        connection,
+        """
+        SELECT plan_action_id, depends_on_plan_action_id
+        FROM revision_plan_dependencies
+        ORDER BY plan_action_id, depends_on_plan_action_id
+        """,
+    )
+    revision_action_logs = fetch_all(
+        connection,
+        """
+        SELECT log_id, log_order, status, operator_role, summary, change_note, response_note, created_at
+        FROM revision_action_logs
+        ORDER BY log_order, log_id
+        """,
+    )
+    revision_action_log_plan_links = fetch_all(
+        connection,
+        "SELECT log_id, plan_action_id FROM revision_action_log_plan_links ORDER BY log_id, plan_action_id",
+    )
+    revision_action_log_thread_links = fetch_all(
+        connection,
+        "SELECT log_id, thread_id FROM revision_action_log_thread_links ORDER BY log_id, thread_id",
+    )
+    revision_action_log_file_diffs = fetch_all(
+        connection,
+        """
+        SELECT log_id, file_order, relative_path, change_kind, diff_excerpt, before_excerpt, after_excerpt
+        FROM revision_action_log_file_diffs
+        ORDER BY log_id, file_order
+        """,
+    )
+    working_copy_file_state = fetch_all(
+        connection,
+        """
+        SELECT relative_path, snapshot_sha256, last_audited_sha256, current_sha256, last_log_id
+        FROM working_copy_file_state
+        ORDER BY relative_path
+        """,
+    )
     action_copy_variants = fetch_all(
         connection,
         """
@@ -348,7 +453,8 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
     response_thread_rows = fetch_all(
         connection,
         """
-        SELECT thread_id, original_comment, modification_scope, key_revision_excerpt, response_explanation, latex_excerpt, latex_response_text
+        SELECT thread_id, response_resolution_kind, original_comment, modification_scope,
+               key_revision_excerpt, response_explanation, latex_excerpt, latex_response_text
         FROM response_thread_rows
         ORDER BY thread_id
         """,
@@ -426,11 +532,19 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         "target_locations": target_locations,
         "analysis_links": analysis_links,
         "strategy_action_locations": strategy_action_locations,
-        "strategy_action_manuscript_drafts": strategy_action_manuscript_drafts,
+        "strategy_action_manuscript_execution_items": strategy_action_manuscript_execution_items,
         "comment_response_drafts": comment_response_drafts,
         "response_links": response_links,
         "style_profiles": style_profiles,
         "style_rules": style_rules,
+        "workspace_manuscript_copies": workspace_manuscript_copies,
+        "revision_plan_actions": revision_plan_actions,
+        "revision_plan_dependencies": revision_plan_dependencies,
+        "revision_action_logs": revision_action_logs,
+        "revision_action_log_plan_links": revision_action_log_plan_links,
+        "revision_action_log_thread_links": revision_action_log_thread_links,
+        "revision_action_log_file_diffs": revision_action_log_file_diffs,
+        "working_copy_file_state": working_copy_file_state,
         "action_copy_variants": action_copy_variants,
         "selected_action_copy_variants": selected_action_copy_variants,
         "response_thread_rows": response_thread_rows,
@@ -719,7 +833,7 @@ def validate_database_content(
     completion_rows = fetch_all(
         connection,
         """
-        SELECT comment_id, manuscript_draft_done, response_draft_done, evidence_gap_closed,
+        SELECT comment_id, manuscript_execution_items_done, response_draft_done, evidence_gap_closed,
                user_strategy_confirmed, one_to_one_link_checked, export_ready
         FROM comment_completion_status
         ORDER BY comment_id
@@ -729,7 +843,7 @@ def validate_database_content(
     for row in completion_rows:
         comment_id = str(row["comment_id"])
         for field in (
-            "manuscript_draft_done",
+            "manuscript_execution_items_done",
             "response_draft_done",
             "evidence_gap_closed",
             "user_strategy_confirmed",
@@ -740,7 +854,7 @@ def validate_database_content(
             if value not in ALLOWED_YES_NO:
                 add_issue(format_errors, "comment_completion_status", "invalid_enum", f"{field}='{value}' is not allowed", path=db_path, comment_id=comment_id)
         if str(row["export_ready"]) == "yes":
-            for field in ("manuscript_draft_done", "response_draft_done", "one_to_one_link_checked"):
+            for field in ("manuscript_execution_items_done", "response_draft_done", "one_to_one_link_checked"):
                 if str(row[field]) != "yes":
                     add_issue(
                         format_errors,
@@ -853,35 +967,54 @@ def validate_database_content(
             value=str(row["target_location"]),
         )
 
-    for row in support["strategy_action_manuscript_drafts"]:
+    for row in support["strategy_action_manuscript_execution_items"]:
         comment_id = str(row["comment_id"])
         action_order = int(row["action_order"])
-        location_order = int(row["location_order"])
-        manuscript_draft_map[(comment_id, action_order, location_order)] = row
-        if not str(row["draft_text"]).strip():
+        item_order = int(row["item_order"])
+        manuscript_draft_map[(comment_id, action_order, item_order)] = row
+        category = str(row["category"] or "")
+        if category not in ALLOWED_MANUSCRIPT_EXECUTION_ITEM_CATEGORY:
             add_issue(
                 format_errors,
-                "strategy_action_manuscript_drafts",
+                "strategy_action_manuscript_execution_items",
+                "invalid_enum",
+                f"category='{category}' is not allowed",
+                path=db_path,
+                comment_id=comment_id,
+            )
+        if not str(row["content_text"]).strip():
+            add_issue(
+                format_errors,
+                "strategy_action_manuscript_execution_items",
                 "missing_required_field",
-                "draft_text must be non-empty",
+                "content_text must be non-empty",
                 path=db_path,
                 comment_id=comment_id,
             )
         if not str(row["rationale"]).strip():
             add_issue(
                 format_errors,
-                "strategy_action_manuscript_drafts",
+                "strategy_action_manuscript_execution_items",
                 "missing_required_field",
                 "rationale must be non-empty",
                 path=db_path,
                 comment_id=comment_id,
             )
-        if location_order not in action_location_orders.get((comment_id, action_order), []):
+        if not str(row["target_scope_note"]).strip():
             add_issue(
                 format_errors,
-                "strategy_action_manuscript_drafts",
-                "invalid_action_location_reference",
-                f"draft references ({comment_id}, action {action_order}, location {location_order}) which is missing in strategy_action_target_locations",
+                "strategy_action_manuscript_execution_items",
+                "missing_required_field",
+                "target_scope_note must be non-empty",
+                path=db_path,
+                comment_id=comment_id,
+            )
+        if action_order not in [int(item) for item in comment_to_action_ids.get(comment_id, [])]:
+            add_issue(
+                format_errors,
+                "strategy_action_manuscript_execution_items",
+                "invalid_action_reference",
+                f"execution item references ({comment_id}, action {action_order}) which is missing in strategy_card_actions",
                 path=db_path,
                 comment_id=comment_id,
             )
@@ -1273,6 +1406,9 @@ def validate_dependencies(
     export_artifact_map: dict[str, sqlite3.Row],
     supplement_suggestion_count_by_comment: dict[str, int],
     stage3_coverage_metrics: dict[str, Any],
+    revision_plan_rows: list[sqlite3.Row],
+    thread_log_index: dict[str, list[str]],
+    unaudited_paths: list[str],
 ) -> list[dict[str, Any]]:
     dependency_errors: list[dict[str, Any]] = []
     raw_thread_ids = set(raw_thread_map)
@@ -1445,19 +1581,21 @@ def validate_dependencies(
             )
         completion_row = completion_map.get(active_comment_id)
         if completion_row is not None:
-            if str(completion_row["manuscript_draft_done"]) == "yes":
+            if str(completion_row["manuscript_execution_items_done"]) == "yes":
                 for action_order_text in comment_to_action_ids.get(active_comment_id, []):
                     action_order = int(action_order_text)
-                    for location_order in action_location_orders.get((active_comment_id, action_order), []):
-                        if (active_comment_id, action_order, location_order) not in manuscript_draft_map:
-                            add_issue(
-                                dependency_errors,
-                                "strategy_action_manuscript_drafts",
-                                "missing_draft_row",
-                                f"{active_comment_id} action {action_order} location {location_order} has no manuscript draft row",
-                                path=db_path,
-                                comment_id=active_comment_id,
-                            )
+                    if not any(
+                        key[0] == active_comment_id and key[1] == action_order
+                        for key in manuscript_draft_map
+                    ):
+                        add_issue(
+                        dependency_errors,
+                            "strategy_action_manuscript_execution_items",
+                            "missing_execution_item_row",
+                            f"{active_comment_id} action {action_order} has no manuscript execution item row",
+                            path=db_path,
+                            comment_id=active_comment_id,
+                        )
             if str(completion_row["response_draft_done"]) == "yes" and active_comment_id not in response_draft_map:
                 add_issue(
                     dependency_errors,
@@ -1486,64 +1624,29 @@ def validate_dependencies(
                     f"style_profile_rules is missing authored rules for profile_target '{profile_target}'",
                     path=db_path,
                 )
-        for comment_id, action_orders in comment_to_action_ids.items():
-            for action_order_text in action_orders:
-                action_order = int(action_order_text)
-                for location_order in action_location_orders.get((comment_id, action_order), []):
-                    labels = action_variant_labels.get((comment_id, action_order, location_order), set())
-                    if labels != {"v1", "v2", "v3"}:
-                        add_issue(
-                            dependency_errors,
-                            "action_copy_variants",
-                            "missing_three_variants",
-                            f"{comment_id} action {action_order} location {location_order} is missing one or more manuscript final-copy variants",
-                            path=db_path,
-                            comment_id=comment_id,
-                        )
-                    if (comment_id, action_order, location_order) not in selected_variant_map:
-                        add_issue(
-                            dependency_errors,
-                            "selected_action_copy_variants",
-                            "missing_selected_variant",
-                            f"{comment_id} action {action_order} location {location_order} has no selected manuscript final-copy variant",
-                            path=db_path,
-                            comment_id=comment_id,
-                        )
-        for comment_id in sorted(atomic_ids):
-            if comment_id not in completion_map:
-                add_issue(
-                    dependency_errors,
-                    "comment_completion_status",
-                    "missing_comment_id",
-                    f"comment_completion_status is missing comment_id '{comment_id}'",
-                    path=db_path,
-                    comment_id=comment_id,
-                )
+        if not revision_plan_rows:
+            add_issue(
+                dependency_errors,
+                "revision_plan_actions",
+                "missing_revision_backlog",
+                "revision_plan_actions must be initialized before Stage 6 can proceed",
+                path=db_path,
+            )
+        else:
+            for row in revision_plan_rows:
+                plan_action_id = str(row["plan_action_id"])
+                status = str(row["status"])
+                if status not in {"completed", "dismissed"}:
+                    add_issue(
+                        dependency_errors,
+                        "revision_plan_actions",
+                        "unresolved_plan_action",
+                        f"revision plan action '{plan_action_id}' remains in status '{status}'",
+                        path=db_path,
+                    )
         for thread_id in sorted(raw_thread_ids):
-            linked = thread_to_comment_ids.get(thread_id, [])
-            outlined = set(thread_to_resolution_comment_ids.get(thread_id, []))
-            if linked and not outlined:
-                add_issue(
-                    dependency_errors,
-                    "response_thread_resolution_links",
-                    "missing_thread_coverage",
-                    f"thread '{thread_id}' has no response-thread resolution links",
-                    path=db_path,
-                    thread_id=thread_id,
-                )
-            elif linked:
-                for comment_id in linked:
-                    if comment_id not in outlined:
-                        add_issue(
-                            dependency_errors,
-                            "response_thread_resolution_links",
-                            "missing_comment_id",
-                            f"thread '{thread_id}' is missing response coverage for canonical atomic comment '{comment_id}'",
-                            path=db_path,
-                            thread_id=thread_id,
-                            comment_id=comment_id,
-                        )
-            if thread_id not in response_thread_row_map:
+            response_row = response_thread_row_map.get(thread_id)
+            if response_row is None:
                 add_issue(
                     dependency_errors,
                     "response_thread_rows",
@@ -1552,28 +1655,28 @@ def validate_dependencies(
                     path=db_path,
                     thread_id=thread_id,
                 )
-        required_patch_kinds = {"marked_manuscript", "clean_manuscript"}
-        patch_set_by_kind = {str(row["artifact_kind"]): patch_set_id for patch_set_id, row in export_patch_set_map.items()}
-        for artifact_kind in sorted(required_patch_kinds):
-            patch_set_id = patch_set_by_kind.get(artifact_kind)
-            if patch_set_id is None:
-                add_issue(
-                    dependency_errors,
-                    "export_patch_sets",
-                    "missing_patch_set",
-                    f"export_patch_sets is missing artifact_kind '{artifact_kind}'",
-                    path=db_path,
-                )
                 continue
-            if export_patch_count_map.get(patch_set_id, 0) == 0:
+            if (
+                str(response_row["response_resolution_kind"] or "revision_backed") != "response_only_resolution"
+                and not thread_log_index.get(thread_id)
+            ):
                 add_issue(
                     dependency_errors,
-                    "export_patches",
-                    "missing_patch_rows",
-                    f"patch set '{patch_set_id}' for '{artifact_kind}' has no export_patches",
+                    "response_thread_rows",
+                    "missing_revision_log_link",
+                    f"thread '{thread_id}' has no linked completed revision action log",
                     path=db_path,
+                    thread_id=thread_id,
                 )
-        for artifact_name in ("marked_manuscript", "clean_manuscript", "response_markdown", "response_latex"):
+        if unaudited_paths:
+            add_issue(
+                dependency_errors,
+                "working_copy_file_state",
+                "unaudited_working_copy_changes",
+                "working_manuscript contains file changes that were not captured by revision audit",
+                path=db_path,
+            )
+        for artifact_name in ("working_manuscript", "response_markdown", "response_latex", "latexdiff_manuscript"):
             if artifact_name not in export_artifact_map:
                 add_issue(
                     dependency_errors,
@@ -1615,6 +1718,9 @@ def validate_consistency(
     supplement_suggestion_count_by_comment: dict[str, int],
     manuscript_draft_map: dict[tuple[str, int, int], sqlite3.Row],
     response_draft_map: dict[str, sqlite3.Row],
+    revision_plan_rows: list[sqlite3.Row],
+    thread_log_index: dict[str, list[str]],
+    unaudited_paths: list[str],
 ) -> list[dict[str, Any]]:
     consistency_errors: list[dict[str, Any]] = []
     if workflow_state is None:
@@ -1720,14 +1826,14 @@ def validate_consistency(
                     comment_id=active_comment_id,
                 )
             if completion_row is not None and str(completion_row["user_strategy_confirmed"]) != "yes":
-                has_manuscript_drafts = any(key[0] == active_comment_id for key in manuscript_draft_map)
+                has_manuscript_execution_items = any(key[0] == active_comment_id for key in manuscript_draft_map)
                 has_response_draft = active_comment_id in response_draft_map
-                if has_manuscript_drafts or has_response_draft:
+                if has_manuscript_execution_items or has_response_draft:
                     add_issue(
                         consistency_errors,
                         "comment_completion_status",
                         "stale_stage5_drafts_before_confirmation",
-                        "unconfirmed strategy must not retain Stage 5 drafts",
+                        "unconfirmed strategy must not retain Stage 5 execution items or response drafts",
                         path=db_path,
                         comment_id=active_comment_id,
                     )
@@ -1820,17 +1926,24 @@ def validate_consistency(
                     f"stage_6 is ready but style profile '{profile_target}' has no authored rules",
                     path=db_path,
                 )
-        for thread_id, linked_comment_ids in thread_to_comment_ids.items():
-            outlined = set(thread_to_resolution_comment_ids.get(thread_id, []))
-            if linked_comment_ids and any(comment_id not in outlined for comment_id in linked_comment_ids):
+        if not revision_plan_rows:
+            add_issue(
+                consistency_errors,
+                "workflow_state",
+                "stage_gate_without_authored_prerequisites",
+                "stage_6 is ready but revision_plan_actions is empty",
+                path=db_path,
+            )
+        for row in revision_plan_rows:
+            if str(row["status"] or "") not in {"completed", "dismissed"}:
                 add_issue(
                     consistency_errors,
                     "workflow_state",
-                    "stage_gate_without_authored_prerequisites",
-                    f"stage_6 is ready but thread '{thread_id}' is not fully covered in response_thread_resolution_links",
+                    "stage_gate_with_open_revision_actions",
+                    f"stage_6 is ready but revision plan action '{row['plan_action_id']}' is still open",
                     path=db_path,
-                    thread_id=thread_id,
                 )
+        for thread_id, linked_comment_ids in thread_to_comment_ids.items():
             if linked_comment_ids and thread_id not in response_thread_row_map:
                 add_issue(
                     consistency_errors,
@@ -1840,30 +1953,26 @@ def validate_consistency(
                     path=db_path,
                     thread_id=thread_id,
                 )
-        patch_set_by_kind = {str(row["artifact_kind"]): patch_set_id for patch_set_id, row in export_patch_set_map.items()}
-        for artifact_kind in ("marked_manuscript", "clean_manuscript"):
-            patch_set_id = patch_set_by_kind.get(artifact_kind)
-            if patch_set_id is None:
+            elif (
+                str(response_thread_row_map[thread_id]["response_resolution_kind"] or "revision_backed") != "response_only_resolution"
+                and not thread_log_index.get(thread_id)
+            ):
                 add_issue(
                     consistency_errors,
                     "workflow_state",
-                    "stage_gate_without_export_patch_plan",
-                    f"stage_6 is ready but export_patch_sets has no '{artifact_kind}' patch set",
+                    "stage_gate_without_audited_thread_resolution",
+                    f"stage_6 is ready but thread '{thread_id}' has no linked revision action log",
                     path=db_path,
+                    thread_id=thread_id,
                 )
-            elif export_patch_count_map.get(patch_set_id, 0) == 0:
-                add_issue(
-                    consistency_errors,
-                    "workflow_state",
-                    "stage_gate_without_export_patch_plan",
-                    f"stage_6 is ready but patch set '{patch_set_id}' has no export_patches",
-                    path=db_path,
-                )
-        for row in export_artifact_map.values():
-            if str(row["artifact_name"]) == "marked_manuscript" and str(row["artifact_status"]) == "exported":
-                continue
-        if export_artifact_map.get("marked_manuscript") is None:
-            add_issue(consistency_errors, "workflow_state", "stage_gate_without_authored_prerequisites", "stage_6 is ready but export_artifacts lacks marked_manuscript", path=db_path)
+        if unaudited_paths:
+            add_issue(
+                consistency_errors,
+                "working_copy_file_state",
+                "stage_gate_with_unaudited_working_copy_changes",
+                f"stage_6 is ready but working_manuscript has unaudited changes: {', '.join(unaudited_paths)}",
+                path=db_path,
+            )
     return consistency_errors
 
 
@@ -1908,10 +2017,18 @@ def build_repair_sequence(
         "atomic_comment_target_locations": "recipe_stage4_upsert_atomic_workboard",
         "atomic_comment_analysis_links": "recipe_stage4_upsert_atomic_workboard",
         "strategy_cards": "recipe_stage5_upsert_strategy_card",
-        "strategy_action_manuscript_drafts": "recipe_stage5_replace_execution_drafts",
+        "strategy_action_manuscript_execution_items": "recipe_stage5_replace_execution_drafts",
         "comment_response_drafts": "recipe_stage5_replace_execution_drafts",
         "comment_completion_status": "recipe_stage5_upsert_completion_status",
         "comment_blockers": "recipe_stage5_replace_comment_blockers",
+        "workspace_manuscript_copies": "recipe_stage1_set_entry_state",
+        "revision_plan_actions": "recipe_stage5_build_revision_backlog",
+        "revision_plan_dependencies": "recipe_stage5_build_revision_backlog",
+        "revision_action_logs": "recipe_stage6_commit_revision_round",
+        "revision_action_log_plan_links": "recipe_stage6_commit_revision_round",
+        "revision_action_log_thread_links": "recipe_stage6_commit_revision_round",
+        "revision_action_log_file_diffs": "recipe_stage6_commit_revision_round",
+        "working_copy_file_state": "recipe_stage6_commit_revision_round",
         "response_thread_resolution_links": "recipe_stage6_upsert_response_thread_rows",
         "style_profiles": "recipe_stage6_upsert_style_profiles",
         "style_profile_rules": "recipe_stage6_upsert_style_profiles",
@@ -1944,10 +2061,18 @@ def build_repair_sequence(
         "atomic_comment_target_locations": ["review-master.db", ATOMIC_WORKBOARD_MD],
         "atomic_comment_analysis_links": ["review-master.db", ATOMIC_WORKBOARD_MD],
         "strategy_cards": ["review-master.db", STRATEGY_CARD_DIR],
-        "strategy_action_manuscript_drafts": ["review-master.db", STRATEGY_CARD_DIR],
+        "strategy_action_manuscript_execution_items": ["review-master.db", STRATEGY_CARD_DIR],
         "comment_response_drafts": ["review-master.db", STRATEGY_CARD_DIR],
         "comment_completion_status": ["review-master.db", FINAL_CHECKLIST_MD],
         "comment_blockers": ["review-master.db", STRATEGY_CARD_DIR],
+        "workspace_manuscript_copies": ["review-master.db", str(MANUSCRIPT_COPY_ROOT)],
+        "revision_plan_actions": ["review-master.db", REVISION_GUIDE_MD, REVISION_EXECUTION_GRAPH_MD],
+        "revision_plan_dependencies": ["review-master.db", REVISION_EXECUTION_GRAPH_MD],
+        "revision_action_logs": ["review-master.db", REVISION_ACTION_LOG_MD],
+        "revision_action_log_plan_links": ["review-master.db", REVISION_ACTION_LOG_MD],
+        "revision_action_log_thread_links": ["review-master.db", REVISION_ACTION_LOG_MD, RESPONSE_COVERAGE_MATRIX_MD],
+        "revision_action_log_file_diffs": ["review-master.db", REVISION_ACTION_LOG_MD],
+        "working_copy_file_state": ["review-master.db", REVISION_ACTION_LOG_MD, FINAL_CHECKLIST_MD],
         "response_thread_resolution_links": ["review-master.db", RESPONSE_LETTER_OUTLINE_MD, RESPONSE_TABLE_PREVIEW_MD],
         "style_profiles": ["review-master.db", STYLE_PROFILE_MD],
         "style_profile_rules": ["review-master.db", STYLE_PROFILE_MD],
@@ -1980,10 +2105,18 @@ def build_repair_sequence(
         "atomic_comment_target_locations": localization.msg("gate.repair.atomic_comment_target_locations"),
         "atomic_comment_analysis_links": localization.msg("gate.repair.atomic_comment_analysis_links"),
         "strategy_cards": localization.msg("gate.repair.strategy_cards"),
-        "strategy_action_manuscript_drafts": localization.msg("gate.repair.strategy_action_manuscript_drafts"),
+        "strategy_action_manuscript_execution_items": localization.msg("gate.repair.strategy_action_manuscript_execution_items"),
         "comment_response_drafts": localization.msg("gate.repair.comment_response_drafts"),
         "comment_completion_status": localization.msg("gate.repair.comment_completion_status"),
         "comment_blockers": localization.msg("gate.repair.comment_blockers"),
+        "workspace_manuscript_copies": localization.msg("gate.repair.default"),
+        "revision_plan_actions": localization.msg("gate.repair.default"),
+        "revision_plan_dependencies": localization.msg("gate.repair.default"),
+        "revision_action_logs": localization.msg("gate.repair.default"),
+        "revision_action_log_plan_links": localization.msg("gate.repair.default"),
+        "revision_action_log_thread_links": localization.msg("gate.repair.default"),
+        "revision_action_log_file_diffs": localization.msg("gate.repair.default"),
+        "working_copy_file_state": localization.msg("gate.repair.default"),
         "response_thread_resolution_links": localization.msg("gate.repair.response_thread_resolution_links"),
         "style_profiles": localization.msg("gate.repair.style_profiles"),
         "style_profile_rules": localization.msg("gate.repair.style_profile_rules"),
@@ -2142,7 +2275,6 @@ def build_blocked_actions(
     blockers: list[str],
     comment_blocker_map: dict[str, list[str]],
     completion_map: dict[str, sqlite3.Row],
-    export_artifact_map: dict[str, sqlite3.Row],
     localization: LocalizationBundle,
 ) -> list[dict[str, Any]]:
     if workflow_state is None:
@@ -2208,21 +2340,79 @@ def build_blocked_actions(
                 localization.msg("gate.blocked.stage6_final_export.instruction"),
                 localization.msg("gate.blocked.stage6_final_export.reason"),
                 ["review-master.db", FINAL_CHECKLIST_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
-                recipe_id="recipe_stage6_export_clean_manuscript",
-            )
-        )
-    marked_status = export_artifact_map.get("marked_manuscript")
-    if current_stage == "stage_6" and marked_status is not None and str(marked_status["artifact_status"]) != "exported":
-        blocked.append(
-            make_action(
-                "blocked_clean_export_before_marked_review",
-                localization.msg("gate.blocked.stage6_marked_first.instruction"),
-                localization.msg("gate.blocked.stage6_marked_first.reason"),
-                ["review-master.db", FINAL_CHECKLIST_MD],
-                recipe_id="recipe_stage6_export_marked_manuscript",
+                recipe_id="recipe_stage6_refresh_response_rows",
             )
         )
     return blocked
+
+
+def load_stage6_revision_state(connection: sqlite3.Connection, artifact_root: Path) -> dict[str, Any]:
+    manuscript_copy_rows = fetch_all(
+        connection,
+        """
+        SELECT copy_role, source_kind, source_root, copy_root, main_entry_relative_path
+        FROM workspace_manuscript_copies
+        ORDER BY copy_role
+        """,
+    )
+    revision_plan_rows = fetch_all(
+        connection,
+        """
+        SELECT plan_action_id, plan_order, comment_id, action_order, execution_category, title, objective,
+               suggested_change, evidence_requirement, status
+        FROM revision_plan_actions
+        ORDER BY plan_order, plan_action_id
+        """,
+    )
+    response_thread_action_log_links = fetch_all(
+        connection,
+        """
+        SELECT thread_id, log_id, link_order
+        FROM response_thread_action_log_links
+        ORDER BY thread_id, link_order, log_id
+        """,
+    )
+    working_copy_rows = fetch_all(
+        connection,
+        """
+        SELECT relative_path, snapshot_sha256, last_audited_sha256, current_sha256, last_log_id
+        FROM working_copy_file_state
+        ORDER BY relative_path
+        """,
+    )
+    copy_map = {str(row["copy_role"]): row for row in manuscript_copy_rows}
+    working_root = artifact_root / MANUSCRIPT_COPY_ROOT / WORKING_MANUSCRIPT_DIR
+    snapshot_root = artifact_root / MANUSCRIPT_COPY_ROOT / SOURCE_SNAPSHOT_DIR
+    if "working_manuscript" in copy_map and str(copy_map["working_manuscript"]["copy_root"]).strip():
+        working_root = Path(str(copy_map["working_manuscript"]["copy_root"]))
+    if "source_snapshot" in copy_map and str(copy_map["source_snapshot"]["copy_root"]).strip():
+        snapshot_root = Path(str(copy_map["source_snapshot"]["copy_root"]))
+    current_hashes = collect_relative_file_hashes(working_root)
+    snapshot_hashes = collect_relative_file_hashes(snapshot_root)
+    working_state_map = {str(row["relative_path"]): dict(row) for row in working_copy_rows}
+    unaudited_paths: list[str] = []
+    for relative_path, current_hash in current_hashes.items():
+        state_row = working_state_map.get(relative_path)
+        if state_row is None:
+            unaudited_paths.append(relative_path)
+            continue
+        last_audited_sha256 = str(state_row.get("last_audited_sha256") or "")
+        if current_hash != last_audited_sha256:
+            unaudited_paths.append(relative_path)
+    thread_log_index: dict[str, list[str]] = defaultdict(list)
+    for row in response_thread_action_log_links:
+        thread_log_index[str(row["thread_id"])].append(str(row["log_id"]))
+    return {
+        "copy_map": copy_map,
+        "working_root": working_root,
+        "snapshot_root": snapshot_root,
+        "snapshot_hashes": snapshot_hashes,
+        "current_hashes": current_hashes,
+        "revision_plan_rows": revision_plan_rows,
+        "working_state_map": working_state_map,
+        "thread_log_index": dict(thread_log_index),
+        "unaudited_paths": sorted(set(unaudited_paths)),
+    }
 
 
 def build_stage_actions(
@@ -2230,6 +2420,7 @@ def build_stage_actions(
     pending: list[str],
     blockers: list[str],
     comment_blocker_map: dict[str, list[str]],
+    raw_thread_map: dict[str, sqlite3.Row],
     atomic_map: dict[str, sqlite3.Row],
     atomic_state_map: dict[str, sqlite3.Row],
     strategy_map: dict[str, sqlite3.Row],
@@ -2243,9 +2434,10 @@ def build_stage_actions(
     action_variant_labels: dict[tuple[str, int, int], set[str]],
     selected_variant_map: dict[tuple[str, int, int], str],
     response_thread_row_map: dict[str, sqlite3.Row],
-    export_patch_set_map: dict[str, sqlite3.Row],
-    export_patch_count_map: dict[str, int],
     export_artifact_map: dict[str, sqlite3.Row],
+    revision_plan_rows: list[sqlite3.Row],
+    thread_log_index: dict[str, list[str]],
+    unaudited_paths: list[str],
     stage3_coverage_advisories: list[str],
     localization: LocalizationBundle,
 ) -> list[dict[str, Any]]:
@@ -2373,9 +2565,9 @@ def build_stage_actions(
         if active_comment_id:
             completion_row = completion_map.get(active_comment_id)
             strategy_confirmed = completion_row is not None and str(completion_row["user_strategy_confirmed"]) == "yes"
-            has_manuscript_drafts = any(key[0] == active_comment_id for key in manuscript_draft_map)
+            has_manuscript_execution_items = any(key[0] == active_comment_id for key in manuscript_draft_map)
             has_response_draft = active_comment_id in response_draft_map
-            has_stage5_drafts = has_manuscript_drafts and has_response_draft
+            has_stage5_drafts = has_manuscript_execution_items and has_response_draft
             other_comment = next(
                 (
                     comment_id
@@ -2437,6 +2629,16 @@ def build_stage_actions(
                 )
             return actions
         next_comment = next((comment_id for comment_id, row in atomic_state_map.items() if str(row["status"]) == "ready"), None)
+        if next_comment is None and atomic_state_map and all(str(row["status"]) == "done" for row in atomic_state_map.values()):
+            return [
+                make_action(
+                    "enter_stage_6",
+                    localization.msg("gate.allowed.enter_stage_6.instruction"),
+                    localization.msg("gate.allowed.enter_stage_6.reason"),
+                    ["review-master.db", REVISION_GUIDE_MD, REVISION_EXECUTION_GRAPH_MD, SUPPLEMENT_INTAKE_PLAN_MD],
+                    recipe_id="recipe_stage5_build_revision_backlog",
+                )
+            ]
         return [
             make_action(
                 "set_active_comment",
@@ -2455,94 +2657,73 @@ def build_stage_actions(
         if missing_style:
             return [
                 make_action(
-                    "author_style_profiles",
-                    localization.msg("gate.allowed.stage6_style_profile.instruction"),
-                    localization.msg("gate.allowed.stage6_style_profile.reason"),
+                    "enter_stage_6",
+                    localization.msg("gate.allowed.enter_stage_6.instruction"),
+                    localization.msg("gate.allowed.enter_stage_6.reason"),
                     ["review-master.db", STYLE_PROFILE_MD],
-                    recipe_id="recipe_stage6_upsert_style_profiles",
+                    recipe_id="recipe_stage2_upsert_style_profiles",
                 )
             ]
-        for comment_id, action_orders in comment_to_action_ids.items():
-            for action_order_text in action_orders:
-                action_order = int(action_order_text)
-                for location_order in action_location_orders.get((comment_id, action_order), []):
-                    labels = action_variant_labels.get((comment_id, action_order, location_order), set())
-                    if labels != {"v1", "v2", "v3"}:
-                        return [
-                            make_action(
-                                "generate_action_copy_variants",
-                                localization.msg("gate.allowed.stage6_generate_variants.instruction"),
-                                localization.msg("gate.allowed.stage6_generate_variants.reason"),
-                                ["review-master.db", ACTION_COPY_VARIANTS_MD],
-                                recipe_id="recipe_stage6_replace_action_copy_variants",
-                            )
-                        ]
-        for comment_id, action_orders in comment_to_action_ids.items():
-            for action_order_text in action_orders:
-                action_order = int(action_order_text)
-                for location_order in action_location_orders.get((comment_id, action_order), []):
-                    if (comment_id, action_order, location_order) not in selected_variant_map:
-                        return [
-                            make_action(
-                                "request_variant_selection",
-                                localization.msg("gate.allowed.stage6_select_variants.instruction"),
-                                localization.msg("gate.allowed.stage6_select_variants.reason"),
-                                ["review-master.db", ACTION_COPY_VARIANTS_MD],
-                                recipe_id="recipe_stage6_select_action_copy_variants",
-                            )
-                        ]
-        if len(response_thread_row_map) == 0:
+        if not revision_plan_rows:
             return [
                 make_action(
-                    "assemble_response_thread_rows",
-                    localization.msg("gate.allowed.stage6_build_rows.instruction"),
-                    localization.msg("gate.allowed.stage6_build_rows.reason"),
-                    ["review-master.db", RESPONSE_LETTER_OUTLINE_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
-                    recipe_id="recipe_stage6_upsert_response_thread_rows",
+                    "enter_stage_6",
+                    localization.msg("gate.allowed.enter_stage_6.instruction"),
+                    localization.msg("gate.allowed.enter_stage_6.reason"),
+                    ["review-master.db", REVISION_GUIDE_MD, REVISION_EXECUTION_GRAPH_MD],
+                    recipe_id="recipe_stage5_build_revision_backlog",
                 )
             ]
-        patch_set_by_kind = {str(row["artifact_kind"]): patch_set_id for patch_set_id, row in export_patch_set_map.items()}
-        marked_patch_ready = False
-        clean_patch_ready = False
-        marked_patch_set_id = patch_set_by_kind.get("marked_manuscript")
-        clean_patch_set_id = patch_set_by_kind.get("clean_manuscript")
-        if marked_patch_set_id is not None and export_patch_count_map.get(marked_patch_set_id, 0) > 0:
-            marked_patch_ready = True
-        if clean_patch_set_id is not None and export_patch_count_map.get(clean_patch_set_id, 0) > 0:
-            clean_patch_ready = True
-        if not marked_patch_ready or not clean_patch_ready:
+        if unaudited_paths:
             return [
                 make_action(
-                    "prepare_export_patches",
-                    localization.msg("gate.allowed.stage6_build_patch_sets.instruction"),
-                    localization.msg("gate.allowed.stage6_build_patch_sets.reason"),
-                    ["review-master.db", EXPORT_PATCH_PLAN_MD],
-                    recipe_id="recipe_stage6_replace_export_patches",
+                    "record_revision_action",
+                    localization.msg("gate.allowed.record_revision_action.instruction"),
+                    localization.msg("gate.allowed.record_revision_action.reason"),
+                    ["review-master.db", REVISION_ACTION_LOG_MD, FINAL_CHECKLIST_MD],
+                    recipe_id="recipe_stage6_commit_revision_round",
                 )
             ]
-        marked_row = export_artifact_map.get("marked_manuscript")
-        if marked_row is None or str(marked_row["artifact_status"]) != "exported":
+        unresolved_actions = [
+            row for row in revision_plan_rows if str(row["status"] or "") not in {"completed", "dismissed"}
+        ]
+        if unresolved_actions:
             return [
                 make_action(
-                    "export_marked_manuscript",
-                    localization.msg("gate.allowed.stage6_export_marked.instruction"),
-                    localization.msg("gate.allowed.stage6_export_marked.reason"),
-                    ["review-master.db", EXPORT_PATCH_PLAN_MD, FINAL_CHECKLIST_MD],
-                    recipe_id="recipe_stage6_export_marked_manuscript",
+                    "record_revision_action",
+                    localization.msg("gate.allowed.record_revision_action.instruction"),
+                    localization.msg("gate.allowed.record_revision_action.reason"),
+                    ["review-master.db", REVISION_GUIDE_MD, REVISION_EXECUTION_GRAPH_MD, REVISION_ACTION_LOG_MD],
+                    recipe_id="recipe_stage6_commit_revision_round",
                 )
             ]
-        clean_ready = all(
-            export_artifact_map.get(name) is not None and str(export_artifact_map[name]["artifact_status"]) == "exported"
-            for name in ("clean_manuscript", "response_markdown", "response_latex")
-        )
-        if not clean_ready:
+        if len(response_thread_row_map) < len(raw_thread_map):
             return [
                 make_action(
-                    "final_review_and_clean_export",
-                    localization.msg("gate.allowed.stage6_export_clean.instruction"),
-                    localization.msg("gate.allowed.stage6_export_clean.reason"),
-                    ["review-master.db", EXPORT_PATCH_PLAN_MD, FINAL_CHECKLIST_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
-                    recipe_id="recipe_stage6_export_clean_manuscript",
+                    "refresh_response_coverage",
+                    localization.msg("gate.allowed.refresh_response_coverage.instruction"),
+                    localization.msg("gate.allowed.refresh_response_coverage.reason"),
+                    ["review-master.db", RESPONSE_COVERAGE_MATRIX_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
+                    recipe_id="recipe_stage6_refresh_response_rows",
+                )
+            ]
+        missing_thread_logs = [
+            thread_id
+            for thread_id, row in raw_thread_map.items()
+            if thread_id not in response_thread_row_map
+            or (
+                str(response_thread_row_map[thread_id]["response_resolution_kind"] or "revision_backed") != "response_only_resolution"
+                and not thread_log_index.get(thread_id)
+            )
+        ]
+        if missing_thread_logs:
+            return [
+                make_action(
+                    "refresh_response_coverage",
+                    localization.msg("gate.allowed.refresh_response_coverage.instruction"),
+                    localization.msg("gate.allowed.refresh_response_coverage.reason"),
+                    ["review-master.db", RESPONSE_COVERAGE_MATRIX_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
+                    recipe_id="recipe_stage6_refresh_response_rows",
                 )
             ]
         return [
@@ -2550,8 +2731,8 @@ def build_stage_actions(
                 "stage_6_completed",
                 localization.msg("gate.allowed.stage6_completed.instruction"),
                 localization.msg("gate.allowed.stage6_completed.reason"),
-                ["review-master.db", EXPORT_PATCH_PLAN_MD, FINAL_CHECKLIST_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
-                recipe_id="recipe_stage6_export_clean_manuscript",
+                ["review-master.db", FINAL_CHECKLIST_MD, RESPONSE_TABLE_PREVIEW_MD, RESPONSE_TABLE_PREVIEW_TEX],
+                recipe_id="recipe_stage6_finalize_outputs",
             )
         ]
     return [
@@ -2574,6 +2755,7 @@ def build_instruction_payload(
     resume_open_loops: list[str],
     resume_recent_decisions: list[str],
     resume_must_not_forget: list[str],
+    raw_thread_map: dict[str, sqlite3.Row],
     atomic_map: dict[str, sqlite3.Row],
     atomic_state_map: dict[str, sqlite3.Row],
     strategy_map: dict[str, sqlite3.Row],
@@ -2587,9 +2769,10 @@ def build_instruction_payload(
     action_variant_labels: dict[tuple[str, int, int], set[str]],
     selected_variant_map: dict[tuple[str, int, int], str],
     response_thread_row_map: dict[str, sqlite3.Row],
-    export_patch_set_map: dict[str, sqlite3.Row],
-    export_patch_count_map: dict[str, int],
     export_artifact_map: dict[str, sqlite3.Row],
+    revision_plan_rows: list[sqlite3.Row],
+    thread_log_index: dict[str, list[str]],
+    unaudited_paths: list[str],
     stage3_coverage_advisories: list[str],
     stage3_coverage_metrics: dict[str, Any],
     format_errors: list[dict[str, Any]],
@@ -2606,7 +2789,6 @@ def build_instruction_payload(
         blockers,
         comment_blocker_map,
         completion_map,
-        export_artifact_map,
         localization,
     )
     if repair_sequence:
@@ -2618,6 +2800,7 @@ def build_instruction_payload(
             pending,
             blockers,
             comment_blocker_map,
+            raw_thread_map,
             atomic_map,
             atomic_state_map,
             strategy_map,
@@ -2631,9 +2814,10 @@ def build_instruction_payload(
             action_variant_labels,
             selected_variant_map,
             response_thread_row_map,
-            export_patch_set_map,
-            export_patch_count_map,
             export_artifact_map,
+            revision_plan_rows,
+            thread_log_index,
+            unaudited_paths,
             stage3_coverage_advisories,
             localization,
         )
@@ -2720,6 +2904,9 @@ def main() -> int:
     export_patch_set_map: dict[str, sqlite3.Row] = {}
     export_patch_count_map: dict[str, int] = {}
     export_artifact_map: dict[str, sqlite3.Row] = {}
+    revision_plan_rows: list[sqlite3.Row] = []
+    thread_log_index: dict[str, list[str]] = {}
+    unaudited_paths: list[str] = []
     stage3_coverage_advisories: list[str] = []
     stage3_coverage_metrics: dict[str, Any] = {
         "metric_type": "character_coverage",
@@ -2802,6 +2989,10 @@ def main() -> int:
                 hard_threshold=STAGE3_COVERAGE_HARD_THRESHOLD,
                 soft_threshold=STAGE3_COVERAGE_SOFT_THRESHOLD,
             )
+            stage6_state = load_stage6_revision_state(connection, artifact_root)
+            revision_plan_rows = list(stage6_state["revision_plan_rows"])
+            thread_log_index = dict(stage6_state["thread_log_index"])
+            unaudited_paths = list(stage6_state["unaudited_paths"])
             format_errors.extend(content_errors)
     except sqlite3.DatabaseError as exc:
         return emit({"status": "error", "error": f"sqlite error: {exc}"}, exit_code=1)
@@ -2846,6 +3037,9 @@ def main() -> int:
             export_artifact_map,
             supplement_suggestion_count_by_comment,
             stage3_coverage_metrics,
+            revision_plan_rows,
+            thread_log_index,
+            unaudited_paths,
         )
     )
     if (
@@ -2895,6 +3089,9 @@ def main() -> int:
             supplement_suggestion_count_by_comment,
             manuscript_draft_map,
             response_draft_map,
+            revision_plan_rows,
+            thread_log_index,
+            unaudited_paths,
         )
     )
     instruction_payload = build_instruction_payload(
@@ -2906,6 +3103,7 @@ def main() -> int:
         resume_open_loops,
         resume_recent_decisions,
         resume_must_not_forget,
+        raw_thread_map,
         atomic_map,
         atomic_state_map,
         strategy_map,
@@ -2919,9 +3117,10 @@ def main() -> int:
         action_variant_labels,
         selected_variant_map,
         response_thread_row_map,
-        export_patch_set_map,
-        export_patch_count_map,
         export_artifact_map,
+        revision_plan_rows,
+        thread_log_index,
+        unaudited_paths,
         stage3_coverage_advisories,
         stage3_coverage_metrics,
         format_errors,

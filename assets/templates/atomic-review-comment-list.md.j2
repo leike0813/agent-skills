@@ -4,10 +4,10 @@
 
 ## {{ msg("view.atomic_comments.table") }}
 
-| `comment_id` | {{ msg("table.source_reviewers") }} | {{ msg("table.source_threads") }} | `status` | `priority` | `evidence_gap` | {{ msg("view.atomic_comments.canonical_summary") }} | {{ msg("view.atomic_comments.required_action") }} | {{ msg("table.target_locations") }} |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `comment_id` | {{ msg("table.source_reviewers") }} | {{ msg("table.source_threads") }} | {{ msg("view.atomic_comments.canonical_summary") }} | {{ msg("view.atomic_comments.required_action") }} |
+| --- | --- | --- | --- | --- |
 {% for row in rows -%}
-| {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.status or '' }} | {{ row.priority or '' }} | {{ row.evidence_gap or '' }} | {{ row.canonical_summary }} | {{ row.required_action }} | {{ row.target_locations or '' }} |
+| {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.canonical_summary }} | {{ row.required_action }} |
 {% else -%}
-|  |  |  |  |  |  |  |  |  |
+|  |  |  |  |  |
 {% endfor %}

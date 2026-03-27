@@ -4,10 +4,10 @@
 
 ## {{ msg("view.atomic_workboard.table") }}
 
-| `comment_id` | {{ msg("table.source_reviewers") }} | {{ msg("table.source_threads") }} | `status` | `priority` | `evidence_gap` | {{ msg("table.target_locations") }} | {{ msg("view.atomic_workboard.analysis_summary") }} | `user_confirmation_needed` | `next_action` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `comment_id` | `active_comment` | {{ msg("table.source_reviewers") }} | {{ msg("table.source_threads") }} | `status` | `priority` | `evidence_gap` | {{ msg("table.target_locations") }} | {{ msg("view.atomic_workboard.analysis_summary") }} | `next_action` | `strategy_card_present` | `user_strategy_confirmed` | `comment_blockers` | `supplement_suggestions` | `supplement_intake_links` | `manuscript_execution_items_done` | `response_draft_done` | `one_to_one_link_checked` | `export_ready` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 {% for row in rows -%}
-| {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.status }} | {{ row.priority }} | {{ row.evidence_gap }} | {{ row.target_locations or '' }} | {{ row.analysis_summary or '' }} | {{ row.user_confirmation_needed }} | {{ row.next_action }} |
+| {{ row.comment_id }} | {{ "yes" if row.is_active_comment else "no" }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.status }} | {{ row.priority }} | {{ row.evidence_gap }} | {{ row.target_locations or '' }} | {{ row.analysis_summary or '' }} | {{ row.next_action }} | {{ row.strategy_card_present }} | {{ row.user_strategy_confirmed }} | {{ row.comment_blocker_count }} | {{ row.supplement_suggestion_count }} | {{ row.supplement_intake_link_count }} | {{ row.manuscript_execution_items_done }} | {{ row.response_draft_done }} | {{ row.one_to_one_link_checked }} | {{ row.export_ready }} |
 {% else -%}
-|  |  |  |  |  |  |  |  |  |  |
+|  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 {% endfor %}

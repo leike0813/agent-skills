@@ -1,0 +1,11 @@
+# {{ msg("view.response_coverage.title") }}
+
+{{ msg("view.response_coverage.intro") }}
+
+| `thread_id` | `reviewer_id` | {{ msg("view.response_coverage.summary") }} | `comment_ids` | {{ msg("view.response_coverage.coverage_kind") }} | `log_ids` | {{ msg("view.response_coverage.modification_scope") }} | {{ msg("view.response_coverage.covered") }} |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+{% for item in items -%}
+| {{ item.thread_id }} | {{ item.reviewer_id }} | {{ item.normalized_summary }} | {{ item.comment_ids or '' }} | {{ item.coverage_kind or '' }} | {{ item.log_ids or '' }} | {{ item.modification_scope or '' }} | {{ item.covered }} |
+{% else -%}
+|  |  |  |  |  |  |  |  |
+{% endfor %}

@@ -7,62 +7,66 @@ views:
     mode: single
     template: manuscript-structure-summary.md.j2
     output: 02-manuscript-structure-summary.md
-  - name: raw_review_threads
-    mode: single
-    template: raw-review-thread-list.md.j2
-    output: 03-raw-review-thread-list.md
-  - name: atomic_comments
-    mode: single
-    template: atomic-review-comment-list.md.j2
-    output: 04-atomic-review-comment-list.md
-  - name: thread_to_atomic_mapping
-    mode: single
-    template: thread-to-atomic-mapping.md.j2
-    output: 05-thread-to-atomic-mapping.md
-  - name: review_comment_coverage
-    mode: single
-    template: review-comment-coverage.md.j2
-    output: 06-review-comment-coverage.md
-  - name: atomic_workboard
-    mode: single
-    template: atomic-comment-workboard.md.j2
-    output: 07-atomic-comment-workboard.md
   - name: style_profile
     mode: single
     template: style-profile.md.j2
-    output: 08-style-profile.md
-  - name: action_copy_variants
+    output: 03-style-profile.md
+  - name: raw_review_threads
     mode: single
-    template: action-copy-variants.md.j2
-    output: 09-action-copy-variants.md
-  - name: response_letter_outline
+    template: raw-review-thread-list.md.j2
+    output: 04-raw-review-thread-list.md
+  - name: atomic_comments
     mode: single
-    template: response-letter-outline.md.j2
-    output: 10-response-letter-outline.md
-  - name: export_patch_plan
+    template: atomic-review-comment-list.md.j2
+    output: 05-atomic-review-comment-list.md
+  - name: thread_to_atomic_mapping
     mode: single
-    template: export-patch-plan.md.j2
-    output: 11-export-patch-plan.md
-  - name: response_letter_table_preview_md
+    template: thread-to-atomic-mapping.md.j2
+    output: 06-thread-to-atomic-mapping.md
+  - name: review_comment_coverage
     mode: single
-    template: response-letter-table-preview.md.j2
-    output: 12-response-letter-table-preview.md
-  - name: response_letter_table_preview_tex
+    template: review-comment-coverage.md.j2
+    output: 07-review-comment-coverage.md
+  - name: atomic_workboard
     mode: single
-    template: response-letter-table-preview.tex.j2
-    output: 13-response-letter-table-preview.tex
+    template: atomic-comment-workboard.md.j2
+    output: 08-atomic-comment-workboard.md
   - name: supplement_suggestion_plan
     mode: single
     template: supplement-suggestion-plan.md.j2
-    output: 14-supplement-suggestion-plan.md
+    output: 09-supplement-suggestion-plan.md
   - name: supplement_intake_plan
     mode: single
     template: supplement-intake-plan.md.j2
-    output: 15-supplement-intake-plan.md
+    output: 10-supplement-intake-plan.md
+  - name: revision_guide
+    mode: single
+    template: manuscript-revision-guide.md.j2
+    output: 11-manuscript-revision-guide.md
+  - name: revision_execution_graph
+    mode: single
+    template: manuscript-execution-graph.md.j2
+    output: 12-manuscript-execution-graph.md
+  - name: revision_action_log
+    mode: single
+    template: revision-action-log.md.j2
+    output: 13-revision-action-log.md
+  - name: response_coverage_matrix
+    mode: single
+    template: response-coverage-matrix.md.j2
+    output: 14-response-coverage-matrix.md
+  - name: response_letter_table_preview_md
+    mode: single
+    template: response-letter-preview.md.j2
+    output: 15-response-letter-preview.md
+  - name: response_letter_table_preview_tex
+    mode: single
+    template: response-letter-preview.tex.j2
+    output: 16-response-letter-preview.tex
   - name: final_checklist
     mode: single
     template: final-assembly-checklist.md.j2
-    output: 16-final-assembly-checklist.md
+    output: 17-final-assembly-checklist.md
   - name: response_strategy_card
     mode: per_comment
     template: response-strategy-card.md.j2

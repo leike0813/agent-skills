@@ -56,15 +56,38 @@ enums:
     - dont
     - anti_ai
     - tone
-  variant_label:
-    - v1
-    - v2
-    - v3
+  copy_role:
+    - source_snapshot
+    - working_manuscript
+  workspace_source_kind:
+    - single_tex_file
+    - project_directory
+  revision_plan_status:
+    - todo
+    - blocked
+    - in_progress
+    - completed
+    - dismissed
+  revision_log_status:
+    - draft
+    - completed
+    - cancelled
+  operator_role:
+    - agent
+    - user
+    - collaborative
+  change_kind:
+    - modified
+    - added
+    - deleted
+  response_resolution_kind:
+    - revision_backed
+    - response_only_resolution
   artifact_name:
-    - marked_manuscript
-    - clean_manuscript
+    - working_manuscript
     - response_markdown
     - response_latex
+    - latexdiff_manuscript
   artifact_status:
     - pending
     - ready
@@ -85,6 +108,12 @@ enums:
     - linked
     - satisfied
     - dismissed
+  manuscript_execution_item_category:
+    - modification_strategy
+    - rewrite_polish
+    - text_add_modify_delete
+    - figure_update
+    - data_supplement
 
 required_tables:
   - runtime_language_context
@@ -107,7 +136,7 @@ required_tables:
   - strategy_action_target_locations
   - strategy_card_evidence_items
   - strategy_card_pending_confirmations
-  - strategy_action_manuscript_drafts
+  - strategy_action_manuscript_execution_items
   - comment_response_drafts
   - supplement_suggestion_items
   - supplement_suggestion_intake_links
@@ -118,11 +147,16 @@ required_tables:
   - response_thread_resolution_links
   - style_profiles
   - style_profile_rules
-  - action_copy_variants
-  - selected_action_copy_variants
+  - workspace_manuscript_copies
+  - revision_plan_actions
+  - revision_plan_dependencies
+  - revision_action_logs
+  - revision_action_log_plan_links
+  - revision_action_log_thread_links
+  - revision_action_log_file_diffs
+  - working_copy_file_state
   - response_thread_rows
-  - export_patch_sets
-  - export_patches
+  - response_thread_action_log_links
   - export_artifacts
   - workflow_state
   - workflow_pending_user_confirmations
@@ -326,17 +360,19 @@ tables:
           message TEXT NOT NULL,
           PRIMARY KEY (comment_id, confirmation_order)
       )
-  - name: strategy_action_manuscript_drafts
+  - name: strategy_action_manuscript_execution_items
     sql: |
-      CREATE TABLE IF NOT EXISTS strategy_action_manuscript_drafts (
+      CREATE TABLE IF NOT EXISTS strategy_action_manuscript_execution_items (
           comment_id TEXT NOT NULL,
           action_order INTEGER NOT NULL,
-          location_order INTEGER NOT NULL,
-          draft_text TEXT NOT NULL DEFAULT '',
+          item_order INTEGER NOT NULL,
+          category TEXT NOT NULL CHECK (category IN ('modification_strategy', 'rewrite_polish', 'text_add_modify_delete', 'figure_update', 'data_supplement')),
+          content_text TEXT NOT NULL DEFAULT '',
           rationale TEXT NOT NULL DEFAULT '',
-          PRIMARY KEY (comment_id, action_order, location_order),
-          FOREIGN KEY (comment_id, action_order, location_order)
-              REFERENCES strategy_action_target_locations(comment_id, action_order, location_order)
+          target_scope_note TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (comment_id, action_order, item_order),
+          FOREIGN KEY (comment_id, action_order)
+              REFERENCES strategy_card_actions(comment_id, action_order)
               ON DELETE CASCADE
       )
   - name: comment_response_drafts
@@ -404,7 +440,7 @@ tables:
     sql: |
       CREATE TABLE IF NOT EXISTS comment_completion_status (
           comment_id TEXT PRIMARY KEY REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
-          manuscript_draft_done TEXT NOT NULL CHECK (manuscript_draft_done IN ('yes', 'no')),
+          manuscript_execution_items_done TEXT NOT NULL CHECK (manuscript_execution_items_done IN ('yes', 'no')),
           response_draft_done TEXT NOT NULL CHECK (response_draft_done IN ('yes', 'no')),
           evidence_gap_closed TEXT NOT NULL CHECK (evidence_gap_closed IN ('yes', 'no')),
           user_strategy_confirmed TEXT NOT NULL CHECK (user_strategy_confirmed IN ('yes', 'no')),
@@ -444,6 +480,83 @@ tables:
           rule_text TEXT NOT NULL DEFAULT '',
           PRIMARY KEY (profile_target, rule_order)
       )
+  - name: workspace_manuscript_copies
+    sql: |
+      CREATE TABLE IF NOT EXISTS workspace_manuscript_copies (
+          copy_role TEXT PRIMARY KEY CHECK (copy_role IN ('source_snapshot', 'working_manuscript')),
+          source_kind TEXT NOT NULL CHECK (source_kind IN ('single_tex_file', 'project_directory')),
+          source_root TEXT NOT NULL DEFAULT '',
+          copy_root TEXT NOT NULL DEFAULT '',
+          main_entry_relative_path TEXT NOT NULL DEFAULT ''
+      )
+  - name: revision_plan_actions
+    sql: |
+      CREATE TABLE IF NOT EXISTS revision_plan_actions (
+          plan_action_id TEXT PRIMARY KEY,
+          plan_order INTEGER NOT NULL,
+          comment_id TEXT NOT NULL REFERENCES atomic_comments(comment_id) ON DELETE CASCADE,
+          action_order INTEGER,
+          execution_category TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL DEFAULT '',
+          objective TEXT NOT NULL DEFAULT '',
+          suggested_change TEXT NOT NULL DEFAULT '',
+          evidence_requirement TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL CHECK (status IN ('todo', 'blocked', 'in_progress', 'completed', 'dismissed'))
+      )
+  - name: revision_plan_dependencies
+    sql: |
+      CREATE TABLE IF NOT EXISTS revision_plan_dependencies (
+          plan_action_id TEXT NOT NULL REFERENCES revision_plan_actions(plan_action_id) ON DELETE CASCADE,
+          depends_on_plan_action_id TEXT NOT NULL REFERENCES revision_plan_actions(plan_action_id) ON DELETE CASCADE,
+          PRIMARY KEY (plan_action_id, depends_on_plan_action_id)
+      )
+  - name: revision_action_logs
+    sql: |
+      CREATE TABLE IF NOT EXISTS revision_action_logs (
+          log_id TEXT PRIMARY KEY,
+          log_order INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('draft', 'completed', 'cancelled')),
+          operator_role TEXT NOT NULL CHECK (operator_role IN ('agent', 'user', 'collaborative')),
+          summary TEXT NOT NULL DEFAULT '',
+          change_note TEXT NOT NULL DEFAULT '',
+          response_note TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT ''
+      )
+  - name: revision_action_log_plan_links
+    sql: |
+      CREATE TABLE IF NOT EXISTS revision_action_log_plan_links (
+          log_id TEXT NOT NULL REFERENCES revision_action_logs(log_id) ON DELETE CASCADE,
+          plan_action_id TEXT NOT NULL REFERENCES revision_plan_actions(plan_action_id) ON DELETE CASCADE,
+          PRIMARY KEY (log_id, plan_action_id)
+      )
+  - name: revision_action_log_thread_links
+    sql: |
+      CREATE TABLE IF NOT EXISTS revision_action_log_thread_links (
+          log_id TEXT NOT NULL REFERENCES revision_action_logs(log_id) ON DELETE CASCADE,
+          thread_id TEXT NOT NULL REFERENCES raw_review_threads(thread_id) ON DELETE CASCADE,
+          PRIMARY KEY (log_id, thread_id)
+      )
+  - name: revision_action_log_file_diffs
+    sql: |
+      CREATE TABLE IF NOT EXISTS revision_action_log_file_diffs (
+          log_id TEXT NOT NULL REFERENCES revision_action_logs(log_id) ON DELETE CASCADE,
+          file_order INTEGER NOT NULL,
+          relative_path TEXT NOT NULL DEFAULT '',
+          change_kind TEXT NOT NULL CHECK (change_kind IN ('modified', 'added', 'deleted')),
+          diff_excerpt TEXT NOT NULL DEFAULT '',
+          before_excerpt TEXT NOT NULL DEFAULT '',
+          after_excerpt TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (log_id, file_order)
+      )
+  - name: working_copy_file_state
+    sql: |
+      CREATE TABLE IF NOT EXISTS working_copy_file_state (
+          relative_path TEXT PRIMARY KEY,
+          snapshot_sha256 TEXT NOT NULL DEFAULT '',
+          last_audited_sha256 TEXT NOT NULL DEFAULT '',
+          current_sha256 TEXT NOT NULL DEFAULT '',
+          last_log_id TEXT REFERENCES revision_action_logs(log_id) ON DELETE SET NULL
+      )
   - name: action_copy_variants
     sql: |
       CREATE TABLE IF NOT EXISTS action_copy_variants (
@@ -474,12 +587,21 @@ tables:
     sql: |
       CREATE TABLE IF NOT EXISTS response_thread_rows (
           thread_id TEXT PRIMARY KEY REFERENCES raw_review_threads(thread_id) ON DELETE CASCADE,
+          response_resolution_kind TEXT NOT NULL DEFAULT 'revision_backed' CHECK (response_resolution_kind IN ('revision_backed', 'response_only_resolution')),
           original_comment TEXT NOT NULL DEFAULT '',
           modification_scope TEXT NOT NULL DEFAULT '',
           key_revision_excerpt TEXT NOT NULL DEFAULT '',
           response_explanation TEXT NOT NULL DEFAULT '',
           latex_excerpt TEXT NOT NULL DEFAULT '',
           latex_response_text TEXT NOT NULL DEFAULT ''
+      )
+  - name: response_thread_action_log_links
+    sql: |
+      CREATE TABLE IF NOT EXISTS response_thread_action_log_links (
+          thread_id TEXT NOT NULL REFERENCES raw_review_threads(thread_id) ON DELETE CASCADE,
+          log_id TEXT NOT NULL REFERENCES revision_action_logs(log_id) ON DELETE CASCADE,
+          link_order INTEGER NOT NULL,
+          PRIMARY KEY (thread_id, log_id)
       )
   - name: export_patch_sets
     sql: |
@@ -509,7 +631,7 @@ tables:
   - name: export_artifacts
     sql: |
       CREATE TABLE IF NOT EXISTS export_artifacts (
-          artifact_name TEXT PRIMARY KEY CHECK (artifact_name IN ('marked_manuscript', 'clean_manuscript', 'response_markdown', 'response_latex')),
+          artifact_name TEXT PRIMARY KEY CHECK (artifact_name IN ('working_manuscript', 'response_markdown', 'response_latex', 'latexdiff_manuscript')),
           artifact_status TEXT NOT NULL CHECK (artifact_status IN ('pending', 'ready', 'exported')),
           output_path TEXT NOT NULL DEFAULT ''
       )
@@ -595,10 +717,10 @@ bootstrap:
   - sql: |
       INSERT INTO export_artifacts (artifact_name, artifact_status, output_path)
       VALUES
-          ('marked_manuscript', 'pending', ''),
-          ('clean_manuscript', 'pending', ''),
+          ('working_manuscript', 'pending', ''),
           ('response_markdown', 'pending', ''),
-          ('response_latex', 'pending', '')
+          ('response_latex', 'pending', ''),
+          ('latexdiff_manuscript', 'pending', '')
       ON CONFLICT(artifact_name) DO NOTHING
   - sql: |
       INSERT INTO resume_brief (
