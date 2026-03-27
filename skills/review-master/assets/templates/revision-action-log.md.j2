@@ -1,0 +1,29 @@
+# {{ msg("view.revision_log.title") }}
+
+{{ msg("view.revision_log.intro") }}
+
+{% for item in items -%}
+## `{{ item.log_id }}` / {{ item.summary }}
+
+- `log_order`: {{ item.log_order }}
+- `status`: {{ item.status }}
+- `operator_role`: {{ item.operator_role }}
+- `plan_action_ids`: {{ item.plan_action_ids or '' }}
+- `thread_ids`: {{ item.thread_ids or '' }}
+- `created_at`: {{ item.created_at or '' }}
+- {{ msg("view.revision_log.change_note") }}: {{ item.change_note or '' }}
+- {{ msg("view.revision_log.response_note") }}: {{ item.response_note or '' }}
+
+| `file_order` | `relative_path` | `change_kind` | {{ msg("view.revision_log.diff_excerpt") }} |
+| --- | --- | --- | --- |
+{% for diff in item.file_diffs -%}
+| {{ diff.file_order }} | {{ diff.relative_path }} | {{ diff.change_kind }} | {{ diff.diff_excerpt }} |
+{% else -%}
+|  |  |  |  |
+{% endfor %}
+
+{% else -%}
+## {{ msg("view.revision_log.no_logs") }}
+
+{{ msg("view.revision_log.no_log_data") }}
+{% endfor %}

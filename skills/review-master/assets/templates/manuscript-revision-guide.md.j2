@@ -1,0 +1,23 @@
+# {{ msg("view.revision_guide.title") }}
+
+{{ msg("view.revision_guide.intro") }}
+
+{% for group in comment_groups -%}
+## `{{ group.comment_id }}`
+
+- {{ msg("view.revision_guide.canonical_summary") }}: {{ group.canonical_summary }}
+- {{ msg("view.revision_guide.required_action") }}: {{ group.required_action }}
+
+| `plan_action_id` | `plan_order` | `action_order` | `execution_category` | {{ msg("view.revision_guide.objective") }} | {{ msg("view.revision_guide.suggested_change") }} | {{ msg("view.revision_guide.evidence_requirement") }} | `status` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+{% for item in group["items"] -%}
+| {{ item.plan_action_id }} | {{ item.plan_order }} | {{ item.action_order or '' }} | {{ item.execution_category }} | {{ item.objective }} | {{ item.suggested_change }} | {{ item.evidence_requirement }} | {{ item.status }} |
+{% else -%}
+|  |  |  |  |  |  |  |  |
+{% endfor %}
+
+{% else -%}
+## {{ msg("view.revision_guide.no_items") }}
+
+{{ msg("view.revision_guide.no_item_data") }}
+{% endfor %}

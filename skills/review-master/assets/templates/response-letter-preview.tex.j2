@@ -1,0 +1,20 @@
+\documentclass{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{longtable}
+\usepackage{array}
+\begin{document}
+{% for group in reviewer_groups -%}
+\section*{ {{ group.heading_tex }} }
+\begin{longtable}{|p{0.22\textwidth}|p{0.18\textwidth}|p{0.22\textwidth}|p{0.28\textwidth}|}
+\hline
+{{ msg("view.response_table_preview.column.original_comment", target="document") }} & {{ msg("view.response_table_preview.column.modification_scope", target="document") }} & {{ msg("view.response_table_preview.column.key_revision_excerpt", target="document") }} & {{ msg("view.response_table_preview.column.response_explanation", target="document") }} \\
+\hline
+{% for row in group.rows -%}
+{{ row.original_comment_tex }} & {{ row.modification_scope_tex }} & {{ row.key_revision_excerpt_tex }} & {{ row.response_explanation_tex }} \\
+\hline
+{% endfor -%}
+\end{longtable}
+{% else -%}
+{{ msg("view.response_table_preview.no_row_data", target="document") }}
+{% endfor -%}
+\end{document}

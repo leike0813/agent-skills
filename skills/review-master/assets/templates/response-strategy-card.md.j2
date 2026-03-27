@@ -46,16 +46,16 @@
 ## {{ msg("view.strategy_card.manuscript_drafts") }}
 
 {% if strategy_confirmed -%}
-| {{ msg("view.strategy_card.action_id") }} | {{ msg("view.strategy_card.location") }} | {{ msg("view.strategy_card.target_location") }} | {{ msg("view.strategy_card.draft_text") }} | {{ msg("view.strategy_card.rationale") }} |
+{% for group in execution_item_groups -%}
+### `{{ group.category }}`
+
+| {{ msg("view.strategy_card.action_id") }} | `item_order` | `target_scope_note` | `content_text` | {{ msg("view.strategy_card.rationale") }} |
 | --- | --- | --- | --- | --- |
-{% for row in actions -%}
-{% for draft in row.draft_rows -%}
-| A{{ row.action_order }} | L{{ draft.location_order }} | {{ draft.target_location }} | {{ draft.draft_text or '' }} | {{ draft.rationale or '' }} |
-{% else -%}
-| A{{ row.action_order }} |  |  |  |  |
-{% endfor %}
+{% for item in group["items"] -%}
+| A{{ item.action_order }} | {{ item.item_order }} | {{ item.target_scope_note }} | {{ item.content_text }} | {{ item.rationale }} |
 {% else -%}
 |  |  |  |  |  |
+{% endfor %}
 {% endfor %}
 {% else -%}
 _{{ msg("view.strategy_card.drafts_locked_until_confirmation") }}_

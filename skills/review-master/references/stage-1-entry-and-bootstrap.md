@@ -92,13 +92,24 @@
   - `runtime-localization/`
   - `01-agent-resume.md`
   - `02-manuscript-structure-summary.md`
-  - `03-raw-review-thread-list.md`
-  - `04-atomic-review-comment-list.md`
-  - `05-thread-to-atomic-mapping.md`
-  - `07-atomic-comment-workboard.md`
-  - `10-response-letter-outline.md`
-  - `16-final-assembly-checklist.md`
+  - `03-style-profile.md`
+  - `04-raw-review-thread-list.md`
+  - `05-atomic-review-comment-list.md`
+  - `06-thread-to-atomic-mapping.md`
+  - `07-review-comment-coverage.md`
+  - `08-atomic-comment-workboard.md`
+  - `09-supplement-suggestion-plan.md`
+  - `10-supplement-intake-plan.md`
+  - `11-manuscript-revision-guide.md`
+  - `12-manuscript-execution-graph.md`
+  - `13-revision-action-log.md`
+  - `14-response-coverage-matrix.md`
+  - `15-response-letter-preview.md`
+  - `16-response-letter-preview.tex`
+  - `17-final-assembly-checklist.md`
   - `response-strategy-cards/`
+  - `source_snapshot`
+  - `working_manuscript`
 
 ### 7. 执行 Stage 1 写库
 

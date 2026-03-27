@@ -35,23 +35,52 @@ from runtime_localization import (
 DB_FILENAME = "review-master.db"
 AGENT_RESUME_MD = "01-agent-resume.md"
 MANUSCRIPT_SUMMARY_MD = "02-manuscript-structure-summary.md"
-RAW_REVIEW_THREADS_MD = "03-raw-review-thread-list.md"
-ATOMIC_COMMENTS_MD = "04-atomic-review-comment-list.md"
-THREAD_TO_ATOMIC_MAPPING_MD = "05-thread-to-atomic-mapping.md"
-REVIEW_COMMENT_COVERAGE_MD = "06-review-comment-coverage.md"
-ATOMIC_WORKBOARD_MD = "07-atomic-comment-workboard.md"
-STYLE_PROFILE_MD = "08-style-profile.md"
-ACTION_COPY_VARIANTS_MD = "09-action-copy-variants.md"
-RESPONSE_LETTER_OUTLINE_MD = "10-response-letter-outline.md"
-EXPORT_PATCH_PLAN_MD = "11-export-patch-plan.md"
-RESPONSE_TABLE_PREVIEW_MD = "12-response-letter-table-preview.md"
-RESPONSE_TABLE_PREVIEW_TEX = "13-response-letter-table-preview.tex"
-SUPPLEMENT_SUGGESTION_PLAN_MD = "14-supplement-suggestion-plan.md"
-SUPPLEMENT_INTAKE_PLAN_MD = "15-supplement-intake-plan.md"
-FINAL_CHECKLIST_MD = "16-final-assembly-checklist.md"
+STYLE_PROFILE_MD = "03-style-profile.md"
+RAW_REVIEW_THREADS_MD = "04-raw-review-thread-list.md"
+ATOMIC_COMMENTS_MD = "05-atomic-review-comment-list.md"
+THREAD_TO_ATOMIC_MAPPING_MD = "06-thread-to-atomic-mapping.md"
+REVIEW_COMMENT_COVERAGE_MD = "07-review-comment-coverage.md"
+ATOMIC_WORKBOARD_MD = "08-atomic-comment-workboard.md"
+SUPPLEMENT_SUGGESTION_PLAN_MD = "09-supplement-suggestion-plan.md"
+SUPPLEMENT_INTAKE_PLAN_MD = "10-supplement-intake-plan.md"
+REVISION_GUIDE_MD = "11-manuscript-revision-guide.md"
+REVISION_EXECUTION_GRAPH_MD = "12-manuscript-execution-graph.md"
+REVISION_ACTION_LOG_MD = "13-revision-action-log.md"
+RESPONSE_COVERAGE_MATRIX_MD = "14-response-coverage-matrix.md"
+RESPONSE_TABLE_PREVIEW_MD = "15-response-letter-preview.md"
+RESPONSE_TABLE_PREVIEW_TEX = "16-response-letter-preview.tex"
+FINAL_CHECKLIST_MD = "17-final-assembly-checklist.md"
+# Retired Stage 6 filenames kept as compatibility constants for legacy checks and cleanup only.
+ACTION_COPY_VARIANTS_MD = "10-action-copy-variants.md"
+RESPONSE_LETTER_OUTLINE_MD = "11-response-letter-outline.md"
+EXPORT_PATCH_PLAN_MD = "12-export-patch-plan.md"
 STRATEGY_CARD_DIR = "response-strategy-cards"
+MANUSCRIPT_COPY_ROOT = "manuscript-copies"
+SOURCE_SNAPSHOT_DIR = "source-snapshot"
+WORKING_MANUSCRIPT_DIR = "working-manuscript"
 
 LEGACY_RUNTIME_VIEW_FILENAMES = (
+    "03-raw-review-thread-list.md",
+    "04-atomic-review-comment-list.md",
+    "05-thread-to-atomic-mapping.md",
+    "06-review-comment-coverage.md",
+    "07-atomic-comment-workboard.md",
+    "08-style-profile.md",
+    "08-supplement-suggestion-plan.md",
+    "09-style-profile.md",
+    "09-action-copy-variants.md",
+    "10-action-copy-variants.md",
+    "10-response-letter-outline.md",
+    "11-response-letter-outline.md",
+    "11-export-patch-plan.md",
+    "12-export-patch-plan.md",
+    "12-response-letter-table-preview.md",
+    "13-response-letter-table-preview.md",
+    "13-response-letter-table-preview.tex",
+    "14-response-letter-table-preview.tex",
+    "14-supplement-suggestion-plan.md",
+    "15-supplement-intake-plan.md",
+    "16-final-assembly-checklist.md",
     "agent-resume.md",
     "manuscript-structure-summary.md",
     "raw-review-thread-list.md",
@@ -59,14 +88,15 @@ LEGACY_RUNTIME_VIEW_FILENAMES = (
     "thread-to-atomic-mapping.md",
     "review-comment-coverage.md",
     "atomic-comment-workboard.md",
-    "style-profile.md",
-    "action-copy-variants.md",
-    "response-letter-outline.md",
-    "export-patch-plan.md",
-    "response-letter-table-preview.md",
-    "response-letter-table-preview.tex",
     "supplement-suggestion-plan.md",
     "supplement-intake-plan.md",
+    "style-profile.md",
+    "manuscript-revision-guide.md",
+    "manuscript-execution-graph.md",
+    "revision-action-log.md",
+    "response-coverage-matrix.md",
+    "response-letter-preview.md",
+    "response-letter-preview.tex",
     "final-assembly-checklist.md",
 )
 
@@ -94,11 +124,25 @@ DEFAULT_ENUMS = {
     "profile_target": {"manuscript", "response_letter"},
     "style_rule_type": {"do", "dont", "anti_ai", "tone"},
     "variant_label": {"v1", "v2", "v3"},
-    "artifact_name": {"marked_manuscript", "clean_manuscript", "response_markdown", "response_latex"},
+    "copy_role": {"source_snapshot", "working_manuscript"},
+    "workspace_source_kind": {"single_tex_file", "project_directory"},
+    "revision_plan_status": {"todo", "blocked", "in_progress", "completed", "dismissed"},
+    "revision_log_status": {"draft", "completed", "cancelled"},
+    "operator_role": {"agent", "user", "collaborative"},
+    "change_kind": {"modified", "added", "deleted"},
+    "response_resolution_kind": {"revision_backed", "response_only_resolution"},
+    "artifact_name": {"working_manuscript", "response_markdown", "response_latex", "latexdiff_manuscript"},
     "artifact_status": {"pending", "ready", "exported"},
     "resume_status": {"bootstrap", "active", "blocked", "ready_to_resume", "completed"},
     "supplement_decision": {"", "accepted", "rejected"},
     "supplement_suggestion_status": {"provisional", "confirmed", "linked", "satisfied", "dismissed"},
+    "manuscript_execution_item_category": {
+        "modification_strategy",
+        "rewrite_polish",
+        "text_add_modify_delete",
+        "figure_update",
+        "data_supplement",
+    },
 }
 
 TARGET_LOCATION_RE = re.compile(r"^[^:\n|]+::[^:\n|]+::[^:\n|]+$")
@@ -121,23 +165,27 @@ REPAIR_PRIORITY = {
     "atomic_comment_target_locations": 13,
     "atomic_comment_analysis_links": 14,
     "strategy_cards": 15,
-    "strategy_action_manuscript_drafts": 16,
+    "strategy_action_manuscript_execution_items": 16,
     "comment_response_drafts": 17,
     "comment_completion_status": 18,
     "comment_blockers": 19,
     "response_thread_resolution_links": 20,
     "style_profiles": 21,
     "style_profile_rules": 22,
-    "action_copy_variants": 23,
-    "selected_action_copy_variants": 24,
-    "response_thread_rows": 25,
-    "export_patch_sets": 26,
-    "export_patches": 27,
-    "export_artifacts": 28,
-    "supplement_suggestion_items": 29,
-    "supplement_suggestion_intake_links": 30,
-    "supplement_intake_items": 31,
-    "supplement_landing_links": 32,
+    "workspace_manuscript_copies": 23,
+    "revision_plan_actions": 24,
+    "revision_plan_dependencies": 25,
+    "revision_action_logs": 26,
+    "revision_action_log_plan_links": 27,
+    "revision_action_log_thread_links": 28,
+    "revision_action_log_file_diffs": 29,
+    "working_copy_file_state": 30,
+    "response_thread_rows": 31,
+    "export_artifacts": 32,
+    "supplement_suggestion_items": 33,
+    "supplement_suggestion_intake_links": 34,
+    "supplement_intake_items": 35,
+    "supplement_landing_links": 36,
 }
 
 STAGE3_COVERAGE_HARD_THRESHOLD = 30.0
@@ -205,11 +253,27 @@ ALLOWED_RESPONSE_ROLE = enum_values("response_role")
 ALLOWED_PROFILE_TARGET = enum_values("profile_target")
 ALLOWED_STYLE_RULE_TYPE = enum_values("style_rule_type")
 ALLOWED_VARIANT_LABEL = enum_values("variant_label")
+ALLOWED_COPY_ROLE = enum_values("copy_role")
+ALLOWED_WORKSPACE_SOURCE_KIND = enum_values("workspace_source_kind")
+ALLOWED_REVISION_PLAN_STATUS = enum_values("revision_plan_status")
+ALLOWED_REVISION_LOG_STATUS = enum_values("revision_log_status")
+ALLOWED_OPERATOR_ROLE = enum_values("operator_role")
+ALLOWED_CHANGE_KIND = enum_values("change_kind")
+ALLOWED_RESPONSE_RESOLUTION_KIND = enum_values("response_resolution_kind")
 ALLOWED_ARTIFACT_NAME = enum_values("artifact_name")
 ALLOWED_ARTIFACT_STATUS = enum_values("artifact_status")
 ALLOWED_RESUME_STATUS = enum_values("resume_status")
 ALLOWED_SUPPLEMENT_DECISION = enum_values("supplement_decision")
 ALLOWED_SUPPLEMENT_SUGGESTION_STATUS = enum_values("supplement_suggestion_status")
+ALLOWED_MANUSCRIPT_EXECUTION_ITEM_CATEGORY = enum_values("manuscript_execution_item_category")
+
+MANUSCRIPT_EXECUTION_ITEM_CATEGORY_ORDER = [
+    "modification_strategy",
+    "rewrite_polish",
+    "text_add_modify_delete",
+    "figure_update",
+    "data_supplement",
+]
 
 
 def connect_db(db_path: Path) -> sqlite3.Connection:
@@ -268,11 +332,24 @@ def ensure_runtime_schema_compatibility(connection: sqlite3.Connection) -> None:
         if not isinstance(table, dict) or "sql" not in table:
             raise RuntimeError("each schema table entry must contain an 'sql' field")
         connection.execute(str(table["sql"]))
+    migrate_export_artifacts_table(connection)
     ensure_column_exists(
         connection,
         table_name="raw_thread_source_spans",
         column_name="span_role",
         ddl="ALTER TABLE raw_thread_source_spans ADD COLUMN span_role TEXT NOT NULL DEFAULT 'primary'",
+    )
+    ensure_column_exists(
+        connection,
+        table_name="comment_completion_status",
+        column_name="manuscript_execution_items_done",
+        ddl="ALTER TABLE comment_completion_status ADD COLUMN manuscript_execution_items_done TEXT NOT NULL DEFAULT 'no'",
+    )
+    ensure_column_exists(
+        connection,
+        table_name="response_thread_rows",
+        column_name="response_resolution_kind",
+        ddl="ALTER TABLE response_thread_rows ADD COLUMN response_resolution_kind TEXT NOT NULL DEFAULT 'revision_backed'",
     )
     connection.execute(
         """
@@ -281,6 +358,22 @@ def ensure_runtime_schema_compatibility(connection: sqlite3.Connection) -> None:
         WHERE span_role IS NULL OR TRIM(span_role) = ''
         """
     )
+    if table_exists(connection, "comment_completion_status") and column_exists(connection, "comment_completion_status", "manuscript_execution_items_done"):
+        connection.execute(
+            """
+            UPDATE comment_completion_status
+            SET manuscript_execution_items_done = 'no'
+            WHERE manuscript_execution_items_done IS NULL OR TRIM(manuscript_execution_items_done) = ''
+            """
+        )
+    if table_exists(connection, "response_thread_rows") and column_exists(connection, "response_thread_rows", "response_resolution_kind"):
+        connection.execute(
+            """
+            UPDATE response_thread_rows
+            SET response_resolution_kind = 'revision_backed'
+            WHERE response_resolution_kind IS NULL OR TRIM(response_resolution_kind) = ''
+            """
+        )
     if legacy_missing_coverage_tables:
         backfill_legacy_review_comment_coverage(connection)
     if legacy_missing_supplement_tables:
@@ -293,21 +386,28 @@ def artifact_paths(artifact_root: Path) -> dict[str, Path]:
         "db": artifact_root / DB_FILENAME,
         "agent_resume_md": artifact_root / AGENT_RESUME_MD,
         "manuscript_summary_md": artifact_root / MANUSCRIPT_SUMMARY_MD,
+        "style_profile_md": artifact_root / STYLE_PROFILE_MD,
         "raw_review_threads_md": artifact_root / RAW_REVIEW_THREADS_MD,
         "atomic_comments_md": artifact_root / ATOMIC_COMMENTS_MD,
         "thread_to_atomic_mapping_md": artifact_root / THREAD_TO_ATOMIC_MAPPING_MD,
         "review_comment_coverage_md": artifact_root / REVIEW_COMMENT_COVERAGE_MD,
         "atomic_workboard_md": artifact_root / ATOMIC_WORKBOARD_MD,
-        "style_profile_md": artifact_root / STYLE_PROFILE_MD,
+        "supplement_suggestion_plan_md": artifact_root / SUPPLEMENT_SUGGESTION_PLAN_MD,
+        "supplement_intake_plan_md": artifact_root / SUPPLEMENT_INTAKE_PLAN_MD,
         "action_copy_variants_md": artifact_root / ACTION_COPY_VARIANTS_MD,
         "response_letter_outline_md": artifact_root / RESPONSE_LETTER_OUTLINE_MD,
         "export_patch_plan_md": artifact_root / EXPORT_PATCH_PLAN_MD,
+        "revision_guide_md": artifact_root / REVISION_GUIDE_MD,
+        "revision_execution_graph_md": artifact_root / REVISION_EXECUTION_GRAPH_MD,
+        "revision_action_log_md": artifact_root / REVISION_ACTION_LOG_MD,
+        "response_coverage_matrix_md": artifact_root / RESPONSE_COVERAGE_MATRIX_MD,
         "response_table_preview_md": artifact_root / RESPONSE_TABLE_PREVIEW_MD,
         "response_table_preview_tex": artifact_root / RESPONSE_TABLE_PREVIEW_TEX,
-        "supplement_suggestion_plan_md": artifact_root / SUPPLEMENT_SUGGESTION_PLAN_MD,
-        "supplement_intake_plan_md": artifact_root / SUPPLEMENT_INTAKE_PLAN_MD,
         "final_checklist_md": artifact_root / FINAL_CHECKLIST_MD,
         "strategy_card_dir": artifact_root / STRATEGY_CARD_DIR,
+        "manuscript_copy_root": artifact_root / MANUSCRIPT_COPY_ROOT,
+        "source_snapshot_root": artifact_root / MANUSCRIPT_COPY_ROOT / SOURCE_SNAPSHOT_DIR,
+        "working_manuscript_root": artifact_root / MANUSCRIPT_COPY_ROOT / WORKING_MANUSCRIPT_DIR,
         "localization_root": artifact_root / LOCALIZATION_DIRNAME,
         "localization_source_messages": artifact_root / LOCALIZATION_DIRNAME / SOURCE_MESSAGES_FILENAME,
         "localization_working_messages": artifact_root / LOCALIZATION_DIRNAME / WORKING_MESSAGES_FILENAME,
@@ -348,6 +448,79 @@ def column_exists(connection: sqlite3.Connection, table_name: str, column_name: 
 def ensure_column_exists(connection: sqlite3.Connection, *, table_name: str, column_name: str, ddl: str) -> None:
     if table_exists(connection, table_name) and not column_exists(connection, table_name, column_name):
         connection.execute(ddl)
+
+
+def table_sql(connection: sqlite3.Connection, table_name: str) -> str:
+    row = fetch_one(
+        connection,
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    )
+    return str(row["sql"] or "") if row is not None else ""
+
+
+def schema_table_sql(table_name: str) -> str:
+    schema = load_schema_definition()
+    tables = schema.get("tables", [])
+    for table in tables:
+        if isinstance(table, dict) and str(table.get("name")) == table_name and "sql" in table:
+            return str(table["sql"])
+    raise RuntimeError(f"missing table sql for schema table: {table_name}")
+
+
+def migrate_export_artifacts_table(connection: sqlite3.Connection) -> None:
+    if not table_exists(connection, "export_artifacts"):
+        return
+    current_sql = table_sql(connection, "export_artifacts")
+    if "working_manuscript" in current_sql and "latexdiff_manuscript" in current_sql:
+        return
+    legacy_rows = fetch_all(
+        connection,
+        """
+        SELECT artifact_name, artifact_status, output_path
+        FROM export_artifacts
+        ORDER BY artifact_name
+        """,
+    )
+    legacy_map = {str(row["artifact_name"]): row for row in legacy_rows}
+    connection.execute("ALTER TABLE export_artifacts RENAME TO export_artifacts_legacy")
+    connection.execute(schema_table_sql("export_artifacts"))
+
+    def pick_legacy_row(*artifact_names: str) -> sqlite3.Row | None:
+        for artifact_name in artifact_names:
+            if artifact_name in legacy_map:
+                return legacy_map[artifact_name]
+        return None
+
+    working_row = pick_legacy_row("clean_manuscript", "marked_manuscript")
+    response_markdown_row = pick_legacy_row("response_markdown")
+    response_latex_row = pick_legacy_row("response_latex")
+    payload = [
+        (
+            "working_manuscript",
+            str(working_row["artifact_status"]) if working_row is not None else "pending",
+            str(working_row["output_path"]) if working_row is not None else "",
+        ),
+        (
+            "response_markdown",
+            str(response_markdown_row["artifact_status"]) if response_markdown_row is not None else "pending",
+            str(response_markdown_row["output_path"]) if response_markdown_row is not None else "",
+        ),
+        (
+            "response_latex",
+            str(response_latex_row["artifact_status"]) if response_latex_row is not None else "pending",
+            str(response_latex_row["output_path"]) if response_latex_row is not None else "",
+        ),
+        ("latexdiff_manuscript", "pending", ""),
+    ]
+    connection.executemany(
+        """
+        INSERT INTO export_artifacts (artifact_name, artifact_status, output_path)
+        VALUES (?, ?, ?)
+        """,
+        payload,
+    )
+    connection.execute("DROP TABLE export_artifacts_legacy")
 
 
 def split_multiline(value: str) -> list[str]:
@@ -946,6 +1119,31 @@ def build_strategy_action_target_detail_index(connection: sqlite3.Connection) ->
     return dict(index)
 
 
+def build_supplement_suggestion_summary_index(connection: sqlite3.Connection) -> dict[str, dict[str, int]]:
+    suggestion_rows = fetch_all(
+        connection,
+        """
+        SELECT comment_id, COUNT(*) AS suggestion_count
+        FROM supplement_suggestion_items
+        GROUP BY comment_id
+        """,
+    )
+    intake_link_rows = fetch_all(
+        connection,
+        """
+        SELECT comment_id, COUNT(*) AS intake_link_count
+        FROM supplement_suggestion_intake_links
+        GROUP BY comment_id
+        """,
+    )
+    index: dict[str, dict[str, int]] = defaultdict(lambda: {"suggestion_count": 0, "intake_link_count": 0})
+    for row in suggestion_rows:
+        index[str(row["comment_id"])]["suggestion_count"] = int(row["suggestion_count"])
+    for row in intake_link_rows:
+        index[str(row["comment_id"])]["intake_link_count"] = int(row["intake_link_count"])
+    return dict(index)
+
+
 def build_manuscript_summary_context(connection: sqlite3.Connection) -> dict[str, Any]:
     summary = fetch_one(connection, "SELECT main_entry, project_shape, high_risk_areas FROM manuscript_summary WHERE id = 1")
     sections = fetch_all(
@@ -1052,14 +1250,11 @@ def build_raw_review_threads_context(connection: sqlite3.Connection) -> dict[str
 
 def build_atomic_comments_context(connection: sqlite3.Connection) -> dict[str, Any]:
     source_index = build_comment_source_index(connection)
-    target_index = build_comment_target_location_index(connection)
     rows = fetch_all(
         connection,
         """
-        SELECT ac.comment_id, ac.comment_order, ac.canonical_summary, ac.required_action,
-               acs.status, acs.priority, acs.evidence_gap
+        SELECT ac.comment_id, ac.comment_order, ac.canonical_summary, ac.required_action
         FROM atomic_comments ac
-        LEFT JOIN atomic_comment_state acs ON acs.comment_id = ac.comment_id
         ORDER BY ac.comment_order, ac.comment_id
         """,
     )
@@ -1072,12 +1267,8 @@ def build_atomic_comments_context(connection: sqlite3.Connection) -> dict[str, A
                 "comment_id": comment_id,
                 "source_reviewers": join_ordered(source["reviewers"]),
                 "source_thread_ids": join_ordered(source["thread_ids"]),
-                "status": str(row["status"] or ""),
-                "priority": str(row["priority"] or ""),
-                "evidence_gap": str(row["evidence_gap"] or ""),
                 "canonical_summary": str(row["canonical_summary"]),
                 "required_action": str(row["required_action"]),
-                "target_locations": join_ordered(target_index.get(comment_id, [])),
             }
         )
     return {"rows": payload_rows}
@@ -1306,16 +1497,29 @@ def build_atomic_workboard_context(connection: sqlite3.Connection) -> dict[str, 
     source_index = build_comment_source_index(connection)
     target_index = build_comment_target_location_index(connection)
     analysis_index = build_comment_analysis_index(connection)
+    suggestion_summary_index = build_supplement_suggestion_summary_index(connection)
+    workflow_state = fetch_one(connection, "SELECT active_comment_id FROM workflow_state WHERE id = 1")
+    active_comment_id = str(workflow_state["active_comment_id"]) if workflow_state is not None and workflow_state["active_comment_id"] is not None else ""
     rows = fetch_all(
         connection,
         """
         SELECT ac.comment_id, ac.comment_order, acs.status, acs.priority, acs.evidence_gap,
-               acs.user_confirmation_needed, acs.next_action
+               acs.user_confirmation_needed, acs.next_action,
+               ccs.manuscript_execution_items_done, ccs.response_draft_done,
+               ccs.user_strategy_confirmed, ccs.one_to_one_link_checked, ccs.export_ready
         FROM atomic_comments ac
         LEFT JOIN atomic_comment_state acs ON acs.comment_id = ac.comment_id
+        LEFT JOIN comment_completion_status ccs ON ccs.comment_id = ac.comment_id
         ORDER BY ac.comment_order, ac.comment_id
         """,
     )
+    strategy_comment_ids = {
+        str(row["comment_id"])
+        for row in fetch_all(connection, "SELECT comment_id FROM strategy_cards ORDER BY comment_id")
+    }
+    blocker_counts: dict[str, int] = defaultdict(int)
+    for row in fetch_all(connection, "SELECT comment_id, COUNT(*) AS blocker_count FROM comment_blockers GROUP BY comment_id"):
+        blocker_counts[str(row["comment_id"])] = int(row["blocker_count"])
     payload_rows: list[dict[str, Any]] = []
     for row in rows:
         comment_id = str(row["comment_id"])
@@ -1336,6 +1540,16 @@ def build_atomic_workboard_context(connection: sqlite3.Connection) -> dict[str, 
                 "analysis_summary": join_ordered(analysis_lines),
                 "user_confirmation_needed": str(row["user_confirmation_needed"] or ""),
                 "next_action": str(row["next_action"] or ""),
+                "is_active_comment": comment_id == active_comment_id,
+                "strategy_card_present": "yes" if comment_id in strategy_comment_ids else "no",
+                "user_strategy_confirmed": str(row["user_strategy_confirmed"] or ""),
+                "comment_blocker_count": blocker_counts.get(comment_id, 0),
+                "supplement_suggestion_count": suggestion_summary_index.get(comment_id, {}).get("suggestion_count", 0),
+                "supplement_intake_link_count": suggestion_summary_index.get(comment_id, {}).get("intake_link_count", 0),
+                "manuscript_execution_items_done": str(row["manuscript_execution_items_done"] or ""),
+                "response_draft_done": str(row["response_draft_done"] or ""),
+                "one_to_one_link_checked": str(row["one_to_one_link_checked"] or ""),
+                "export_ready": str(row["export_ready"] or ""),
             }
         )
     return {"rows": payload_rows}
@@ -1766,6 +1980,208 @@ def build_supplement_suggestion_plan_context(connection: sqlite3.Connection) -> 
     }
 
 
+def build_revision_guide_context(connection: sqlite3.Connection) -> dict[str, Any]:
+    rows = fetch_all(
+        connection,
+        """
+        SELECT rpa.plan_action_id, rpa.plan_order, rpa.comment_id, rpa.action_order, rpa.execution_category,
+               rpa.title, rpa.objective, rpa.suggested_change, rpa.evidence_requirement, rpa.status,
+               ac.canonical_summary, ac.required_action
+        FROM revision_plan_actions rpa
+        LEFT JOIN atomic_comments ac ON ac.comment_id = rpa.comment_id
+        ORDER BY rpa.plan_order, rpa.plan_action_id
+        """,
+    )
+    groups: dict[str, dict[str, Any]] = {}
+    ordered_groups: list[dict[str, Any]] = []
+    for row in rows:
+        comment_id = str(row["comment_id"])
+        if comment_id not in groups:
+            group = {
+                "comment_id": comment_id,
+                "canonical_summary": str(row["canonical_summary"] or ""),
+                "required_action": str(row["required_action"] or ""),
+                "items": [],
+            }
+            groups[comment_id] = group
+            ordered_groups.append(group)
+        groups[comment_id]["items"].append(
+            {
+                "plan_action_id": str(row["plan_action_id"]),
+                "plan_order": int(row["plan_order"]),
+                "action_order": int(row["action_order"]) if row["action_order"] is not None else None,
+                "execution_category": str(row["execution_category"] or ""),
+                "title": str(row["title"] or ""),
+                "objective": str(row["objective"] or ""),
+                "suggested_change": str(row["suggested_change"] or ""),
+                "evidence_requirement": str(row["evidence_requirement"] or ""),
+                "status": str(row["status"] or ""),
+            }
+        )
+    return {"comment_groups": ordered_groups}
+
+
+def build_revision_execution_graph_context(connection: sqlite3.Connection) -> dict[str, Any]:
+    action_rows = fetch_all(
+        connection,
+        """
+        SELECT plan_action_id, plan_order, comment_id, action_order, execution_category, title, status
+        FROM revision_plan_actions
+        ORDER BY plan_order, plan_action_id
+        """,
+    )
+    dependency_rows = fetch_all(
+        connection,
+        """
+        SELECT plan_action_id, depends_on_plan_action_id
+        FROM revision_plan_dependencies
+        ORDER BY plan_action_id, depends_on_plan_action_id
+        """,
+    )
+    dep_index: dict[str, list[str]] = defaultdict(list)
+    for row in dependency_rows:
+        dep_index[str(row["plan_action_id"])].append(str(row["depends_on_plan_action_id"]))
+    items = [
+        {
+            "plan_action_id": str(row["plan_action_id"]),
+            "plan_order": int(row["plan_order"]),
+            "comment_id": str(row["comment_id"]),
+            "action_order": int(row["action_order"]) if row["action_order"] is not None else None,
+            "execution_category": str(row["execution_category"] or ""),
+            "title": str(row["title"] or ""),
+            "status": str(row["status"] or ""),
+            "depends_on": join_ordered(dep_index.get(str(row["plan_action_id"]), [])),
+        }
+        for row in action_rows
+    ]
+    return {"items": items}
+
+
+def build_revision_action_log_context(connection: sqlite3.Connection) -> dict[str, Any]:
+    log_rows = fetch_all(
+        connection,
+        """
+        SELECT log_id, log_order, status, operator_role, summary, change_note, response_note, created_at
+        FROM revision_action_logs
+        ORDER BY log_order, log_id
+        """,
+    )
+    plan_rows = fetch_all(
+        connection,
+        """
+        SELECT log_id, plan_action_id
+        FROM revision_action_log_plan_links
+        ORDER BY log_id, plan_action_id
+        """,
+    )
+    thread_rows = fetch_all(
+        connection,
+        """
+        SELECT log_id, thread_id
+        FROM revision_action_log_thread_links
+        ORDER BY log_id, thread_id
+        """,
+    )
+    diff_rows = fetch_all(
+        connection,
+        """
+        SELECT log_id, file_order, relative_path, change_kind, diff_excerpt, before_excerpt, after_excerpt
+        FROM revision_action_log_file_diffs
+        ORDER BY log_id, file_order
+        """,
+    )
+    plan_index: dict[str, list[str]] = defaultdict(list)
+    thread_index: dict[str, list[str]] = defaultdict(list)
+    diff_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in plan_rows:
+        plan_index[str(row["log_id"])].append(str(row["plan_action_id"]))
+    for row in thread_rows:
+        thread_index[str(row["log_id"])].append(str(row["thread_id"]))
+    for row in diff_rows:
+        diff_index[str(row["log_id"])].append(
+            {
+                "file_order": int(row["file_order"]),
+                "relative_path": str(row["relative_path"]),
+                "change_kind": str(row["change_kind"] or ""),
+                "diff_excerpt": str(row["diff_excerpt"] or ""),
+                "before_excerpt": str(row["before_excerpt"] or ""),
+                "after_excerpt": str(row["after_excerpt"] or ""),
+            }
+        )
+    items = [
+        {
+            "log_id": str(row["log_id"]),
+            "log_order": int(row["log_order"]),
+            "status": str(row["status"] or ""),
+            "operator_role": str(row["operator_role"] or ""),
+            "summary": str(row["summary"] or ""),
+            "change_note": str(row["change_note"] or ""),
+            "response_note": str(row["response_note"] or ""),
+            "created_at": str(row["created_at"] or ""),
+            "plan_action_ids": join_ordered(plan_index.get(str(row["log_id"]), [])),
+            "thread_ids": join_ordered(thread_index.get(str(row["log_id"]), [])),
+            "file_diffs": diff_index.get(str(row["log_id"]), []),
+        }
+        for row in log_rows
+    ]
+    return {"items": items}
+
+
+def build_response_coverage_matrix_context(connection: sqlite3.Connection) -> dict[str, Any]:
+    thread_rows = fetch_all(
+        connection,
+        """
+        SELECT rrt.thread_id, rrt.reviewer_id, rrt.thread_order, rrt.normalized_summary,
+               rtr.modification_scope, rtr.response_explanation, rtr.response_resolution_kind
+        FROM raw_review_threads rrt
+        LEFT JOIN response_thread_rows rtr ON rtr.thread_id = rrt.thread_id
+        ORDER BY rrt.reviewer_id, rrt.thread_order, rrt.thread_id
+        """,
+    )
+    link_rows = fetch_all(
+        connection,
+        """
+        SELECT thread_id, log_id
+        FROM response_thread_action_log_links
+        ORDER BY thread_id, link_order, log_id
+        """,
+    )
+    comment_rows = fetch_all(
+        connection,
+        """
+        SELECT thread_id, comment_id
+        FROM raw_thread_atomic_links
+        ORDER BY thread_id, link_order
+        """,
+    )
+    log_index: dict[str, list[str]] = defaultdict(list)
+    comment_index: dict[str, list[str]] = defaultdict(list)
+    for row in link_rows:
+        log_index[str(row["thread_id"])].append(str(row["log_id"]))
+    for row in comment_rows:
+        comment_index[str(row["thread_id"])].append(str(row["comment_id"]))
+    items = []
+    for row in thread_rows:
+        thread_id = str(row["thread_id"])
+        resolution_kind = str(row["response_resolution_kind"] or "")
+        linked_logs = join_ordered(log_index.get(thread_id, []))
+        coverage_kind = resolution_kind or ("revision_backed" if linked_logs else "")
+        items.append(
+            {
+                "thread_id": thread_id,
+                "reviewer_id": str(row["reviewer_id"]),
+                "normalized_summary": str(row["normalized_summary"] or ""),
+                "comment_ids": join_ordered(comment_index.get(thread_id, [])),
+                "coverage_kind": coverage_kind,
+                "log_ids": linked_logs,
+                "modification_scope": str(row["modification_scope"] or ""),
+                "response_explanation": str(row["response_explanation"] or ""),
+                "covered": "yes" if coverage_kind else "no",
+            }
+        )
+    return {"items": items}
+
+
 def build_final_checklist_context(connection: sqlite3.Connection) -> dict[str, Any]:
     source_index = build_comment_source_index(connection)
     target_index = build_comment_target_location_index(connection)
@@ -1773,7 +2189,7 @@ def build_final_checklist_context(connection: sqlite3.Connection) -> dict[str, A
         connection,
         """
         SELECT ac.comment_id, ac.comment_order, acs.status, acs.priority, acs.evidence_gap,
-               ccs.manuscript_draft_done, ccs.response_draft_done, ccs.one_to_one_link_checked, ccs.export_ready
+               ccs.manuscript_execution_items_done, ccs.response_draft_done, ccs.one_to_one_link_checked, ccs.export_ready
         FROM atomic_comments ac
         LEFT JOIN atomic_comment_state acs ON acs.comment_id = ac.comment_id
         LEFT JOIN comment_completion_status ccs ON ccs.comment_id = ac.comment_id
@@ -1796,7 +2212,7 @@ def build_final_checklist_context(connection: sqlite3.Connection) -> dict[str, A
                 "priority": str(row["priority"] or ""),
                 "evidence_gap": str(row["evidence_gap"] or ""),
                 "target_locations": join_ordered(target_index.get(comment_id, [])),
-                "manuscript_draft_done": str(row["manuscript_draft_done"] or ""),
+                "manuscript_execution_items_done": str(row["manuscript_execution_items_done"] or ""),
                 "response_draft_done": str(row["response_draft_done"] or ""),
                 "one_to_one_link_checked": str(row["one_to_one_link_checked"] or ""),
                 "export_ready": export_ready,
@@ -1806,13 +2222,24 @@ def build_final_checklist_context(connection: sqlite3.Connection) -> dict[str, A
     thread_rows = fetch_all(
         connection,
         """
-        SELECT rrt.thread_id, rrt.reviewer_id, rtl.comment_id, rtrl.comment_id AS outlined_comment_id
+        SELECT rrt.thread_id, rrt.reviewer_id, rtl.comment_id, rtr.response_resolution_kind
         FROM raw_review_threads rrt
         LEFT JOIN raw_thread_atomic_links rtl ON rtl.thread_id = rrt.thread_id
-        LEFT JOIN response_thread_resolution_links rtrl ON rtrl.thread_id = rrt.thread_id
+        LEFT JOIN response_thread_rows rtr ON rtr.thread_id = rrt.thread_id
         ORDER BY rrt.reviewer_id, rrt.thread_order, rtl.link_order
         """,
     )
+    link_rows = fetch_all(
+        connection,
+        """
+        SELECT thread_id, log_id
+        FROM response_thread_action_log_links
+        ORDER BY thread_id, link_order, log_id
+        """,
+    )
+    linked_log_index: dict[str, list[str]] = defaultdict(list)
+    for row in link_rows:
+        linked_log_index[str(row["thread_id"])].append(str(row["log_id"]))
     thread_index: dict[str, dict[str, Any]] = {}
     for row in thread_rows:
         thread_id = str(row["thread_id"])
@@ -1822,13 +2249,11 @@ def build_final_checklist_context(connection: sqlite3.Connection) -> dict[str, A
                 "thread_id": thread_id,
                 "reviewer_id": str(row["reviewer_id"]),
                 "linked_comment_ids": [],
-                "outlined_comment_ids": [],
+                "response_resolution_kind": str(row["response_resolution_kind"] or ""),
             },
         )
         if row["comment_id"] is not None:
             item["linked_comment_ids"].append(str(row["comment_id"]))
-        if row["outlined_comment_id"] is not None:
-            item["outlined_comment_ids"].append(str(row["outlined_comment_id"]))
 
     thread_payload: list[dict[str, Any]] = []
     response_row_ids = {
@@ -1837,28 +2262,40 @@ def build_final_checklist_context(connection: sqlite3.Connection) -> dict[str, A
     }
     for thread_id, item in sorted(thread_index.items()):
         linked_comment_ids = [value for value in item["linked_comment_ids"] if value]
-        outlined_comment_ids = {value for value in item["outlined_comment_ids"] if value}
-        response_outline_ready = "yes" if linked_comment_ids and all(comment_id in outlined_comment_ids for comment_id in linked_comment_ids) else "no"
         response_row_ready = "yes" if thread_id in response_row_ids else "no"
-        linked_atomic_export_ready = (
-            "yes"
-            if linked_comment_ids and all(export_ready_index.get(comment_id) == "yes" for comment_id in linked_comment_ids)
-            else "no"
-        )
-        thread_export_ready = "yes" if response_outline_ready == "yes" and response_row_ready == "yes" and linked_atomic_export_ready == "yes" else "no"
+        linked_atomic_export_ready = "yes" if linked_comment_ids and all(export_ready_index.get(comment_id) == "yes" for comment_id in linked_comment_ids) else "no"
+        audited_log_present = "yes" if linked_log_index.get(thread_id) else "no"
+        thread_export_ready = "yes" if response_row_ready == "yes" and (audited_log_present == "yes" or item["response_resolution_kind"] == "response_only_resolution") else "no"
         thread_payload.append(
             {
                 "thread_id": thread_id,
                 "reviewer_id": item["reviewer_id"],
                 "linked_comment_ids": join_ordered(linked_comment_ids),
-                "response_outline_ready": response_outline_ready,
                 "response_row_ready": response_row_ready,
+                "response_resolution_kind": item["response_resolution_kind"],
+                "audited_log_present": audited_log_present,
                 "linked_atomic_export_ready": linked_atomic_export_ready,
                 "thread_export_ready": thread_export_ready,
             }
         )
     export_rows = [dict(row) for row in fetch_all(connection, "SELECT artifact_name, artifact_status, output_path FROM export_artifacts ORDER BY artifact_name")]
-    return {"atomic_rows": atomic_payload, "thread_rows": thread_payload, "export_rows": export_rows}
+    working_copy_rows = [
+        dict(row)
+        for row in fetch_all(
+            connection,
+            """
+            SELECT relative_path, snapshot_sha256, last_audited_sha256, current_sha256, last_log_id
+            FROM working_copy_file_state
+            ORDER BY relative_path
+            """,
+        )
+    ]
+    return {
+        "atomic_rows": atomic_payload,
+        "thread_rows": thread_payload,
+        "export_rows": export_rows,
+        "working_copy_rows": working_copy_rows,
+    }
 
 
 def build_strategy_card_context(
@@ -1875,7 +2312,7 @@ def build_strategy_card_context(
         SELECT ac.comment_id, ac.canonical_summary, ac.required_action,
                acs.status, acs.priority, acs.evidence_gap,
                sc.proposed_stance, sc.stance_rationale,
-               ccs.manuscript_draft_done, ccs.response_draft_done, ccs.evidence_gap_closed,
+               ccs.manuscript_execution_items_done, ccs.response_draft_done, ccs.evidence_gap_closed,
                ccs.user_strategy_confirmed
         FROM atomic_comments ac
         LEFT JOIN atomic_comment_state acs ON acs.comment_id = ac.comment_id
@@ -1919,13 +2356,13 @@ def build_strategy_card_context(
         """,
         (comment_id,),
     )
-    draft_rows = fetch_all(
+    execution_item_rows = fetch_all(
         connection,
         """
-        SELECT comment_id, action_order, location_order, draft_text, rationale
-        FROM strategy_action_manuscript_drafts
+        SELECT comment_id, action_order, item_order, category, content_text, rationale, target_scope_note
+        FROM strategy_action_manuscript_execution_items
         WHERE comment_id = ?
-        ORDER BY action_order, location_order
+        ORDER BY action_order, item_order
         """,
         (comment_id,),
     )
@@ -1949,30 +2386,39 @@ def build_strategy_card_context(
         (comment_id,),
     )
     source = source_index.get(comment_id, {"reviewers": [], "thread_ids": []})
-    draft_index = {
-        (str(row["comment_id"]), int(row["action_order"]), int(row["location_order"])): {
-            "draft_text": str(row["draft_text"]),
+    execution_items_by_action: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    execution_items_by_category: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in execution_item_rows:
+        action_order = int(row["action_order"])
+        category = str(row["category"])
+        item = {
+            "comment_id": str(row["comment_id"]),
+            "action_order": action_order,
+            "item_order": int(row["item_order"]),
+            "category": category,
+            "content_text": str(row["content_text"]),
             "rationale": str(row["rationale"]),
+            "target_scope_note": str(row["target_scope_note"]),
         }
-        for row in draft_rows
-    }
+        execution_items_by_action[action_order].append(item)
+        execution_items_by_category[category].append(item)
     action_payload = [
         {
             "action_order": int(row["action_order"]),
             "manuscript_change": str(row["manuscript_change"]),
             "target_locations": join_ordered(action_location_index.get((comment_id, int(row["action_order"])), [])),
             "expected_response_letter_effect": str(row["expected_response_letter_effect"]),
-            "draft_rows": [
-                {
-                    "location_order": int(location["location_order"]),
-                    "target_location": str(location["target_location"]),
-                    "draft_text": draft_index.get((comment_id, int(row["action_order"]), int(location["location_order"])), {}).get("draft_text", ""),
-                    "rationale": draft_index.get((comment_id, int(row["action_order"]), int(location["location_order"])), {}).get("rationale", ""),
-                }
-                for location in action_target_detail_index.get((comment_id, int(row["action_order"])), [])
-            ],
+            "action_target_rows": action_target_detail_index.get((comment_id, int(row["action_order"])), []),
+            "execution_items": execution_items_by_action.get(int(row["action_order"]), []),
         }
         for row in actions
+    ]
+    execution_item_groups = [
+        {
+            "category": category,
+            "items": execution_items_by_category.get(category, []),
+        }
+        for category in MANUSCRIPT_EXECUTION_ITEM_CATEGORY_ORDER
     ]
     header_payload = dict(header)
     header_payload["source_reviewers"] = join_ordered(source["reviewers"])
@@ -1990,13 +2436,14 @@ def build_strategy_card_context(
             "rationale": str(response_draft["rationale"]) if response_draft is not None else "",
         },
         "comment_blockers": [str(row["message"]) for row in blocker_rows],
-        "drafts_present": bool(draft_rows) or response_draft is not None,
+        "drafts_present": bool(execution_item_rows) or response_draft is not None,
+        "execution_item_groups": execution_item_groups,
         "completion_lines": [
             {
-                "label": localization.msg("view.strategy_card.check.manuscript_draft_done")
+                "label": localization.msg("view.strategy_card.check.manuscript_execution_items_done")
                 if localization is not None
-                else "Manuscript draft is present",
-                "checked": str(header["manuscript_draft_done"] or "no") == "yes",
+                else "Manuscript execution items are present",
+                "checked": str(header["manuscript_execution_items_done"] or "no") == "yes",
             },
             {
                 "label": localization.msg("view.strategy_card.check.response_draft_done")
@@ -2044,12 +2491,14 @@ def get_view_context(
         context = build_atomic_workboard_context(connection)
     elif view_name == "style_profile":
         context = build_style_profile_context(connection)
-    elif view_name == "action_copy_variants":
-        context = build_action_copy_variants_context(connection)
-    elif view_name == "response_letter_outline":
-        context = build_response_letter_outline_context(connection)
-    elif view_name == "export_patch_plan":
-        context = build_export_patch_plan_context(connection)
+    elif view_name == "revision_guide":
+        context = build_revision_guide_context(connection)
+    elif view_name == "revision_execution_graph":
+        context = build_revision_execution_graph_context(connection)
+    elif view_name == "revision_action_log":
+        context = build_revision_action_log_context(connection)
+    elif view_name == "response_coverage_matrix":
+        context = build_response_coverage_matrix_context(connection)
     elif view_name == "response_letter_table_preview_md":
         context = build_response_letter_table_preview_context(connection)
     elif view_name == "response_letter_table_preview_tex":
@@ -2085,6 +2534,9 @@ def render_workspace(
     paths["strategy_card_dir"].mkdir(parents=True, exist_ok=True)
     paths["localization_root"].mkdir(parents=True, exist_ok=True)
     paths["localization_template_override_dir"].mkdir(parents=True, exist_ok=True)
+    paths["manuscript_copy_root"].mkdir(parents=True, exist_ok=True)
+    paths["source_snapshot_root"].mkdir(parents=True, exist_ok=True)
+    paths["working_manuscript_root"].mkdir(parents=True, exist_ok=True)
     cleanup_legacy_runtime_views(artifact_root)
     rendered_paths: list[Path] = []
     with connect_db(db_path) as connection:

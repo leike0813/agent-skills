@@ -1,0 +1,11 @@
+# {{ msg("view.revision_graph.title") }}
+
+{{ msg("view.revision_graph.intro") }}
+
+| `plan_order` | `plan_action_id` | `comment_id` | `action_order` | `execution_category` | {{ msg("view.revision_graph.title_column") }} | `status` | {{ msg("view.revision_graph.depends_on") }} |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+{% for item in items -%}
+| {{ item.plan_order }} | {{ item.plan_action_id }} | {{ item.comment_id }} | {{ item.action_order or '' }} | {{ item.execution_category }} | {{ item.title }} | {{ item.status }} | {{ item.depends_on or '' }} |
+{% else -%}
+|  |  |  |  |  |  |  |  |
+{% endfor %}

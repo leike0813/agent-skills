@@ -63,9 +63,12 @@
   - 更新 `manuscript_summary`
   - 更新 `manuscript_sections`
   - 更新 `manuscript_claims`
+  - 更新 `style_profiles`
+  - 更新 `style_profile_rules`
   - 更新 `resume_brief` 与 `resume_recent_decisions`
 - 推荐：
   - 在结构摘要足以支撑后续 thread/atomic 映射时进入阶段三
+  - 在 Stage 2 结束时同步形成 `03-style-profile.md`
 - 阻断：
   - `manuscript_sections` 明显缺失
   - `manuscript_claims` 明显缺失
@@ -88,7 +91,7 @@
 - 推荐：
   - 先稳定 raw thread 边界
   - 再做 canonical atomic 建模
-  - 再生成 `06-review-comment-coverage.md`
+  - 再生成 `07-review-comment-coverage.md`
   - 同步检查字符级覆盖率阈值（hard=`30%`，soft=`50%`；主指标包含 `duplicate_filtered`）
   - `primary/supporting` 用红色高亮，`duplicate_filtered` 用橙色高亮展示重复但已去重的原文片段
   - 先请求用户确认 Stage 3 覆盖率，再进入阶段四
@@ -99,7 +102,6 @@
   - `raw_thread_source_spans` 不能精确回放到 `review_comment_source_documents.original_text`
   - 存在 `thread_id` 没有任何 `span_role='primary'`
   - 全局字符覆盖率低于 hard 阈值（`30%`）
-  - 仍在使用 legacy thread 级覆盖真源（需重跑 Stage 3）
   - `workflow_pending_user_confirmations` 非空
 - 禁止：
   - 跳过 raw thread 层直接写 atomic
@@ -140,19 +142,21 @@
   - 写入 `supplement_suggestion_intake_links`
   - 写入 `supplement_intake_items`
   - 写入 `supplement_landing_links`
-  - 写入 `strategy_action_manuscript_drafts`
+  - 写入 `strategy_action_manuscript_execution_items`
   - 写入 `comment_response_drafts`
   - 写入 `comment_blockers`
   - 写入 `comment_completion_status`
   - 仅在真正的阶段级阻断下写入 `workflow_global_blockers`
 - 推荐：
   - 先锁定 `active_comment_id`
-  - 若存在 `evidence_gap = yes` 的 comment，先形成 `14-supplement-suggestion-plan.md`
+  - 若存在 `evidence_gap = yes` 的 comment，先形成 `09-supplement-suggestion-plan.md`
+  - 同步维护 `10-supplement-intake-plan.md`
   - 缺策略卡先补策略卡
   - 先完成逐条策略确认，再写 Stage 5 draft 真源
-  - 若策略语义被修改，必须重开确认并清空旧的 Stage 5 drafts
+  - 若策略语义被修改，必须重开确认并清空当前已写入的 Stage 5 drafts
   - 当前 comment 有局部 blocker 时优先解决它，但用户仍可显式切到别的 comment
   - 只有 manuscript draft、response draft 与一一对应关系都落地后，才把该条 comment 记为完成
+  - Stage 5 结束前形成 `11-manuscript-revision-guide.md` 与 `12-manuscript-execution-graph.md`
 - 阻断：
   - 当前策略卡仍不足以面向用户确认
   - `workflow_pending_user_confirmations` 非空
@@ -170,35 +174,27 @@
 ### `stage_6`
 
 - 允许：
-  - 写入 `style_profiles`
-  - 写入 `style_profile_rules`
-  - 写入 `action_copy_variants`
-  - 写入 `selected_action_copy_variants`
-  - 写入 `response_thread_resolution_links`
+  - 写入 `revision_action_logs`
+  - 写入 `revision_action_log_plan_links`
+  - 写入 `revision_action_log_thread_links`
+  - 写入 `revision_action_log_file_diffs`
+  - 写入 `working_copy_file_state`
   - 写入 `response_thread_rows`
-  - 写入 `export_patch_sets`
-  - 写入 `export_patches`
+  - 写入 `response_thread_action_log_links`
   - 写入 `export_artifacts`
-  - 请求最终复核与最终确认
+  - 生成可选 `latexdiff_manuscript`
 - 推荐：
-  - 先完成全局风格画像
-  - 再生成每个 action 的每个 target location 的三版本最终落稿文本
-  - 再完成逐位置 manuscript 版本选择
-  - 再组装 thread-level response rows
-  - 再建立 export patch 真源
-  - 先导出 marked manuscript
-  - 最后在最终确认后导出 clean manuscript 与双格式 response letter
+  - 先读取 `11-manuscript-revision-guide.md` 与 `12-manuscript-execution-graph.md`
+  - 参考 `03-style-profile.md`
+  - 与用户协作修改 `working_manuscript`
+  - 每轮明确修改后，通过 `commit_revision_round.py` 提交
+  - 持续刷新 `13-17` 工件
 - 阻断：
-  - style profile 缺失
-  - 任一 action 的任一 target location 没有达到 3 个 manuscript 最终文案版本
-  - 用户尚未完成逐位置版本选择
+  - `revision_plan_actions` 未全部结案
+  - `working_manuscript` 存在未审计 diff
   - `thread_id` 尚未形成最终 row
-  - marked / clean export patch 真源尚未建立
-  - export artifacts 尚未闭环
-  - 最终确认未完成
+  - 某条 response row 没有 revision log 或 `response_only_resolution`
 - 禁止：
-  - 未做风格画像就直接生成最终文案
-  - 未建立 export patch 真源就导出 manuscript
-  - 未完成 marked manuscript 复核就导出 clean manuscript
+  - 修改 `working_manuscript` 后绕过审计提交
   - 用 `comment_id` 顺序直接替代 `thread_id` 顺序输出最终 Response Letter
-  - 覆盖原始输入文件
+  - 修改 `source_snapshot`
