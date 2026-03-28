@@ -50,7 +50,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
   - `normalize_source` 只能读 `source_path`
   - `prepare_references_workset` 只能读前序已确定的 `references_scope`
   - `prepare_citation_workset` 只能读前序已确定的 `citation_scope`
-  - `render_and_validate --mode render` 只能读 DB，不能显式指定 `source_path` 或 `out_dir`
+  - `render_and_validate --mode render` 只能读 DB 内容，不能显式指定 `source_path`；只允许可选 `--out-dir` 覆盖输出目录
 
 ### 辅助工具 subcommand
 
@@ -904,13 +904,14 @@ python scripts/stage_runtime.py persist_citation_summary \
 #### 命令
 
 ```bash
-python scripts/stage_runtime.py render_and_validate [--db-path PATH] --mode render
+python scripts/stage_runtime.py render_and_validate [--db-path PATH] --mode render [--out-dir DIR]
 ```
 
 #### 输入方式
 
 - 不接受外部业务 payload
 - 正式发布只从 DB 派生最终成品
+- 允许可选 `--out-dir` 仅覆盖最终写盘目录
 - `citation_analysis.md` / `citation_analysis.json.report_md` 会共同包含由 renderer 生成的“关键文献”与“时间线分析”小节
 - numeric 型引用保留原始 `[n]`
 - author-year 型引用在最终渲染时按首次出现顺序合成 `[AY-k]`
@@ -920,6 +921,12 @@ python scripts/stage_runtime.py render_and_validate [--db-path PATH] --mode rend
 
 ```bash
 python scripts/stage_runtime.py render_and_validate --mode render
+```
+
+如需仅改变输出目录：
+
+```bash
+python scripts/stage_runtime.py render_and_validate --mode render --out-dir /abs/path/artifacts
 ```
 
 #### 典型非法示例
@@ -946,7 +953,8 @@ python scripts/stage_runtime.py render_and_validate --mode render --source-path 
 #### 常见失败原因
 
 - DB 中缺少 digest / references / citation 所需前序数据
-- 试图通过 CLI 覆盖正式发布输入
+- 试图通过 CLI 覆盖正式发布输入来源
+- 误把 `--out-dir` 当成文件名或 stdout 结构覆盖开关
 
 ### 辅助工具路径
 
