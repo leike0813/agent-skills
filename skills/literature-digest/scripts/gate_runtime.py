@@ -334,6 +334,38 @@ def _sql_examples(stage: str, next_action: str) -> list[dict[str, str]]:
     ]
 
 
+def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> str:
+    if next_action == "bootstrap_runtime_db":
+        return "Initialize or resume the runtime DB first, then rerun gate before doing anything else."
+    if next_action == "normalize_source":
+        return "Run source normalization now. Do not respecify source_path or language; this step must read the bootstrap state from DB."
+    if next_action == "persist_outline_and_scopes":
+        return "Persist the outline and both scopes in one payload. Keep scope boundaries explicit with section_title, line_start, line_end, and metadata."
+    if next_action == "persist_digest":
+        return "Persist structured digest_slots and section_summaries only. Do not write near-final Markdown."
+    if next_action == "prepare_references_workset":
+        return "Prepare the references workset from the stored references_scope first; let the script build entries, batches, and parse candidates."
+    if next_action == "persist_references":
+        return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries."
+    if next_action == "prepare_citation_workset":
+        return "Prepare the citation workset from stored citation_scope and reference_items. Do not rebuild scope or reference mapping by hand."
+    if next_action == "persist_citation_semantics":
+        return "Persist per-ref_index citation semantics now. Summaries must explain how the source paper uses each citation, not just what the cited work is."
+    if next_action == "persist_citation_timeline":
+        return "Write the early/mid/recent citation timeline now. Use structured buckets and cover every citation item with a stable year exactly once."
+    if next_action == "persist_citation_summary":
+        return "Write the global citation summary now. Keep it narrative and based on research threads, argument shape, and key references."
+    if next_action == "render_and_validate":
+        return "You are at the final publish step. Run `python scripts/stage_runtime.py render_and_validate --mode render` next, and directly use that script's stdout JSON as the final assistant output."
+    if next_action == "repair_workflow_state":
+        return "Repair workflow_state first. Do not continue the main path until gate returns a non-repair next_action."
+    if next_action == "repair_db_state":
+        return "A prerequisite row is missing. Repair DB state first, then rerun gate."
+    if stage_gate == "blocked":
+        return "The current state is blocked. Repair the runtime state before trying to continue."
+    return "Follow the current next_action exactly, then rerun gate."
+
+
 def _emit(payload: dict[str, Any], exit_code: int = 0) -> int:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return exit_code
@@ -430,6 +462,7 @@ def _payload(
         "required_reads": list(rules["required_reads"]),
         "required_writes": list(rules["required_writes"]),
         "instruction_refs": _instruction_refs(current_stage, next_action),
+        "execution_note": _execution_note(current_stage, next_action, stage_gate),
         "sql_examples": _sql_examples(current_stage, next_action),
         "resume_packet": {
             "db_path": str(db_path),

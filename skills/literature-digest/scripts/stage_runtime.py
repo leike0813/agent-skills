@@ -3152,7 +3152,7 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
     return 0
 
 
-def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
+def _render_public_artifacts(db_path: Path, *, explicit_out_dir: Path | None = None) -> dict[str, Any]:
     with connect_db(db_path) as connection:
         for warning in _collect_render_semantic_warnings(connection):
             add_runtime_warning_once(connection, warning)
@@ -3160,7 +3160,7 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
         source_path = inputs.get("source_path", "")
         if not source_path:
             raise RuntimeError("runtime_inputs.source_path missing")
-        output_root = Path(source_path).parent
+        output_root = explicit_out_dir if explicit_out_dir is not None else Path(source_path).parent
 
         digest_context = build_digest_render_context(connection)
         references_context = build_references_render_context(connection)
@@ -3196,7 +3196,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path) if args.db_path else default_db_path()
 
     if mode == "render":
-        if args.source_path or args.out_dir or args.preprocess_artifact or args.in_path:
+        if args.source_path or args.preprocess_artifact or args.in_path:
             payload = {
                 "digest_path": "",
                 "references_path": "",
@@ -3205,13 +3205,14 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
                 "warnings": [],
                 "error": {
                     "code": "citation_report_failed",
-                    "message": "render mode does not accept explicit source/out/preprocess inputs; render is DB-authoritative",
+                    "message": "render mode does not accept explicit source/preprocess/stdin inputs; render is DB-authoritative and only optionally accepts --out-dir",
                 },
             }
             print(json.dumps(payload, ensure_ascii=False))
             return 2
+        out_dir = Path(args.out_dir).expanduser() if args.out_dir else None
         try:
-            payload = _render_public_artifacts(db_path)
+            payload = _render_public_artifacts(db_path, explicit_out_dir=out_dir)
             errors = _validate_public_output(payload, preprocess_artifact=None, db_path=db_path)
         except Exception as exc:  # noqa: BLE001
             payload = {

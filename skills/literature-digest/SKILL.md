@@ -61,7 +61,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
 - 每次正式写库后都必须重新运行 `scripts/gate_runtime.py`
 - 只能执行 gate 返回的 `next_action`
 - 若 gate 返回 blocker 或 repair 路径，必须先修复 DB 状态再继续
-- gate 输出中的 `instruction_refs` 和 `sql_examples` 是当前动作的显式参考，不得跳过
+- gate 输出中的 `instruction_refs`、`execution_note` 和 `sql_examples` 是当前动作的显式参考，不得跳过
 
 ## LLM 与脚本职责边界
 
@@ -178,6 +178,10 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 中文名：附录阅读指引
   - 定义：gate 指定的当前阶段应按需阅读的文档路径与节标题列表。
   - 适用动作：`gate_runtime.py` 输出，所有阶段遵守
+- `execution_note`
+  - 中文名：执行提示
+  - 定义：gate 为当前 `next_action` 返回的一条短提示，概括这一动作最关键的即时执行约束。
+  - 适用动作：`gate_runtime.py` 输出，所有阶段遵守
 - `next_action`
   - 中文名：下一动作
   - 定义：gate 当前唯一允许执行的阶段动作名。
@@ -185,7 +189,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
 
 ## 最小执行主路径
 
-启动时只读本文件。不要一开始读取整个 `references/` 目录；只有在 gate 返回 `instruction_refs` 后，才按当前阶段按需读取对应附录文档。不得在开始阶段一次性读取全部 step 文档。
+启动时只读本文件。不要一开始读取整个 `references/` 目录；只有在 gate 返回 `instruction_refs` 后，才按当前阶段按需读取对应附录文档。并且每一步都要同时遵守 gate 返回的 `execution_note`。不得在开始阶段一次性读取全部 step 文档。
 
 ### 1. `bootstrap_runtime_db`
 
@@ -586,8 +590,13 @@ python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/cit
 ```bash
 python scripts/stage_runtime.py render_and_validate --mode render
 ```
+- 如存在外部注入要求改写输出目录，可改为：
+```bash
+python scripts/stage_runtime.py render_and_validate --mode render --out-dir "/abs/path/artifacts"
+```
 - 必须提供的参数 / payload：
   - 无；正式发布路径不接受外部业务 payload
+  - `--out-dir` 仅为可选 CLI 覆盖，用来改变输出目录
 - 各输出字段含义：
   - `digest_path`：最终 digest 文件路径
   - `references_path`：最终 references 文件路径
@@ -601,7 +610,8 @@ python scripts/stage_runtime.py render_and_validate --mode render
   - `current_stage` 进入 `stage_7_completed`
   - `artifact_registry` 中的公开产物路径都已登记
 - 本步最常见错误：
-  - 试图传入 `source-path`、`out-dir` 或其他覆盖输入
+  - 试图传入 `source-path` 或其他业务输入覆盖
+  - 误以为 `--out-dir` 可以改变文件名或 stdout 结构
   - 误以为 `report_md` 由 agent 直接提供
 
 阶段性最低输出约束：
