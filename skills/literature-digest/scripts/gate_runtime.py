@@ -163,6 +163,18 @@ ACTION_SQL_EXAMPLES: dict[str, list[dict[str, str]]] = {
             "notes": "Use after preparation to confirm ambiguous entries retained multiple patterns.",
         },
     ],
+    "persist_reference_entry_splits": [
+        {
+            "purpose": "inspect currently prepared raw reference entries before split review",
+            "sql": "SELECT entry_index, raw, metadata_json FROM reference_entries ORDER BY entry_index;",
+            "notes": "Use when deterministic splitting left grouped author-year entries that need boundary review.",
+        },
+        {
+            "purpose": "inspect current grouped-entry suspicion warnings",
+            "sql": "SELECT warning FROM runtime_warnings WHERE warning LIKE 'reference_entry_grouping_suspect:%' ORDER BY id;",
+            "notes": "Split review is only for correcting raw entry boundaries, not for semantic field extraction.",
+        },
+    ],
     "persist_references": [
         {
             "purpose": "inspect prepared candidates before agent refinement",
@@ -298,7 +310,7 @@ def _instruction_refs(stage: str, next_action: str) -> list[dict[str, str]]:
         refs[0]["section"] = "Outline and scope extraction"
     elif next_action == "persist_digest":
         refs[0]["section"] = "Digest generation"
-    elif next_action in {"prepare_references_workset", "persist_references"}:
+    elif next_action in {"prepare_references_workset", "persist_reference_entry_splits", "persist_references"}:
         refs[0]["section"] = "References extraction"
     elif next_action in {"prepare_citation_workset", "persist_citation_semantics", "persist_citation_timeline", "persist_citation_summary"}:
         refs[0]["section"] = "Citation pipeline"
@@ -345,6 +357,8 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
         return "Persist structured digest_slots and section_summaries only. Do not write near-final Markdown."
     if next_action == "prepare_references_workset":
         return "Prepare the references workset from the stored references_scope first; let the script build entries, batches, and parse candidates."
+    if next_action == "persist_reference_entry_splits":
+        return "The prepared references still look grouped. Review and resubmit raw entry boundaries only; do not extract author, title, or year in this step."
     if next_action == "persist_references":
         return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries."
     if next_action == "prepare_citation_workset":
@@ -395,7 +409,7 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
             missing.append("source_documents.normalized_source")
         if connection.execute("SELECT 1 FROM section_scopes WHERE scope_key = 'references_scope' LIMIT 1").fetchone() is None:
             missing.append("section_scopes.references_scope")
-        if next_action == "persist_references":
+        if next_action in {"persist_reference_entry_splits", "persist_references"}:
             if count("reference_entries") == 0:
                 missing.append("reference_entries")
             if count("reference_parse_candidates") == 0:
