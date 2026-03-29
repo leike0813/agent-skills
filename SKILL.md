@@ -130,6 +130,14 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 中文名：选定候选 pattern
   - 定义：agent 在 references 预解析候选中选中的切分模式标识。
   - 适用动作：`persist_references`
+- `requires_split_review`
+  - 中文名：需要条目切分复核
+  - 定义：`prepare_references_workset` 判断当前 references workset 仍存在 grouped-entry 风险时返回的布尔标记。
+  - 适用动作：`prepare_references_workset`
+- `suspect_entries`
+  - 中文名：可疑条目列表
+  - 定义：脚本判断仍可能包含多条著录的 raw entry 列表及其原因说明。
+  - 适用动作：`prepare_references_workset`
 - `mention_id`
   - 中文名：引文标记 ID
   - 定义：一条 citation mention 的唯一标识。
@@ -370,22 +378,62 @@ python scripts/stage_runtime.py prepare_references_workset --out /tmp/references
   - `review_path`：轻量审阅视图路径；只保留 `entry_index / detected_ref_number / raw / pattern_summaries`
   - `stored_reference_entries`：本次切分出的 raw 条目数量
   - `stored_reference_candidates`：本次生成的 candidate 总数
+  - `entry_style`：本次 references 著录风格，可能为 `numeric` / `author-year` / `mixed`
+  - `requires_split_review`：是否需要先执行条目边界复核
+  - `suspect_entries`：脚本认为仍可能包含多条著录的可疑条目
   - `warnings`：编号异常、pattern 歧义、title 边界可疑等 warning
 - 最小合法示例：
 ```bash
 python scripts/stage_runtime.py prepare_references_workset --out /tmp/references_workset.json
 ```
 - 完成后应该看到的 gate 结果：
-  - `next_action` 应推进为 `persist_references`
+  - 若 `requires_split_review=false`：`next_action` 应推进为 `persist_references`
+  - 若 `requires_split_review=true`：`next_action` 应推进为 `persist_reference_entry_splits`
 - 本步最常见错误：
   - 误以为本步需要 agent 直接填写最终 references 结果
   - 只保留一个“看起来最像”的切分结果，而没有保留多组候选
+  - 看到 `requires_split_review=true` 仍直接跳去做 `persist_references`
   - 忽略 `review_path`，直接回原文重复做人肉切分
 
-### 6. `persist_references`
+### 6. `persist_reference_entry_splits`
 
 - 何时执行：
-  - `prepare_references_workset` 成功后，且 gate 返回 `persist_references`
+  - 只有当 `prepare_references_workset` 返回 `requires_split_review=true`，且 gate 返回 `persist_reference_entry_splits`
+- 调用命令：
+```bash
+python scripts/stage_runtime.py persist_reference_entry_splits --payload-file /tmp/reference_entry_splits.json
+```
+- 必须提供的参数 / payload：
+  - `entries`
+- 各 payload 字段含义：
+  - `entries[*].entry_index`：复核后的 0-based 顺序编号；必须与数组位置一致
+  - `entries[*].raw`：复核后的单条 raw references 条目；只能调整边界，不得改写文本内容
+- 最小合法示例：
+```json
+{
+  "entries": [
+    {
+      "entry_index": 0,
+      "raw": "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020."
+    },
+    {
+      "entry_index": 1,
+      "raw": "Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150, 2020."
+    }
+  ]
+}
+```
+- 完成后应该看到的 gate 结果：
+  - `next_action` 应推进为 `persist_references`
+- 本步最常见错误：
+  - 在这一步就开始抽 `author/title/year`
+  - 跳过条目、交换顺序，或修改 raw 文本本身
+  - 只提交 suspect entry，而不是覆盖整个 references scope 的切分结果
+
+### 7. `persist_references`
+
+- 何时执行：
+  - `prepare_references_workset` 成功且不需要 split review，或 `persist_reference_entry_splits` 成功后，且 gate 返回 `persist_references`
 - 调用命令：
 ```bash
 python scripts/stage_runtime.py persist_references --payload-file /tmp/references_payload.json
@@ -427,7 +475,7 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - 只拆出第一作者，导致剩余作者吞进 `title`
   - 已有稳定 `author_candidates` 时又把一个作者拆成多个数组元素
   - `title` 带前导标点
-### 7. `prepare_citation_workset`
+### 8. `prepare_citation_workset`
 
 - 何时执行：
   - `persist_references` 成功后，且 gate 返回 `prepare_citation_workset`
@@ -456,7 +504,7 @@ python scripts/stage_runtime.py prepare_citation_workset --out /tmp/workset.json
   - 误以为 workset 需要由 agent 手工拼装
   - 忽略轻量审阅视图，反复让模型消费完整大 payload
 
-### 8. `persist_citation_semantics`
+### 9. `persist_citation_semantics`
 
 - 何时执行：
   - `prepare_citation_workset` 成功后，且 gate 返回 `persist_citation_semantics`
@@ -501,7 +549,7 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
   - 漏掉 `keywords`，或把 `keywords` 写成整句
   - 传入 `report_md`、`mentions`、`reference` 等旧字段
 
-### 9. `persist_citation_timeline`
+### 10. `persist_citation_timeline`
 
 - 何时执行：
   - `persist_citation_semantics` 成功后，且 gate 返回 `persist_citation_timeline`
@@ -541,7 +589,7 @@ python scripts/stage_runtime.py persist_citation_timeline --payload-file /tmp/ci
   - 让同一个 `ref_index` 同时出现在多个 bucket
   - 忘记把所有有稳定年份的条目都归入时间线
 
-### 10. `persist_citation_summary`
+### 11. `persist_citation_summary`
 
 - 何时执行：
   - `persist_citation_timeline` 成功后，且 gate 返回 `persist_citation_summary`
@@ -582,7 +630,7 @@ python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/cit
   - 把这里写成按功能分组后的完整报告正文
   - 重复粘贴每条 item 的 summary，而没有给出原文组织 related work 的全局归纳
 
-### 11. `render_and_validate --mode render`
+### 12. `render_and_validate --mode render`
 
 - 何时执行：
   - `persist_citation_summary` 成功后，且 gate 返回 `render_and_validate`

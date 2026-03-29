@@ -100,7 +100,9 @@ DATE_LIKE_RE = re.compile(
     r"\s+\d{1,2},?\s+\d{4})\b",
     re.IGNORECASE,
 )
-TERMINAL_PUBLICATION_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b(?!\.\d)")
+TERMINAL_PUBLICATION_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})[a-z]?\b(?!\.\d)")
+REFERENCE_TAIL_RE = re.compile(r"(?:\((?:19|20)\d{2}[a-z]?\)|(?:19|20)\d{2}[a-z]?)\.(?=\s|$)")
+REFERENCE_TAIL_AT_END_RE = re.compile(r"(?:\((?:19|20)\d{2}[a-z]?\)|(?:19|20)\d{2}[a-z]?)\.\s*$")
 REFERENCE_ENTRY_START_RE = re.compile(r"^(?:\[\d+\]|\d+[\.\)])\s*")
 COMMA_STYLE_AUTHOR_RE = re.compile(r"[A-Z][A-Za-z'`-]+,\s*(?:[A-Z][A-Za-z.-]*\.?(?:\s*[A-Z][A-Za-z.-]*\.?)*)")
 LEADING_PUNCTUATION_RE = re.compile(r"^[,.;:]\s*")
@@ -124,6 +126,7 @@ WARNING_REFERENCE_LOW_CONFIDENCE = "reference_parse_low_confidence"
 WARNING_REFERENCE_PATTERN_AMBIGUOUS = "reference_pattern_ambiguous"
 WARNING_REFERENCE_TITLE_BOUNDARY_SUSPECT = "reference_title_boundary_suspect"
 WARNING_REFERENCE_AUTHOR_OVERSPLIT = "reference_author_oversplit_detected"
+WARNING_REFERENCE_ENTRY_GROUPING_SUSPECT = "reference_entry_grouping_suspect"
 WARNING_CITATION_FALSE_POSITIVE_FILTERED = "citation_false_positive_filtered"
 WARNING_CITATION_TIMELINE_MISSING_YEAR = "citation_timeline_missing_year"
 WARNING_SCOPE_FALLBACK_USED = "scope_fallback_used"
@@ -719,6 +722,61 @@ def _extract_terminal_publication_year(raw: str) -> int | None:
     return matches[-1]
 
 
+def _count_reference_tail_markers(raw: str) -> int:
+    return len(list(REFERENCE_TAIL_RE.finditer(raw)))
+
+
+def _ends_with_reference_tail(raw: str) -> bool:
+    return REFERENCE_TAIL_AT_END_RE.search(raw.strip()) is not None
+
+
+def _scope_lines_without_heading(lines: list[str], scope: Scope) -> tuple[list[str], int]:
+    start_index = max(scope.line_start - 1, 0)
+    end_index = min(scope.line_end, len(lines))
+    scoped_lines = lines[start_index:end_index]
+    scope_heading_level = 1
+    if scoped_lines:
+        first_stripped = scoped_lines[0].strip()
+        heading_match = HEADING_RE.match(first_stripped)
+        if heading_match is not None:
+            scope_heading_level = len(heading_match.group(1))
+        first_title = re.sub(r"^#{1,6}\s+", "", first_stripped).strip()
+        if first_title.lower() == scope.section_title.strip().lower():
+            scoped_lines = scoped_lines[1:]
+            start_index += 1
+    truncated_lines: list[str] = []
+    for line in scoped_lines:
+        stripped = line.strip()
+        heading_match = HEADING_RE.match(stripped)
+        if heading_match is not None and truncated_lines and len(heading_match.group(1)) <= scope_heading_level:
+            break
+        truncated_lines.append(line)
+    return truncated_lines, start_index + 1
+
+
+def _split_inline_reference_chunk(raw: str) -> list[str]:
+    normalized = _normalize_reference_entry_text(raw)
+    if _count_reference_tail_markers(normalized) <= 1:
+        return [normalized] if normalized else []
+    parts: list[str] = []
+    cursor = 0
+    matches = list(REFERENCE_TAIL_RE.finditer(normalized))
+    for match in matches:
+        part = _normalize_reference_entry_text(normalized[cursor:match.end()])
+        if part:
+            parts.append(part)
+        cursor = match.end()
+        while cursor < len(normalized) and normalized[cursor].isspace():
+            cursor += 1
+    tail = _normalize_reference_entry_text(normalized[cursor:])
+    if tail:
+        if parts:
+            parts[-1] = _normalize_reference_entry_text(f"{parts[-1]} {tail}")
+        else:
+            parts.append(tail)
+    return [part for part in parts if part]
+
+
 def _strip_reference_number_prefix(raw: str) -> tuple[str, int | None]:
     text = raw.strip()
     detected_ref_number = _extract_detected_reference_number(text)
@@ -732,18 +790,11 @@ def _normalize_reference_entry_text(raw: str) -> str:
 
 
 def _split_reference_entries(lines: list[str], scope: Scope) -> list[dict[str, Any]]:
-    start_index = max(scope.line_start - 1, 0)
-    end_index = min(scope.line_end, len(lines))
-    scoped_lines = lines[start_index:end_index]
-    if scoped_lines:
-        first_stripped = scoped_lines[0].strip()
-        first_title = re.sub(r"^#{1,6}\s+", "", first_stripped).strip()
-        if first_title.lower() == scope.section_title.strip().lower():
-            scoped_lines = scoped_lines[1:]
-            start_index += 1
+    scoped_lines, scoped_line_start = _scope_lines_without_heading(lines, scope)
     chunks: list[dict[str, Any]] = []
     current_lines: list[str] = []
     current_start: int | None = None
+    last_offset = scoped_line_start - 1
 
     def flush(entry_end_line: int) -> None:
         nonlocal current_lines, current_start
@@ -753,17 +804,29 @@ def _split_reference_entries(lines: list[str], scope: Scope) -> list[dict[str, A
             return
         raw = _normalize_reference_entry_text(" ".join(current_lines))
         if raw:
-            chunks.append(
-                {
-                    "raw": raw,
-                    "line_start": current_start,
-                    "line_end": entry_end_line,
-                }
-            )
+            split_parts = _split_inline_reference_chunk(raw)
+            if split_parts:
+                for part in split_parts:
+                    chunks.append(
+                        {
+                            "raw": part,
+                            "line_start": current_start,
+                            "line_end": entry_end_line,
+                        }
+                    )
+            else:
+                chunks.append(
+                    {
+                        "raw": raw,
+                        "line_start": current_start,
+                        "line_end": entry_end_line,
+                    }
+                )
         current_lines = []
         current_start = None
 
-    for offset, line in enumerate(scoped_lines, start=scope.line_start):
+    for offset, line in enumerate(scoped_lines, start=scoped_line_start):
+        last_offset = offset
         stripped = line.strip()
         if not stripped:
             flush(offset - 1)
@@ -774,10 +837,12 @@ def _split_reference_entries(lines: list[str], scope: Scope) -> list[dict[str, A
         if current_start is None:
             current_start = offset
         current_lines.append(stripped)
-    flush(scope.line_end)
+        if _ends_with_reference_tail(_normalize_reference_entry_text(" ".join(current_lines))):
+            flush(offset)
+    flush(last_offset)
 
     if not chunks:
-        for offset, line in enumerate(scoped_lines, start=scope.line_start):
+        for offset, line in enumerate(scoped_lines, start=scoped_line_start):
             stripped = line.strip()
             if stripped:
                 chunks.append({"raw": _normalize_reference_entry_text(stripped), "line_start": offset, "line_end": offset})
@@ -888,7 +953,7 @@ def _make_reference_candidate(
 
 def _candidate_authors_colon_title_in_year(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
     match = re.match(
-        r"^(?P<authors>.+?):\s*(?P<title>.+?)(?:\.\s*In:\s*(?P<container>.+?))?\s*\((?P<year>(?:19|20)\d{2})\)\s*\.?$",
+        r"^(?P<authors>.+?):\s*(?P<title>.+?)(?:\.\s*In:\s*(?P<container>.+?))?\s*\((?P<year>(?:19|20)\d{2})[a-z]?\)\s*\.?$",
         text,
     )
     if match is None:
@@ -927,7 +992,7 @@ def _candidate_authors_period_title_period_venue_year(entry_index: int, text: st
 
 def _candidate_authors_year_paren_title_venue(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
     match = re.match(
-        r"^(?P<authors>.+?)\s*\((?P<year>(?:19|20)\d{2})\)\.?\s+(?P<title>.+?)(?:\.\s+(?P<container>.+))?$",
+        r"^(?P<authors>.+?)\s*\((?P<year>(?:19|20)\d{2})[a-z]?\)\.?\s+(?P<title>.+?)(?:\.\s+(?P<container>.+))?$",
         text,
     )
     if match is None:
@@ -1029,11 +1094,171 @@ def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]
     return candidates
 
 
+def _detect_reference_entry_style(entries: list[dict[str, Any]]) -> str:
+    numeric_count = 0
+    author_year_count = 0
+    for entry in entries:
+        metadata = dict(entry.get("metadata", {}))
+        if metadata.get("detected_ref_number") is not None:
+            numeric_count += 1
+        if _ends_with_reference_tail(str(entry.get("raw", ""))):
+            author_year_count += 1
+    if numeric_count and author_year_count:
+        return "mixed"
+    if numeric_count:
+        return "numeric"
+    if author_year_count:
+        return "author-year"
+    return "mixed"
+
+
+def _detect_reference_grouping_suspicions(
+    *,
+    entries: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    entry_style: str,
+) -> list[dict[str, Any]]:
+    candidates_by_entry: dict[int, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        candidates_by_entry.setdefault(int(candidate["entry_index"]), []).append(candidate)
+
+    suspicions: list[dict[str, Any]] = []
+    for entry in entries:
+        entry_index = int(entry["entry_index"])
+        raw = str(entry.get("raw", ""))
+        reasons: list[str] = []
+        tail_count = _count_reference_tail_markers(raw)
+        publication_year_count = len(list(TERMINAL_PUBLICATION_YEAR_RE.finditer(raw)))
+        if tail_count > 1:
+            reasons.append(f"multiple terminal year tails detected ({tail_count})")
+        if publication_year_count > 1:
+            reasons.append(f"multiple publication-year markers detected ({publication_year_count})")
+        if entry_style in {"author-year", "mixed"} and len(raw) > 450:
+            reasons.append("entry text is unusually long for a single author-year reference")
+        for candidate in candidates_by_entry.get(entry_index, []):
+            combined = _normalize_reference_entry_text(
+                f"{candidate.get('title_candidate', '')} {candidate.get('container_candidate', '')}"
+            )
+            combined_tail_count = _count_reference_tail_markers(combined)
+            if combined_tail_count > 0 and len(raw) > 180:
+                reasons.append(
+                    "candidate title/container still contains another reference-like tail; likely grouped entries remain"
+                )
+                break
+        if reasons:
+            suspicions.append(
+                {
+                    "entry_index": entry_index,
+                    "raw": raw,
+                    "reasons": reasons,
+                }
+            )
+    return suspicions
+
+
+def _build_reference_batches(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    batches: list[dict[str, Any]] = []
+    if entries:
+        chunk_size = 15
+        for batch_index, start in enumerate(range(0, len(entries), chunk_size)):
+            end = min(start + chunk_size - 1, len(entries) - 1)
+            batches.append(
+                {
+                    "batch_kind": "references_workset",
+                    "batch_index": batch_index,
+                    "status": "prepared",
+                    "entry_start": start,
+                    "entry_end": end,
+                    "metadata": {"entry_count": end - start + 1},
+                }
+            )
+    return batches
+
+
+def _replace_reference_workset(
+    connection,
+    *,
+    entries: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    batches: list[dict[str, Any]],
+) -> None:  # type: ignore[no-untyped-def]
+    store_reference_entries(connection, entries)
+    connection.execute("DELETE FROM reference_batches")
+    for batch in batches:
+        store_reference_batch(
+            connection,
+            batch_kind=str(batch["batch_kind"]),
+            batch_index=int(batch["batch_index"]),
+            status=str(batch["status"]),
+            entry_start=int(batch["entry_start"]),
+            entry_end=int(batch["entry_end"]),
+            metadata=dict(batch.get("metadata", {})),
+        )
+    store_reference_parse_candidates(connection, candidates)
+
+
+def _prepare_reference_workset_state(
+    *,
+    lines: list[str],
+    scope: Scope,
+    reviewed_raw_entries: list[str] | None = None,
+) -> dict[str, Any]:
+    if reviewed_raw_entries is None:
+        entries = _split_reference_entries(lines, scope)
+    else:
+        entries = [
+            {
+                "entry_index": entry_index,
+                "raw": _normalize_reference_entry_text(raw),
+                "line_start": scope.line_start,
+                "line_end": scope.line_end,
+            }
+            for entry_index, raw in enumerate(reviewed_raw_entries)
+            if _normalize_reference_entry_text(raw)
+        ]
+    normalized_entries, numbering_warnings, has_numbering_anomaly = _detect_reference_numbering(entries)
+    candidates: list[dict[str, Any]] = []
+    ambiguity_warnings: list[str] = []
+    boundary_warnings: list[str] = []
+    for entry in normalized_entries:
+        entry_candidates = _generate_reference_candidates(entry)
+        if len(entry_candidates) > 1:
+            ambiguity_warnings.append(f"{WARNING_REFERENCE_PATTERN_AMBIGUOUS}: entry_index={entry['entry_index']}")
+        for candidate in entry_candidates:
+            title_candidate = str(candidate.get("title_candidate", "")).strip()
+            if not title_candidate or LEADING_PUNCTUATION_RE.match(title_candidate):
+                boundary_warnings.append(
+                    f"{WARNING_REFERENCE_TITLE_BOUNDARY_SUSPECT}: entry_index={entry['entry_index']} pattern={candidate['pattern']}"
+                )
+            candidates.append(candidate)
+    entry_style = _detect_reference_entry_style(normalized_entries)
+    suspect_entries = _detect_reference_grouping_suspicions(entries=normalized_entries, candidates=candidates, entry_style=entry_style)
+    grouping_warnings = [
+        f"{WARNING_REFERENCE_ENTRY_GROUPING_SUSPECT}: entry_index={entry['entry_index']}"
+        for entry in suspect_entries
+    ]
+    batches = _build_reference_batches(normalized_entries)
+    return {
+        "entries": normalized_entries,
+        "candidates": candidates,
+        "batches": batches,
+        "entry_style": entry_style,
+        "suspect_entries": suspect_entries,
+        "requires_split_review": bool(suspect_entries),
+        "numbering_warnings": numbering_warnings,
+        "has_numbering_anomaly": has_numbering_anomaly,
+        "warnings": list(dict.fromkeys([*numbering_warnings, *ambiguity_warnings, *boundary_warnings, *grouping_warnings])),
+    }
+
+
 def _build_reference_workset_export(
     *,
     entries: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
     batches: list[dict[str, Any]],
+    entry_style: str,
+    suspect_entries: list[dict[str, Any]],
+    requires_split_review: bool,
 ) -> dict[str, Any]:
     candidates_by_entry: dict[int, list[dict[str, Any]]] = {}
     for candidate in candidates:
@@ -1057,15 +1282,20 @@ def _build_reference_workset_export(
             "entry_count": len(export_entries),
             "candidate_count": len(candidates),
             "batch_count": len(batches),
+            "entry_style": entry_style,
+            "grouping_suspect_count": len(suspect_entries),
+            "requires_split_review": requires_split_review,
         },
         "entries": export_entries,
         "batches": batches,
+        "suspect_entries": suspect_entries,
     }
 
 
 def _build_reference_review_view(workset_payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "meta": dict(workset_payload.get("meta", {})),
+        "suspect_entries": list(workset_payload.get("suspect_entries", [])),
         "entries": [
             {
                 "entry_index": entry.get("entry_index"),
@@ -2581,62 +2811,37 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
             connection.commit()
             print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
             return 2
-        entries = _split_reference_entries(lines, scope)
-        normalized_entries, numbering_warnings, has_numbering_anomaly = _detect_reference_numbering(entries)
-        candidates: list[dict[str, Any]] = []
-        ambiguity_warnings: list[str] = []
-        boundary_warnings: list[str] = []
-        for entry in normalized_entries:
-            entry_candidates = _generate_reference_candidates(entry)
-            if len(entry_candidates) > 1:
-                ambiguity_warnings.append(f"{WARNING_REFERENCE_PATTERN_AMBIGUOUS}: entry_index={entry['entry_index']}")
-            for candidate in entry_candidates:
-                title_candidate = str(candidate.get("title_candidate", "")).strip()
-                if not title_candidate or LEADING_PUNCTUATION_RE.match(title_candidate):
-                    boundary_warnings.append(f"{WARNING_REFERENCE_TITLE_BOUNDARY_SUSPECT}: entry_index={entry['entry_index']} pattern={candidate['pattern']}")
-                candidates.append(candidate)
-        batches: list[dict[str, Any]] = []
-        if normalized_entries:
-            chunk_size = 15
-            for batch_index, start in enumerate(range(0, len(normalized_entries), chunk_size)):
-                end = min(start + chunk_size - 1, len(normalized_entries) - 1)
-                batches.append(
-                    {
-                        "batch_kind": "references_workset",
-                        "batch_index": batch_index,
-                        "status": "prepared",
-                        "entry_start": start,
-                        "entry_end": end,
-                        "metadata": {"entry_count": end - start + 1},
-                    }
-                )
-        store_reference_entries(connection, normalized_entries)
-        for batch in batches:
-            store_reference_batch(
-                connection,
-                batch_kind=str(batch["batch_kind"]),
-                batch_index=int(batch["batch_index"]),
-                status=str(batch["status"]),
-                entry_start=int(batch["entry_start"]),
-                entry_end=int(batch["entry_end"]),
-                metadata=dict(batch.get("metadata", {})),
-            )
-        store_reference_parse_candidates(connection, candidates)
-        for warning in [*numbering_warnings, *ambiguity_warnings, *boundary_warnings]:
+        prepared = _prepare_reference_workset_state(lines=lines, scope=scope)
+        normalized_entries = list(prepared["entries"])
+        candidates = list(prepared["candidates"])
+        batches = list(prepared["batches"])
+        numbering_warnings = list(prepared["numbering_warnings"])
+        warnings = list(prepared["warnings"])
+        suspect_entries = list(prepared["suspect_entries"])
+        requires_split_review = bool(prepared["requires_split_review"])
+        _replace_reference_workset(connection, entries=normalized_entries, candidates=candidates, batches=batches)
+        for warning in warnings:
             add_runtime_warning_once(connection, warning)
         metadata = dict(source_doc.get("metadata", {}))
-        metadata["reference_numbering_reliability"] = "low" if has_numbering_anomaly else "high"
+        metadata["reference_numbering_reliability"] = "low" if prepared["has_numbering_anomaly"] else "high"
         store_source_document(connection, doc_key="normalized_source", content=str(source_doc["content"]), metadata=metadata)
         _set_success_state(
             connection,
             stage="stage_4_references",
-            substep="persist_references",
-            next_action="persist_references",
-            status="reference workset prepared",
+            substep="persist_reference_entry_splits" if requires_split_review else "persist_references",
+            next_action="persist_reference_entry_splits" if requires_split_review else "persist_references",
+            status="reference entry split review required" if requires_split_review else "reference workset prepared",
         )
         connection.commit()
 
-    workset_payload = _build_reference_workset_export(entries=normalized_entries, candidates=candidates, batches=batches)
+    workset_payload = _build_reference_workset_export(
+        entries=normalized_entries,
+        candidates=candidates,
+        batches=batches,
+        entry_style=str(prepared["entry_style"]),
+        suspect_entries=suspect_entries,
+        requires_split_review=requires_split_review,
+    )
     review_payload = _build_reference_review_view(workset_payload)
     if not args.persist_db_only:
         _write_json(out_path, workset_payload)
@@ -2647,9 +2852,141 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
                 "stored_reference_entries": len(normalized_entries),
                 "stored_reference_candidates": len(candidates),
                 "numbering_warnings": numbering_warnings,
-                "warnings": list(dict.fromkeys([*numbering_warnings, *ambiguity_warnings, *boundary_warnings])),
+                "warnings": warnings,
                 "workset_path": str(out_path) if not args.persist_db_only else "",
                 "review_path": str(review_path) if not args.persist_db_only else "",
+                "entry_style": str(prepared["entry_style"]),
+                "grouping_suspect_count": len(suspect_entries),
+                "requires_split_review": requires_split_review,
+                "suspect_entries": suspect_entries,
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _canonical_reference_scope_text(lines: list[str], scope: Scope) -> str:
+    scoped_lines, _ = _scope_lines_without_heading(lines, scope)
+    return _normalize_reference_entry_text(" ".join(line.strip() for line in scoped_lines if line.strip()))
+
+
+def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    out_path = Path(args.out_path) if args.out_path else Path.cwd() / TMP_DIRNAME / REFERENCES_EXPORT_FILENAME
+    review_path = out_path.with_name(
+        REFERENCES_REVIEW_EXPORT_FILENAME if out_path.name == REFERENCES_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}"
+    )
+    payload = _read_json_payload(args.payload_file)
+    entries_payload = payload.get("entries", [])
+    with connect_db(db_path) as connection:
+        source_doc = fetch_source_document(connection, "normalized_source")
+        scope_row = fetch_section_scope(connection, "references_scope")
+        if source_doc is None or scope_row is None:
+            message = "reference split review requires normalized_source and references_scope"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        if not isinstance(entries_payload, list) or not entries_payload:
+            message = "entries must be a non-empty array of reviewed raw reference entries"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        scope = _db_scope_to_scope(scope_row)
+        lines = str(source_doc["content"]).splitlines()
+        canonical_source = _canonical_reference_scope_text(lines, scope)
+        reviewed_raw_entries: list[str] = []
+        for index, entry in enumerate(entries_payload):
+            if not isinstance(entry, dict):
+                message = f"entries[{index}] must be object"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            raw = _normalize_reference_entry_text(str(entry.get("raw", "")))
+            if not raw:
+                message = f"entries[{index}].raw must be non-empty"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            entry_index = entry.get("entry_index")
+            normalized_entry_index = entry_index if isinstance(entry_index, int) else -1
+            if normalized_entry_index != index:
+                message = f"entries[{index}].entry_index must equal its 0-based position after re-splitting"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            reviewed_raw_entries.append(raw)
+        canonical_review = _normalize_reference_entry_text(" ".join(reviewed_raw_entries))
+        if canonical_review != canonical_source:
+            message = "reviewed entries must preserve the original references scope text exactly, changing only entry boundaries"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+            return 2
+
+        prepared = _prepare_reference_workset_state(lines=lines, scope=scope, reviewed_raw_entries=reviewed_raw_entries)
+        suspect_entries = list(prepared["suspect_entries"])
+        if suspect_entries:
+            message = "reviewed entries still contain grouped-reference suspicion; split each raw entry into single references before persisting"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            for warning in prepared["warnings"]:
+                add_runtime_warning_once(connection, warning)
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "error": {"code": "reference_entry_splitting_failed", "message": message},
+                        "suspect_entries": suspect_entries,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
+        normalized_entries = list(prepared["entries"])
+        candidates = list(prepared["candidates"])
+        batches = list(prepared["batches"])
+        _replace_reference_workset(connection, entries=normalized_entries, candidates=candidates, batches=batches)
+        for warning in prepared["warnings"]:
+            add_runtime_warning_once(connection, warning)
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep="persist_references",
+            next_action="persist_references",
+            status="reference entries re-split and candidates regenerated",
+        )
+        connection.commit()
+
+    workset_payload = _build_reference_workset_export(
+        entries=normalized_entries,
+        candidates=candidates,
+        batches=batches,
+        entry_style=str(prepared["entry_style"]),
+        suspect_entries=[],
+        requires_split_review=False,
+    )
+    review_payload = _build_reference_review_view(workset_payload)
+    if not args.persist_db_only:
+        _write_json(out_path, workset_payload)
+        _write_json(review_path, review_payload)
+    print(
+        json.dumps(
+            {
+                "stored_reference_entries": len(normalized_entries),
+                "stored_reference_candidates": len(candidates),
+                "warnings": list(prepared["warnings"]),
+                "workset_path": str(out_path) if not args.persist_db_only else "",
+                "review_path": str(review_path) if not args.persist_db_only else "",
+                "entry_style": str(prepared["entry_style"]),
+                "grouping_suspect_count": 0,
+                "requires_split_review": False,
                 "error": None,
             },
             ensure_ascii=False,
@@ -3307,6 +3644,13 @@ def build_parser() -> argparse.ArgumentParser:
     references_workset.add_argument("--out", dest="out_path", default="")
     references_workset.add_argument("--persist-db-only", action="store_true")
     references_workset.set_defaults(handler=_handle_prepare_references_workset)
+
+    reference_splits = subparsers.add_parser("persist_reference_entry_splits")
+    reference_splits.add_argument("--db-path", default="")
+    reference_splits.add_argument("--payload-file", default="")
+    reference_splits.add_argument("--out", dest="out_path", default="")
+    reference_splits.add_argument("--persist-db-only", action="store_true")
+    reference_splits.set_defaults(handler=_handle_persist_reference_entry_splits)
 
     references = subparsers.add_parser("persist_references")
     references.add_argument("--db-path", default="")

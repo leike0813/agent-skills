@@ -164,12 +164,16 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 
 ## References 阶段持久化要求
 
-按 `SKILL.md` 的“参数词表（全项目统一）”定义，本阶段已经改成两段式：
+按 `SKILL.md` 的“参数词表（全项目统一）”定义，本阶段已经改成“正常直通、异常复核”的双路径：
 
 1. `prepare_references_workset`
    - 脚本从 `source_documents.normalized_source` 与 `section_scopes.references_scope` 中切分 raw entry
    - 脚本为每个 `entry` 生成多组 `patterns[]` 候选，并写入 `reference_parse_candidates`
-2. `persist_references`
+   - 若 deterministic splitting 后仍有 grouped-entry 风险，脚本会返回 `requires_split_review=true`
+2. `persist_reference_entry_splits`（仅在 `requires_split_review=true` 时出现）
+   - agent 只复核 raw entry 边界，不抽 `author/title/year`
+   - `entries[*].raw` 必须保持原文顺序与原文文本，只允许改变分条边界
+3. `persist_references`
    - agent 只在候选中选择 `selected_pattern`
    - agent 在选中候选的基础上 refine 完整 `author[] / title / year`
    - 脚本校验后写入最终 `reference_items`
@@ -211,6 +215,60 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 - `raw`
 - `pattern_summaries`
 
+脚本还会额外输出：
+
+- `entry_style`
+- `grouping_suspect_count`
+- `requires_split_review`
+- `suspect_entries`
+
+其中 `requires_split_review=true` 表示当前 workset 仍可能把多条著录 grouped 在单个 `raw` 中，此时不得直接进入 `persist_references`。
+
+### author-year 段落式 references 额外规则
+
+对 author-year bibliography，脚本不能只依赖空行切分。若 references 中出现“多条 `Author. Title. Venue, Year.` 连续排在一个段落或少数段落中”的情况，脚本必须：
+
+- 先按单行尾部 year 标记尽量拆出单条著录
+- 再检查单个 `raw` 中是否仍残留多个 year-tail
+- 若仍可疑，则把该条目放入 `suspect_entries` 并要求进入 `persist_reference_entry_splits`
+
+允许的 year-tail 至少包括：
+
+- `2020.`
+- `2017a.`
+- `2017b.`
+- `(2020).`
+- `In ECCV, 2020.`
+- `arXiv preprint arXiv:2004.08483, 2020.`
+
+对真实运行中常见的 author-year references 段落，正确结果应是“每条文献独立成一个 `entry`”，而不是把整段 5-20 条著录吞成一个大块。
+
+### `persist_reference_entry_splits` 结构化复核契约
+
+本阶段输入必须是结构化 payload：
+
+```json
+{
+  "entries": [
+    {
+      "entry_index": 0,
+      "raw": "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020."
+    },
+    {
+      "entry_index": 1,
+      "raw": "Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150, 2020."
+    }
+  ]
+}
+```
+
+要求：
+
+- 这一步只修 entry boundary，不抽 `author[] / title / year`
+- `entries[*].entry_index` 必须等于复核后的 0-based 顺序位置
+- 全部 `entries[*].raw` 规范化后连接起来，必须与原始 references scope 文本完全一致
+- 若复核后仍残留 grouped-entry suspicion，脚本必须以 `reference_entry_splitting_failed` 阻断本阶段
+
 ### `persist_references` 结构化持久化契约
 
 本阶段输入必须是结构化 payload：
@@ -241,6 +299,7 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 - `ref_index` 由脚本按 `entry_index` 稳定生成
 - references 范围只能来自 `section_scopes.references_scope`，不得在本阶段重新显式传入 scope
 - merge 失败时不得发布最终 `references.json`
+- 若 `prepare_references_workset` 已返回 `requires_split_review=true`，必须先执行 `persist_reference_entry_splits`
 - 若 `selected_pattern` 缺失、无效，或 `title` 以前导逗号/句点/分号/冒号开头，必须直接失败
 - 保守模式现在是 candidate 级：可以先保住 `author_text` 边界稳定，但最终 `author[]` 仍应尽量完整，不能默认只留第一作者
 - 若 `pattern_candidate.author_candidates` 已经给出稳定作者边界，最终 `author[]` 必须保持同级边界；允许轻微规范化，但不得把 `Gu, J.`、`Al-Rfou, R.` 这类作者再次拆成多个数组元素

@@ -36,6 +36,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
 - `persist_outline_and_scopes`
 - `persist_digest`
 - `prepare_references_workset`
+- `persist_reference_entry_splits`
 - `persist_references`
 - `prepare_citation_workset`
 - `persist_citation_semantics`
@@ -419,6 +420,12 @@ python scripts/stage_runtime.py prepare_references_workset \
   - 写入 `reference_parse_candidates` 的候选总数
 - `warnings`
   - 编号异常、pattern 歧义、title 边界可疑等 warning 列表
+- `entry_style`
+  - 当前 references workset 的著录风格：`numeric` / `author-year` / `mixed`
+- `requires_split_review`
+  - 若为 `true`，说明 deterministic splitting 之后仍存在 grouped-entry 风险，下一步必须先执行 `persist_reference_entry_splits`
+- `suspect_entries`
+  - 仍可能包含多条著录的 raw entry 及原因说明
 
 ### 最小合法示例
 
@@ -444,6 +451,10 @@ python scripts/stage_runtime.py prepare_references_workset --payload-file /tmp/r
   "warnings": ["reference_pattern_ambiguous: entry_index=0"],
   "workset_path": "/tmp/references_workset.json",
   "review_path": "/tmp/references_workset_review.json",
+  "entry_style": "numeric",
+  "grouping_suspect_count": 0,
+  "requires_split_review": false,
+  "suspect_entries": [],
   "error": null
 }
 ```
@@ -453,6 +464,95 @@ python scripts/stage_runtime.py prepare_references_workset --payload-file /tmp/r
 - `references_scope` 缺失或越界
 - 标准化文本中 references 区块为空
 - 误以为脚本只会保留一个“最像”的 pattern
+- author-year bibliography 中多条著录仍被 grouped 成单条 entry，但未先进入 split review
+
+## `persist_reference_entry_splits`
+
+### 命令
+
+```bash
+python scripts/stage_runtime.py persist_reference_entry_splits \
+  [--db-path PATH] \
+  [--payload-file FILE] \
+  [--out PATH] \
+  [--persist-db-only]
+```
+
+### 支持的输入方式
+
+- `--payload-file FILE`
+- stdin JSON
+
+### Payload 顶层结构
+
+```json
+{
+  "entries": []
+}
+```
+
+### 字段说明
+
+- `entries`
+  - 必填。复核后的单条 raw references 条目数组。
+  - 每项至少应包含：`entry_index`、`raw`。
+  - `entry_index` 必须等于数组中的 0-based 顺序位置。
+  - `raw` 只能调整条目边界，不能改写原文文本。
+  - 全部 `entries[*].raw` 连接后的规范化文本必须与原始 references scope 完全一致。
+
+### 最小合法示例
+
+```json
+{
+  "entries": [
+    {
+      "entry_index": 0,
+      "raw": "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020."
+    },
+    {
+      "entry_index": 1,
+      "raw": "Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150, 2020."
+    }
+  ]
+}
+```
+
+### 典型非法示例
+
+```json
+{
+  "entries": [
+    {
+      "entry_index": 0,
+      "raw": "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020."
+    }
+  ]
+}
+```
+
+原因：只保留了部分 references scope 文本，脚本会以 `reference_entry_splitting_failed` 拒绝。
+
+### 成功输出
+
+```json
+{
+  "stored_reference_entries": 2,
+  "stored_reference_candidates": 6,
+  "warnings": [],
+  "workset_path": "/tmp/references_workset.json",
+  "review_path": "/tmp/references_workset_review.json",
+  "entry_style": "author-year",
+  "grouping_suspect_count": 0,
+  "requires_split_review": false,
+  "error": null
+}
+```
+
+### 常见失败原因
+
+- 跳过条目、乱序或改写 raw 文本
+- 复核后仍把多条著录 grouped 在一个 `raw` 里
+- 在这一步就开始抽 `author` / `title` / `year`
 
 ## `persist_references`
 

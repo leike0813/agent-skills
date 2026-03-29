@@ -109,6 +109,7 @@ stdout 只输出一个 JSON 对象，字段固定为：
 - `persist_outline_and_scopes`
 - `persist_digest`
 - `prepare_references_workset`
+- `persist_reference_entry_splits`
 - `persist_references`
 - `prepare_citation_workset`
 - `persist_citation_semantics`
@@ -197,6 +198,9 @@ gate 至少检查这些关键前置：
 - `stage_4_references`
   - `source_documents.normalized_source`
   - `section_scopes.references_scope`
+  - 当 `next_action = persist_reference_entry_splits` 时，还要求：
+    - `reference_entries`
+    - `reference_parse_candidates`
   - 当 `next_action = persist_references` 时，还要求：
     - `reference_entries`
     - `reference_parse_candidates`
