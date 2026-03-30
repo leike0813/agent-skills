@@ -1,102 +1,122 @@
 # Stage 3 Playbook
 
-本文件只展开 Stage 3。全局约束、脚本职责和阶段门禁以 `SKILL.md` 为准。
+Stage 3 对应 `stage_3_target_settings`。
 
-## 适用范围
+## 正式写库动作
 
-- 本 playbook 只处理风格画像、问题诊断和目标稿风格指导。
-- Stage 3 的正式真源是 `.paper-condenser-tmp/<document-slug>/style-profile.md`。
-- 本阶段不新增脚本，也不修改 `style-profile.md` 的四段模板结构。
+1. `persist_target_settings_basics`
+2. `persist_content_selection_board`
+3. `confirm_content_selection`
+4. `finalize_target_settings`
 
-## 子步骤顺序
+## 1. `persist_target_settings_basics`
 
-### 1. 进入 Stage 3
+### Payload 要求
 
-- 前置条件：
-  - Stage 1 已完成。
-  - `target-settings.json` 已完成整组确认，且 `user_confirmed=true`。
-- 操作：
-  - 基于原稿理解与目标设置，判断当前需要保留哪些原稿风格特征、纠正哪些问题。
+- `target_language`
+- `target_form`
+- `target_journal_type`
+- `latex_template_id`
+- `target_body_length`
+- `figure_table_preference`
+- `reference_handling_preference`
 
-### 2. Source Style 观察
+可选：
 
-- 输入：
-  - 原稿文本
-  - Stage 1 的原稿理解
-  - Stage 2 的目标设置
-- 操作：
-  - 记录原稿的表达风格、句式习惯、论述密度、结构节奏、常用措辞和已有优点。
-  - 记录 caption、table title、citation sentence 和 references presentation 的既有习惯。
-- 应写入章节：
-  - `## Source Style`
+- `pending_confirmations`
 
-### 3. Problems To Fix 诊断
+### 作用
 
-- 操作：
-  - 识别需要纠偏的风格、规范、语气或表达问题。
-  - 单独识别图题、表题、引文引入句和参考文献呈现方式中的问题。
-  - 区分“应保留的特色”和“应纠正的问题”。
-- 应写入章节：
-  - `## Problems To Fix`
+- 先固定 Stage 3 的机械目标设置
+- 暂不在这一步要求用户同时完成内容取舍三列表
 
-### 4. Target Style Guidance 形成
+## 2. `persist_content_selection_board`
 
-- 操作：
-  - 给出面向目标稿的可执行写作原则。
-  - 把 supporting elements 的表达方式也转化为写作层面的指导。
-  - 将 Stage 2 的目标设置转化为写作层面的风格指导，而不是停留在抽象偏好。
-- 应写入章节：
-  - `## Target Style Guidance`
+### Payload 要求
 
-### 5. Open Questions 收敛
+- `items`
 
-- 操作：
-  - 把仍未确认的风格偏好、语气边界或表达规范选择写入 `Open Questions`。
-  - 若当前没有未决项，也保留该章节。
-- 应写入章节：
-  - `## Open Questions`
+每个建议项至少包含：
 
-## 必问条件
+- `item_id`
+- `bucket`
+- `title`
+- `summary`
+- `rationale`
+- `semantic_unit_ids`
 
-- 当前存在多种合理的风格方向，但无法判断用户偏好。
-- 语气边界、表达规范或修辞程度会明显影响最终成稿。
-- 某项原稿风格缺陷是否应保留、弱化或完全去除，需要用户拍板。
+### 作用
 
-## 禁止提问条件
+- 基于 `semantic_source_units` 生成三份建议列表：
+  - `must_keep`
+  - `simplify_first`
+  - `must_avoid`
+- 每项都必须是语义聚合内容，而不是机械段落映射
+- 每项都必须能回溯到 semantic unit，再间接回溯到 raw segments
 
-- 不得在 Stage 3 提前讨论重点/非重点。
-- 不得在 Stage 3 提前讨论目标大纲。
-- 不得在 Stage 3 提前讨论篇幅分配。
-- 不得在 Stage 3 提前讨论删改策略。
+## 3. `confirm_content_selection`
 
-## 常见失败场景
+### Payload 要求
 
-### 只有观察，没有指导
+- `items`
 
-- 表现：
-  - 只总结了原稿是什么风格，但没有写需要修正的问题和目标指导
-- 处理：
-  - 补齐 `Problems To Fix`
-  - 补齐 `Target Style Guidance`
+每个确认项至少包含：
 
-### 未决问题留在对话里
+- `item_id`
+- `bucket`
+- `title`
+- `summary`
+- `rationale`
+- `semantic_unit_ids`
 
-- 表现：
-  - 对话里已经提到风格偏好不确定，但 `Open Questions` 为空或未更新
-- 处理：
-  - 立即把未决项写回 `Open Questions`
+可选：
 
-### 提前进入 Stage 4
+- `note`
 
-- 表现：
-  - 在 Stage 3 中已经开始讨论重点/非重点、目标大纲或篇幅分配
-- 处理：
-  - 停止方案收敛
-  - 先完成 `style-profile.md` 四个章节
+### 作用
 
-## Stage 4 交接检查清单
+- 接收用户对三份建议列表的确认或调整
+- 支持：
+  - 直接接受已有建议
+  - 在三类 bucket 间移动项目
+  - 删除项目
+  - 新增用户自定义项目
+- 最终确认结果会汇总回 `target_settings.must_keep` / `simplify_first` / `must_avoid`
 
-- `Source Style` 已写入原稿风格特征
-- `Problems To Fix` 已写入明确问题
-- `Target Style Guidance` 已写入可执行指导
-- `Open Questions` 已显式保留并记录未决风格问题
+## 4. `finalize_target_settings`
+
+### Payload 要求
+
+- `user_confirmed=true`
+
+可选：
+
+- `pending_confirmations`
+
+### 作用
+
+- 完成 Stage 3 总确认
+- 只有内容取舍三列表确认后，才允许把 `user_confirmed` 置为 `true`
+
+## 渲染视图
+
+- `03-target-settings.md`
+- `11-content-selection-board.md`
+
+## 执行规则
+
+- Stage 3 的正确顺序固定为：
+  1. 基本目标设置
+  2. 内容取舍建议板
+  3. 用户确认 / 调整三列表
+  4. 最终确认
+- gate 不允许跳过内容取舍建议板直接完成 Stage 3。
+- `simplify_first` 是正式列表，和 `must_keep` / `must_avoid` 同级，不得被当作 `must_avoid` 处理。
+
+## 完成标准
+
+- 基本目标设置已写库
+- 内容取舍建议板已生成
+- 三类列表已确认并汇总回 `target_settings`
+- `user_confirmed=true`
+- 无该阶段残留 `pending_confirmations`

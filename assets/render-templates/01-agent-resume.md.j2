@@ -1,0 +1,43 @@
+# Agent Resume
+
+## Runtime
+- Artifact root: `{{ runtime.artifact_root }}`
+- DB path: `{{ runtime.db_path }}`
+- Workflow stage: `{{ runtime.workflow_stage }}`
+- Next action: `{{ runtime.next_action }}`
+
+## Source
+- Source path: `{{ source.source_path }}`
+- Source type: `{{ source.source_type }}`
+
+## Blockers
+{% if blockers %}
+{% for item in blockers %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- 无 blocker
+{% endif %}
+
+## Pending Confirmations
+{% if pending_confirmations %}
+{% for item in pending_confirmations %}
+- [{{ item.stage_name }}] {{ item.item_key }}: {{ item.prompt }}
+{% endfor %}
+{% else %}
+- 无待确认事项
+{% endif %}
+
+## Instruction Refs
+{% if instruction_refs %}
+{% for item in instruction_refs %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- 无
+{% endif %}
+
+## Rendered Views
+{% for item in rendered_views %}
+- {{ item.name }}: `{{ item.path }}`
+{% endfor %}

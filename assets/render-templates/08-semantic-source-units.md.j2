@@ -1,0 +1,35 @@
+# Semantic Source Units
+
+## Summary
+- Unit count: {{ units|length }}
+
+{% if units %}
+{% for item in units %}
+## {{ item.unit_order }}. {{ item.unit_title }}
+- Unit id: `{{ item.unit_id }}`
+- Kind: `{{ item.unit_kind }}`
+- Status: `{{ item.status }}`
+- Summary: {{ item.summary }}
+
+### Raw Members
+{% if item.member_segments %}
+{% for member in item.member_segments %}
+- `{{ member.segment_id }}` | {{ member.segment_kind }} | role={{ member.scope_role }} | bucket=`{{ member.scope_bucket_id }}`{% if member.scope_label %} | {{ member.scope_label }}{% endif %}{% if member.heading_context %} | {{ member.heading_context }}{% endif %} | {{ member.source_text_preview }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Supporting Elements
+{% if item.elements %}
+{% for element in item.elements %}
+- {{ element.element_kind }}: `{{ element.element_ref }}`{% if element.usage_note %} | {{ element.usage_note }}{% endif %}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}

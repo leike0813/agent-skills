@@ -1,0 +1,15 @@
+# Section Drafting Board
+
+## Runtime
+- Active section id: `{{ runtime.active_section_id or "" }}`
+- Current substep: `{{ runtime.current_substep or "" }}`
+- Next action: `{{ runtime.next_action }}`
+
+## Sections
+{% if sections %}
+{% for item in sections %}
+- [{{ item.section_order }}] {{ item.section_title }} | status=`{{ item.plan_status }}` | review=`{{ item.review_status }}` | count=`{{ item.actual_count_value }}` / {{ item.planned_count_value }} {{ item.count_unit }} | check=`{{ item.count_check_status }}` | semantic-units={{ item.semantic_source_count }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}

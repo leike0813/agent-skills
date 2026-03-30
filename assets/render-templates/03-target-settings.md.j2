@@ -1,0 +1,42 @@
+# Target Settings
+
+- User confirmed: `{{ settings.user_confirmed }}`
+
+## Core Settings
+- Target language: {{ settings.target_language or "（空）" }}
+- Target form: {{ settings.target_form or "（空）" }}
+- Target journal type: {{ settings.target_journal_type or "（空）" }}
+- LaTeX template id: {{ settings.latex_template_id or "（空）" }}
+- Target body length: {{ settings.target_body_length_display or "（空）" }}
+- Figure/table preference: {{ settings.figure_table_preference or "（空）" }}
+- Reference handling preference: {{ settings.reference_handling_preference or "（空）" }}
+- Basics completed: `{{ settings.basics_completed }}`
+- Content-selection board ready: `{{ settings.content_selection_board_ready }}`
+- Content-selection confirmed: `{{ settings.content_selection_confirmed }}`
+
+## Must Keep
+{% if settings.must_keep %}
+{% for item in settings.must_keep %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+## Simplify First
+{% if settings.simplify_first %}
+{% for item in settings.simplify_first %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+## Must Avoid
+{% if settings.must_avoid %}
+{% for item in settings.must_avoid %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}

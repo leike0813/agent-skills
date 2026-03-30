@@ -1,0 +1,60 @@
+# Section Rewrite Plan
+
+## Summary
+- Planned sections: {{ sections|length }}
+
+{% for item in sections %}
+## {{ item.section_order }}. {{ item.section_title }}
+- Section id: `{{ item.section_id }}`
+- Planned count: {{ item.planned_count_value }} {{ item.count_unit }}
+- Tolerance: ±{{ item.tolerance_percent }}%
+- Status: `{{ item.status }}`
+
+### Must Cover
+{% if item.must_cover %}
+{% for cover in item.must_cover %}
+- {{ cover }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Simplify First
+{% if item.simplify_first %}
+{% for simplify in item.simplify_first %}
+- {{ simplify }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Must Avoid
+{% if item.must_avoid %}
+{% for avoid in item.must_avoid %}
+- {{ avoid }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Source Bindings
+{% if item.sources_expanded %}
+{% for source in item.sources_expanded %}
+- {{ source.source_kind }}: `{{ source.source_ref }}`{% if source.usage_note %} | {{ source.usage_note }}{% endif %}
+{% if source.semantic_unit is defined %}
+  Unit title: {{ source.semantic_unit.unit_title }}
+  Summary: {{ source.semantic_unit.summary }}
+  Raw members: {% if source.semantic_unit.member_segment_ids %}`{{ source.semantic_unit.member_segment_ids | join('`, `') }}`{% else %}（空）{% endif %}
+{% if source.semantic_unit.member_segments %}
+  Scope composition:
+{% for member in source.semantic_unit.member_segments %}
+    - `{{ member.segment_id }}` | {{ member.scope_role }} | `{{ member.scope_bucket_id }}`{% if member.scope_label %} | {{ member.scope_label }}{% endif %}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+{% endfor %}

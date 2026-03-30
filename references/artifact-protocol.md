@@ -1,306 +1,177 @@
 # Artifact Protocol
 
-所有运行态工件都放在当前项目目录下的 `.paper-condenser-tmp/<document-slug>/` 中。`<document-slug>` 默认基于原稿文件名生成；如果文件名不稳定或不适合作为标识，要求用户提供一个短名称。
-
-## manuscript-profile.json
-
-### 用途
-
-- 保存原稿事实层信息和提炼性判断。
-
-### 最小字段
-
-```json
-{
-  "source_id": "",
-  "source_path": "",
-  "source_type": "",
-  "scope": "",
-  "content_preview": "",
-  "source_stats": {
-    "char_count": 0,
-    "line_count": 0,
-    "file_size_bytes": 0
-  },
-  "intake_status": "pending",
-  "supporting_elements_status": "pending",
-  "supporting_elements": {
-    "figures": [],
-    "tables": [],
-    "citations": [],
-    "bibliography": {
-      "mode": "none",
-      "resources": [],
-      "entries": []
-    }
-  },
-  "topic": "",
-  "main_work": [],
-  "novelty": [],
-  "section_outline": [],
-  "removable_candidates": [],
-  "open_questions": [],
-  "status": "draft"
-}
-```
-
-### 更新时间
-
-- 第一次完成原稿理解后创建。
-- 当原稿范围、主题判断或结构提取发生变化时更新。
-
-### Intake 层字段
-
-- `content_preview`：只读预览文本，用于在真正语义分析前快速建立确定性上下文。
-- `source_stats`：源文件的确定性统计信息，至少包括 `char_count`、`line_count`、`file_size_bytes`。
-- `intake_status`：Stage 1 intake 的状态标记；初始化模板默认为 `pending`，完成 intake 后更新为 `complete`。
-- `supporting_elements_status`：supporting-elements inventory 的状态标记；初始化模板默认为 `pending`，完成提取后更新为 `complete`。
-- `supporting_elements`：Stage 1 supporting-elements inventory 的事实层清单，包含 figure、table、citation 和 bibliography 结构。
-
-这些字段属于确定性 intake 层，不代表任何主题判断、结构理解或学术结论。
-
-### Supporting-Elements Inventory 字段
-
-- `supporting_elements.figures`：按出现顺序记录 figure 环境的确定性清单，包括 caption 预览、label、资源路径和来源行号。
-- `supporting_elements.tables`：按出现顺序记录 table 环境的确定性清单，包括 caption 预览、label 和来源行号。
-- `supporting_elements.citations`：记录 citation command、citekeys 和来源行号。
-- `supporting_elements.bibliography.mode`：记录原稿使用 `bibtex`、`thebibliography` 或 `none`。
-- `supporting_elements.bibliography.resources`：记录 `\\bibliography{...}` 或 `\\addbibresource{...}` 中声明的资源。
-- `supporting_elements.bibliography.entries`：当原稿使用 `thebibliography` 时，记录 `\\bibitem{...}` 键值。
-
-Supporting-elements inventory 只存事实，不存 keep/drop 决策。
-
-### Stage 1 语义层字段
-
-- `scope`：Stage 1 必填。用于说明当前处理对象是整篇论文、单章、附录式材料还是其他局部范围。
-- `topic`：Stage 1 必填。要求形成可工作的主题归纳，而不是空泛标签。
-- `main_work`：Stage 1 必填。必须是结构化列表，记录论文的主要工作或主要贡献动作。
-- `novelty`：Stage 1 必填。允许为初步判断，但 Stage 1 完成时不得为空。
-- `section_outline`：Stage 1 必填。至少覆盖当前处理范围内的主要章节或结构单元。
-- `removable_candidates`：Stage 1 必填。列出当前判断下可能压缩、合并或删除的非核心内容候选。
-- `open_questions`：Stage 1 必填。记录未决但尚不阻塞推进的问题，不能只留在聊天上下文中。
-- `status`：Stage 1 完成前可为 `draft` 或 `initialized`；形成可用理解草案后更新为 `analysis_complete`。
-
-### Stage 1 最小完成标准
-
-Stage 1 可以进入下一阶段时，`manuscript-profile.json` 至少满足以下条件：
-
-- `intake_status` 已为 `complete`
-- `supporting_elements_status` 已为 `complete`
-- `scope` 非空
-- `topic` 非空
-- `main_work` 非空
-- `novelty` 非空
-- `section_outline` 非空
-- `removable_candidates` 已列出候选
-- `open_questions` 已显式记录当前未决问题，即使为空列表也应作为真源保留
-- `status` 为 `analysis_complete`
-
-### 字段来源边界
-
-- 脚本负责 `source_id`、`source_path`、`source_type`、`content_preview`、`source_stats`、`intake_status`、`supporting_elements_status`、`supporting_elements` 等确定性字段。
-- LLM 负责 `scope`、`topic`、`main_work`、`novelty`、`section_outline`、`removable_candidates`、`open_questions`、`status` 的语义层更新。
-- LLM 不得把 Stage 1 语义结果只保留在对话中而不写回 JSON。
+本文件定义 **Database SSOT & gate-driven** 范式下各运行态文件的语义。
 
-## target-settings.json
+## Single Source Of Truth
 
-### 用途
+唯一运行态真源：
 
-- 保存用户明确确认过的目标稿约束。
+- `.paper-condenser-tmp/<document-slug>/paper-condenser.db`
 
-### 最小字段
+除数据库以外，所有 Markdown / LaTeX 文件都只是渲染结果，不是运行态真源。
 
-```json
-{
-  "target_language": "",
-  "target_form": "",
-  "target_journal_type": "",
-  "latex_template_id": "",
-  "target_body_length": {
-    "value": 0,
-    "unit": ""
-  },
-  "figure_table_preference": "",
-  "reference_handling_preference": "",
-  "must_keep": [],
-  "must_avoid": [],
-  "user_confirmed": false
-}
-```
+## Render Template Layer
 
-### 更新时间
+只读 Markdown 视图必须通过 `paper-condenser/assets/render-templates/` 下的 Jinja2 模板渲染。
 
-- 每当用户确认或修改目标设置时更新。
-- `user_confirmed` 只能在关键设置完整后置为 `true`。
+固定映射如下：
 
-### Stage 2 字段语义
+- `01-agent-resume.md` ← `01-agent-resume.md.j2`
+- `02-manuscript-profile.md` ← `02-manuscript-profile.md.j2`
+- `03-target-settings.md` ← `03-target-settings.md.j2`
+- `04-style-profile.md` ← `04-style-profile.md.j2`
+- `05-condensation-plan.md` ← `05-condensation-plan.md.j2`
+- `06-supporting-elements-inventory.md` ← `06-supporting-elements-inventory.md.j2`
+- `07-scope-segments.md` ← `07-scope-segments.md.j2`
+- `08-semantic-source-units.md` ← `08-semantic-source-units.md.j2`
+- `09-section-rewrite-plan.md` ← `09-section-rewrite-plan.md.j2`
+- `10-section-drafting-board.md` ← `10-section-drafting-board.md.j2`
+- `11-content-selection-board.md` ← `11-content-selection-board.md.j2`
+- `section-reviews/<section_order>-<section_id>.md` ← `section-review.md.j2`
 
-- `target_language`：目标稿语言。Stage 2 完成前不得留空。
-- `target_form`：目标稿体例或文体类型。Stage 2 完成前不得留空。
-- `target_journal_type`：目标投稿对象的期刊类型或刊物类别。Stage 2 完成前不得留空。
-- `latex_template_id`：目标稿使用的 LaTeX preset 标识。Stage 2 完成前不得留空；首版仅允许选择 skill 内置模板。
-- `target_body_length.value` 与 `target_body_length.unit`：目标正文长度及其单位。Stage 2 完成前必须同时写入。
-- `figure_table_preference`：用户对图表处理的目标偏好，例如尽量保留关键图表、优先把表格改写为正文、允许更多占位等。Stage 2 完成前不得留空。
-- `reference_handling_preference`：用户对引用与参考文献处理的目标偏好，例如尽量保留核心引用、优先延续 BibTeX / citekey、允许删除低优先级引用等。Stage 2 完成前不得留空。
-- `must_keep`：用户明确要求必须保留的信息、内容或约束。
-- `must_avoid`：用户明确要求避免出现的内容、表达或结构。
-- `user_confirmed`：Stage 2 唯一正式完成标记。只有在整组设置做过完整 readback 且用户明确确认后，才能更新为 `true`。
+这些模板是发布包的一部分。缺失模板、模板语法错误或渲染失败都必须视为硬错误，不允许静默退回到 Python 内联字符串渲染。
+
+## Read-only Rendered Views
 
-### Stage 2 草案态与确认态
+## `01-agent-resume.md`
 
-- 不扩充 schema 的前提下，Stage 2 草案态通过“字段部分填写 + `user_confirmed=false`”表达。
-- 只要任一关键字段为空，或 `must_keep` / `must_avoid` 尚未收敛，Stage 2 仍视为未完成。
-- `figure_table_preference` 与 `reference_handling_preference` 也属于关键字段，未写入时不得视为 Stage 2 完成。
-- 即使所有字段都已暂时写入，只要还没做完整 readback 并得到明确确认，`user_confirmed` 仍必须保持为 `false`。
-- 用户修改任一已确认设置后，应立即把 `user_confirmed` 恢复为 `false`，直到新的整组设置重新确认。
-
-### 内置 LaTeX Template Presets
-
-- `generic-article`：通用单文件 article 骨架，适合中性学术稿件。
-- `generic-cn-journal`：通用中文期刊单文件骨架。
-- `generic-en-journal`：基于 `elsarticle` 的通用英文期刊单文件骨架。
-
-这些 preset 都位于 `assets/latex-templates/`，首版不支持外部模板路径，也不支持多文件模板工程。
-
-## style-profile.md
-
-### 用途
-
-- 保存风格观察、问题诊断和面向目标稿的写作建议。
-
-### 建议结构
-
-- `## Source Style`
-- `## Problems To Fix`
-- `## Target Style Guidance`
-- `## Open Questions`
-
-### 更新时间
-
-- 完成风格分析后创建。
-- 当用户补充风格偏好，或风格建议需要修正时更新。
-
-### Stage 3 章节语义
-
-- `Source Style`：记录原稿已有的风格特征、优点、惯用表达和结构习惯。
-- `Problems To Fix`：记录需要纠偏的风格、规范、语气或表达问题。
-- `Target Style Guidance`：记录目标稿应遵循的写作原则、风格方向和表达约束，包括 caption、table title、citation sentence 与 references presentation 的要求。
-- `Open Questions`：记录尚未明确的风格偏好、语气边界或规范选择。
-
-### Stage 3 完成规则
-
-- 不修改模板结构的前提下，Stage 3 的完成态通过四个章节都已写入可执行内容来判断。
-- 只写 `Source Style` 而没有 `Problems To Fix` 或 `Target Style Guidance`，不视为 Stage 3 完成。
-- 未决风格问题必须写入 `Open Questions`，不能只停留在聊天上下文中。
-- 即使当前没有未决风格问题，`Open Questions` 章节也必须显式保留。
-
-## condensation-plan.md
-
-### 用途
-
-- 保存最终撰写前的凝缩执行方案。
-
-### 建议结构
-
-- `## Core Message`
-- `## Priority Map`
-- `## Target Outline`
-- `## Length Allocation`
-- `## Omit / Merge Strategy`
-- `## Figure / Table Plan`
-- `## Reference Plan`
-- `## Approval`
-
-### 更新时间
-
-- 每轮方案收敛后更新。
-- `## Approval` 段必须明确记录用户是否已批准当前方案。
-
-### Stage 4 章节语义
-
-- `Core Message`：记录目标稿必须保留的核心信息和核心论旨。
-- `Priority Map`：记录重点/非重点与保留优先级。
-- `Target Outline`：记录目标稿的大纲结构。
-- `Length Allocation`：记录各部分篇幅分配。
-- `Omit / Merge Strategy`：记录压缩、合并、删除策略。
-- `Figure / Table Plan`：记录哪些图表保留、哪些表格改写为正文、哪些元素仅保留占位，以及这些决策如何服务于目标稿。
-- `Reference Plan`：记录哪些引用必须保留、哪些参考文献结构沿用 BibTeX / citekey、哪些引用可合并或删除。
-- `Approval`：记录批准状态，使用 `Status: not approved|approved`。
-
-### Stage 4 完成规则
-
-- 不修改模板结构的前提下，Stage 4 的完成态通过七个方案章节都已写入可执行内容，再加上 `Approval` 记录 `Status: approved` 来判断。
-- 只写部分方案章节，不视为 Stage 4 完成。
-- 用户批准必须写回 `Approval`，不能只停留在聊天上下文中。
-- `Approval` 继续只使用现有 `Status: not approved|approved` 状态行，不新增其他状态字段。
-
-## final-draft.tex
-
-### 用途
-
-- 保存 Stage 5 的正式 LaTeX 成稿。
-
-### 运行态位置
-
-- `.paper-condenser-tmp/<document-slug>/final-draft.tex`
-
-### 生成前提
-
-- 四个核心工件齐备。
-- `target-settings.json.user_confirmed=true`
-- `target-settings.json.latex_template_id` 非空。
-- `condensation-plan.md` 的 `Approval` 记录 `Status: approved`。
-
-### Stage 5 生成规则
-
-- `final-draft.tex` 是 Stage 5 的运行态真源，不是聊天输出的附属副本。
-- `final-draft.tex` 的骨架应先通过 `scripts/init_final_draft.py` 初始化。
-- 初始骨架应基于 `assets/latex-templates/` 中与 `latex_template_id` 对应的 preset 建立。
-- 正文内容必须遵循 `Target Outline`、`Priority Map`、`Length Allocation`、`Omit / Merge Strategy` 和 `Target Style Guidance`。
-- 正文内容和 supporting elements 迁移都必须遵循 `Figure / Table Plan` 与 `Reference Plan`。
-- 若 Stage 5 发现上游工件仍存在关键缺口，应回退到对应阶段，而不是把缺口静默吞掉。
-
-## rewrite-report.md
-
-### 用途
-
-- 保存 Stage 5 的正式转写报告，帮助用户继续修改最终稿。
-
-### 运行态位置
-
-- `.paper-condenser-tmp/<document-slug>/rewrite-report.md`
-
-### 生成前提
-
-- `final-draft.tex` 已存在。
-- 四个核心工件齐备。
-- `condensation-plan.md` 已记录 `Status: approved`。
-
-### 固定结构
-
-- `## Run Summary`
-- `## Stage Decisions`
-- `## Final Draft Section Map`
-- `## Key Paragraph And Element Notes`
-- `## Unresolved Risks / Follow-up`
-
-### Stage 5 生成规则
-
-- `rewrite-report.md` 是 Stage 5 的正式伴随输出，不是聊天里的解释性附言。
-- 报告必须为最终稿的每个章节或小节提供章节级参照。
-- 报告可以对关键段落、关键图表、关键表格、关键引用提供更细粒度说明。
-- 报告中的所有参照说明都必须基于四个核心工件、supporting-elements inventory 与 `final-draft.tex`，不得编造原文依据。
-- Stage 5 只有在 `final-draft.tex` 与 `rewrite-report.md` 都落盘后才视为完成。
-
-## 边界规则
-
-- JSON 工件存事实、约束、枚举式结论，不存大段自由分析。
-- Markdown 工件存解释、判断、建议和方案，不替代 JSON 里的结构化约束。
-- 如果某条信息既是事实又要用于方案判断，事实写入 JSON，解释写入 Markdown，不重复堆砌相同文本。
-
-## 模板与运行态文件的关系
-
-- `assets/artifact-templates/` 下的四个文件是包内初始化模板，不是运行中的任务状态。
-- 开始处理一份新原稿时，先把同名模板复制到当前项目目录下的 `.paper-condenser-tmp/<document-slug>/`，再在该任务目录内更新运行态文件。
-- 运行过程中修改的是 `.paper-condenser-tmp/<document-slug>/` 下的副本，而不是包内模板。
-- 不得把运行态工件直接写进 Skill 包目录。
+- 真源：
+  - `runtime_workspace`
+  - `workflow_state`
+  - `pending_confirmations`
+- 用途：
+  - 给 Agent 和用户查看当前阶段、`next_action`、blockers、待确认事项和渲染文件清单
+
+## `02-manuscript-profile.md`
+
+- 真源：
+  - `manuscript_source`
+  - `manuscript_intake`
+  - `supporting_elements_inventory`
+  - `manuscript_analysis`
+- 用途：
+  - 展示原稿来源、intake、inventory 摘要和 analysis 结论
+
+## `03-target-settings.md`
+
+- 真源：
+  - `target_settings`
+- 用途：
+  - 展示 Stage 3 基本目标设置、`must_keep` / `simplify_first` / `must_avoid` 汇总结果，以及确认状态
+
+## `04-style-profile.md`
+
+- 真源：
+  - `style_profile`
+- 用途：
+  - 展示风格画像与改写指导
+
+## `05-condensation-plan.md`
+
+- 真源：
+  - `condensation_plan`
+- 用途：
+  - 展示整体凝缩方案与批准状态
+
+## `06-supporting-elements-inventory.md`
+
+- 真源：
+  - `supporting_elements_inventory`
+- 用途：
+  - 展示图、表、citation、bibliography inventory
+
+## `07-scope-segments.md`
+
+- 真源：
+  - `raw_scope_segments`
+- 用途：
+  - 只展示 main/aux 范围内 paragraph / figure / table / display block 的事实型 raw segmentation
+  - 必须显式展示每条 raw block 的 `scope_role`、`scope_bucket_id`、`scope_label`
+  - 不直接作为 Stage 5 / 6 的写作真源
+
+## `08-semantic-source-units.md`
+
+- 真源：
+  - `semantic_source_units`
+  - `semantic_source_unit_members`
+  - `semantic_source_unit_elements`
+- 用途：
+  - 展示 LLM 基于 raw blocks 整理出的 semantic source units
+  - 必须显式展示每个 unit 的 raw members 来自 `main` 还是 `aux`
+  - 作为 Stage 5 / 6 可引用的正式写作来源视图
+
+## `09-section-rewrite-plan.md`
+
+- 真源：
+  - `section_rewrite_plan`
+  - `section_rewrite_plan_sources`
+- 用途：
+  - 展示每个目标 section 的细化转写方案、预计篇幅与来源绑定
+  - 主要来源绑定应是 `semantic_unit:<unit_id>`
+  - 若绑定的 semantic unit 含 aux 成员，必须能看出其 main/aux 构成与使用理由
+
+## `10-section-drafting-board.md`
+
+- 真源：
+  - `workflow_state`
+  - `section_rewrite_plan`
+  - `draft_sections`
+  - `output_targets`
+- 用途：
+  - 展示 section-loop drafting 的总览面板、当前 active section 与各 section 状态
+
+## `11-content-selection-board.md`
+
+- 真源：
+  - `content_selection_items`
+  - `content_selection_item_units`
+  - `semantic_source_units`
+  - `semantic_source_unit_members`
+- 用途：
+  - 展示 Stage 3 的三类内容取舍建议项
+  - 每项必须显示语义标题、摘要、推荐 bucket、semantic units，以及底层 raw segment 溯源
+  - 这是 Stage 3 中 `must_keep` / `simplify_first` / `must_avoid` 的详细决策板，不是最终汇总视图
+
+## `section-reviews/<section_order>-<section_id>.md`
+
+- 真源：
+  - `section_rewrite_plan`
+  - `draft_sections`
+  - `draft_section_sources`
+  - `draft_section_events`
+- 用途：
+  - 作为每节的审阅工件
+  - 包含当前 section 转写结果、planned vs actual count、溯源记录与撰写事件
+  - provenance 的主路径应是 `semantic_unit:<unit_id>`，如需回溯原稿细节，再通过 semantic unit 反查 raw members
+  - 必须显式显示 semantic unit 的 main/aux 构成，便于检查是否越界使用 aux
+
+## Final Outputs
+
+## `final-draft.tex`
+
+- 真源：
+  - `final_outputs.final_draft_tex`
+- 用途：
+  - 最终 LaTeX 凝缩稿交付物
+- 规则：
+  - 由数据库渲染
+  - 不作为运行态真源
+
+## `rewrite-report.md`
+
+- 真源：
+  - `final_outputs.rewrite_report_md`
+- 用途：
+  - 最终转写报告交付物
+- 规则：
+  - 由数据库渲染
+  - 不作为运行态真源
+
+## Output Directory Assets
+
+- 最终 bundle 还会写入用户确认的输出目录：
+  - `<output_dir>/final-draft.tex`
+  - `<output_dir>/rewrite-report.md`
+  - `<output_dir>/images/`
+- `images/` 只保存最终稿实际引用到的图片副本。
+- 图片路径必须在最终 LaTeX 中改写为 `images/<filename>`，不得继续引用原稿路径。

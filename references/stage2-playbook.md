@@ -1,126 +1,106 @@
 # Stage 2 Playbook
 
-本文件只展开 Stage 2。全局约束、脚本职责和阶段门禁以 `SKILL.md` 为准。
+Stage 2 对应 `stage_2_manuscript_analysis`。
 
-## 适用范围
+## 正式写库动作
 
-- 本 playbook 只处理目标设置、图表处理偏好、参考文献处理偏好与保留/避免项。
-- Stage 2 的正式真源是 `.paper-condenser-tmp/<document-slug>/target-settings.json`。
-- 本阶段不新增脚本，但需要把 `latex_template_id` 纳入目标设置。
+1. `persist_manuscript_analysis`
+2. `persist_raw_scope_segments`
+3. `persist_semantic_source_units`
 
-## 子步骤顺序
+## 1. `persist_manuscript_analysis`
 
-### 1. 进入 Stage 2
+- 由 LLM 生成 payload，再通过 `stage_runtime.py` 写库。
+- payload 至少包含：
+  - `main_scope`
+  - `main_scope_locator`
+  - `aux_scopes`
+  - `topic`
+  - `main_work`
+  - `novelty`
+  - `section_outline`
+  - `removable_candidates`
+  - `open_questions`
+- 可选：
+  - `pending_confirmations`
 
-- 前置条件：
-  - Stage 1 已完成。
-  - `manuscript-profile.json` 已形成可用理解草案。
-- 操作：
-  - 基于 Stage 1 结果判断当前目标设置是否已经足够明确。
-  - 若仍为空或不完整，开始逐项提问。
+### 作用
 
-### 2. 核心目标设置采集
+- 固定本轮处理的主转写范围与辅助支撑范围
+- 形成主题、主要工作、创新点和结构理解
+- 为后续 raw segmentation 提供 machine-readable `main_scope_locator` 与 `aux_scopes[*].locator`
 
-- 建议顺序：
-  1. `target_language`
-  2. `target_form`
-  3. `target_journal_type`
-  4. `latex_template_id`
-  5. `target_body_length.value`
-  6. `target_body_length.unit`
-  7. `figure_table_preference`
-  8. `reference_handling_preference`
-- 规则：
-  - 每收集到一个答案，就回写对应字段。
-  - 在整组设置确认前，保持 `user_confirmed=false`。
-  - `latex_template_id` 只能从 skill 内置 preset 中选择：
-    - `generic-article`
-    - `generic-cn-journal`
-    - `generic-en-journal`
+### 范围语义
 
-### 3. 保留项与避免项采集
+- `main_scope` 是主要转写目标
+- `aux_scopes` 是支撑来源，可用于背景、综述、方法概述等补充材料
+- `aux_scopes` 是列表；每项至少包含：
+  - `aux_id`
+  - `label`
+  - `purpose`
+  - `locator`
+- `aux` 不是第二主 scope，不得把它当成并列主转写目标
 
-- 继续询问：
-  - `figure_table_preference`
-  - `reference_handling_preference`
-  - `must_keep`
-  - `must_avoid`
-- 规则：
-  - 这些约束都属于 Stage 2 完成门禁的一部分，不能默认推迟到后续阶段。
-  - 允许先形成草案，再在 readback 阶段统一确认。
+## 2. `persist_raw_scope_segments`
 
-### 4. 整组 Readback
+- 由脚本完成，不接受 LLM 语义 payload。
+- 基于 source + 已写库的 `main_scope_locator` 与 `aux_scopes[*].locator`，在统一 raw 表中做 deterministic block 提取。
+- 额外要求：
+  - `figure` / `table` / `display_block` 必须独立成段
+  - 每条 raw segment 必须带 `scope_role=main|aux`
+  - 每条 raw segment 必须带 `scope_bucket_id` 与 `scope_label`
+  - 不做语义取舍，只写事实型 segmentation
 
-- 当所有字段都已填写后：
-  - 用一轮完整 readback 向用户复述当前 Stage 2 设置。
-  - readback 必须覆盖所有字段，而不是只重复最后一次提问的结果。
-  - readback 必须包含 `latex_template_id`、图表处理偏好和参考文献处理偏好。
+### 写入真源
 
-### 5. 明确确认
+- `raw_scope_segments`
 
-- 只有在用户明确表示认可整组设置后：
-  - 才把 `user_confirmed` 更新为 `true`
-- 如果用户要求修改任一字段：
-  - 先更新字段
-  - 保持或恢复 `user_confirmed=false`
-  - 重新做整组 readback
+### 渲染视图
 
-## 必问条件
+- `07-scope-segments.md`
 
-- 任一核心目标设置字段为空。
-- `latex_template_id` 尚未明确。
-- `figure_table_preference` 尚未明确。
-- `reference_handling_preference` 尚未明确。
-- `must_keep` 尚未明确。
-- `must_avoid` 尚未明确。
-- 用户修改了先前已给出的目标设置。
-- 已经收集完字段，但还未做整组 readback。
+## 3. `persist_semantic_source_units`
 
-## 禁止提问条件
+- 由 LLM 读取 raw segmentation 后提交结构化 payload。
+- payload 至少包含：
+  - `units`
+- 每个 unit 至少包含：
+  - `unit_id`
+  - `unit_title`
+  - `unit_kind`
+  - `summary`
+  - `member_segment_ids`
+- 可选：
+  - `elements`
 
-- 不得在 Stage 2 提前分析原稿风格。
-- 不得在 Stage 2 提前讨论重点/非重点。
-- 不得在 Stage 2 提前讨论目标大纲。
-- 不得在 Stage 2 提前讨论篇幅分配和删改策略。
-- 不得在 Stage 2 提前决定具体保留哪些图表或删掉哪些引用。
-- 不得在 Stage 2 接受外部模板路径或多文件模板工程作为首版正式模板来源。
+### 作用
 
-## 常见失败场景
+- 将 raw blocks 合并/拆分为真正可供 Stage 5 / 6 使用的语义写作单元
+- 给每个 unit 写出最小语义摘要
+- 将 supporting elements 线索吸收到 unit 层
+- semantic unit 可以混合 main 和 aux 的 raw members，但成员必须保留 role 标记
 
-### 只做部分提问
+### 写入真源
 
-- 表现：
-  - 只问了语言和体例，就试图推进到下一阶段
-- 处理：
-  - 回到剩余字段，补齐期刊类型、模板选择、正文长度、保留项和避免项
+- `semantic_source_units`
+- `semantic_source_unit_members`
+- `semantic_source_unit_elements`
 
-### 已填字段但未确认
+### 渲染视图
 
-- 表现：
-  - `target-settings.json` 看起来已经完整，但没有 readback，或 `user_confirmed=false`
-- 处理：
-  - 做整组 readback
-  - 获取明确确认后再置 `user_confirmed=true`
+- `08-semantic-source-units.md`
 
-### 修改后沿用旧确认状态
+## 完成标准
 
-- 表现：
-  - 用户修改某一字段后，`user_confirmed` 仍保持为 `true`
-- 处理：
-  - 立即恢复为 `false`
-  - 重新做整组 readback
+- manuscript analysis 已写库
+- `raw_scope_segments` 已落库
+- `semantic_source_units` 已落库
+- 若仍有理解层待确认事项，必须写入 `pending_confirmations`
 
-## Stage 3 交接检查清单
+## 禁止事项
 
-- `target_language` 非空
-- `target_form` 非空
-- `target_journal_type` 非空
-- `latex_template_id` 非空
-- `target_body_length.value` 已写入
-- `target_body_length.unit` 已写入
-- `figure_table_preference` 已写入
-- `reference_handling_preference` 已写入
-- `must_keep` 已写入
-- `must_avoid` 已写入
-- 已完成整组 readback
-- `user_confirmed=true`
+- 不得跳过 `persist_raw_scope_segments`
+- 不得把脚本切出的 raw blocks 直接当作最终写作真源
+- 不得跳过 `persist_semantic_source_units`
+- 不得把 semantic consolidation 只留在聊天上下文
+- 不得让脚本决定哪些段应合并成论证单元
