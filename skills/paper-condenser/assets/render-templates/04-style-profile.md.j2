@@ -1,0 +1,21 @@
+# Style Profile
+
+- Status: `{{ profile.status }}`
+
+## Source Style
+{{ profile.source_style or "（空）" }}
+
+## Problems To Fix
+{{ profile.problems_to_fix or "（空）" }}
+
+## Target Style Guidance
+{{ profile.target_style_guidance or "（空）" }}
+
+## Open Questions
+{% if profile.open_questions %}
+{% for item in profile.open_questions %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}

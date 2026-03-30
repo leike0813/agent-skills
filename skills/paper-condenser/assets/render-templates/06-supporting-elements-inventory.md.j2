@@ -1,0 +1,47 @@
+# Supporting Elements Inventory
+
+- Status: `{{ inventory.status }}`
+
+## Summary
+- Figures: {{ summary.figures_count }}
+- Tables: {{ summary.tables_count }}
+- Citations: {{ summary.citations_count }}
+- Bibliography mode: {{ summary.bibliography_mode }}
+
+## Figures
+{% if inventory.figures %}
+{% for item in inventory.figures %}
+- Figure {{ item.index }}: label=`{{ item.label }}` caption=`{{ item.caption_preview }}` lines={{ item.source_line_start }}-{{ item.source_line_end }}
+{% endfor %}
+{% else %}
+- 无
+{% endif %}
+
+## Tables
+{% if inventory.tables %}
+{% for item in inventory.tables %}
+- Table {{ item.index }}: label=`{{ item.label }}` caption=`{{ item.caption_preview }}` lines={{ item.source_line_start }}-{{ item.source_line_end }}
+{% endfor %}
+{% else %}
+- 无
+{% endif %}
+
+## Citations
+{% if inventory.citations %}
+{% for item in inventory.citations %}
+- Citation {{ item.index }}: command=`{{ item.command }}` keys=[{{ item["keys"] | join(", ") }}] line={{ item.source_line }}
+{% endfor %}
+{% else %}
+- 无
+{% endif %}
+
+## Bibliography
+- Mode: `{{ bibliography.mode }}`
+- Resources:
+{% if bibliography.resources %}
+{% for item in bibliography.resources %}
+  - {{ item }}
+{% endfor %}
+{% else %}
+  - 无
+{% endif %}

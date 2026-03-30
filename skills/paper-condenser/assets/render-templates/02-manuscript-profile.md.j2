@@ -1,0 +1,85 @@
+# Manuscript Profile
+
+## Source
+- Source path: `{{ source.source_path }}`
+- Source type: `{{ source.source_type }}`
+
+## Intake
+- Intake status: `{{ intake.intake_status }}`
+- Character count: {{ intake.source_stats.char_count }}
+- Line count: {{ intake.source_stats.line_count }}
+- File size (bytes): {{ intake.source_stats.file_size_bytes }}
+
+### Content Preview
+{{ intake.content_preview or "（空）" }}
+
+## Supporting Elements Summary
+- Figures: {{ supporting_elements_summary.figures_count }}
+- Tables: {{ supporting_elements_summary.tables_count }}
+- Citations: {{ supporting_elements_summary.citations_count }}
+- Bibliography mode: {{ supporting_elements_summary.bibliography_mode }}
+
+## Analysis
+- Status: `{{ analysis.status }}`
+
+### Scope
+#### Main
+- Scope: {{ analysis.main_scope or "（空）" }}
+- Locator: `{{ analysis.main_scope_locator.mode }}{% if analysis.main_scope_locator.mode == "line_range" %}:{{ analysis.main_scope_locator.line_start }}-{{ analysis.main_scope_locator.line_end }}{% endif %}`
+
+#### Aux
+{% if analysis.aux_scopes %}
+{% for item in analysis.aux_scopes %}
+- `{{ item.aux_id }}` | {{ item.label }} | {{ item.purpose }} | `{{ item.locator.mode }}{% if item.locator.mode == "line_range" %}:{{ item.locator.line_start }}-{{ item.locator.line_end }}{% endif %}`
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Topic
+{{ analysis.topic or "（空）" }}
+
+### Main Work
+{% if analysis.main_work %}
+{% for item in analysis.main_work %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Novelty
+{% if analysis.novelty %}
+{% for item in analysis.novelty %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Section Outline
+{% if analysis.section_outline %}
+{% for item in analysis.section_outline %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Removable Candidates
+{% if analysis.removable_candidates %}
+{% for item in analysis.removable_candidates %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Open Questions
+{% if analysis.open_questions %}
+{% for item in analysis.open_questions %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}

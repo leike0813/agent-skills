@@ -1,120 +1,33 @@
 # Supporting Elements Playbook
 
-本文件展开图、表、引用与参考文献的横切处理流程。全局约束以 `SKILL.md` 为准；本文件只补 supporting elements 在 Stage 1、Stage 4、Stage 5 中的专门处理规则。
+本文件说明图、表、citation、bibliography 在 DB runtime 中的横切处理方式。
 
-## 适用范围
+## Stage 1
 
-- supporting elements 指 figure、table、citation 与 bibliography structure。
-- 首版正式输入仍是单文件 `.tex` 原稿。
-- 首版正式参考文献模式以 `BibTeX / citekey` 优先，但允许原稿输入使用 `thebibliography`。
-- 本流程不引入独立中间工件；状态继续复用现有四个真源。
+- `persist_intake_and_inventory` 负责 deterministic extraction。
+- inventory 真源在 `supporting_elements_inventory`。
+- 只读视图渲染到 `06-supporting-elements-inventory.md`。
 
-## Stage 1：事实层 Inventory
+## Stage 2
 
-### 必调脚本
+- `persist_raw_scope_segments` 切分时，`figure` / `table` / `display_block` 必须独立成段。
+- raw supporting elements 必须保留 `scope_role=main|aux`，以便后续判断它们来自主转写范围还是支撑范围。
+- supporting elements 不能被 paragraph 吞并。
+- `persist_semantic_source_units` 可将 figure / table / citation / bibliography 线索吸收到 semantic unit 中。
 
-- `extract_supporting_elements.py --artifact-root <ARTIFACT_ROOT>`
+## Stage 5
 
-### 脚本职责
+- `persist_section_rewrite_plan` 必须显式记录某个目标 section 绑定了哪些图、表、citation 或 bibliography 线索。
+- 不得只在整体方案里口头提及 supporting elements。
 
-- 提取原稿中的 `figure` 环境清单。
-- 提取原稿中的 `table` 环境清单。
-- 提取 citation command 与 citekeys。
-- 提取 bibliography resource 或 `thebibliography` / `\bibitem` 结构。
-- 把结果写入 `manuscript-profile.json.supporting_elements`。
+## Stage 6
 
-### LLM 职责
+- section 审阅工件必须展示本节使用到的 supporting elements 溯源。
+- `render_final_output_bundle` 必须遵循已批准的 supporting-elements 方案。
+- 最终稿实际引用到的图片必须复制到用户输出目录的 `images/` 中，并改写最终 LaTeX 的图像路径。
 
-- 阅读 inventory，判断 supporting elements 是否构成核心证据层。
-- 识别哪些图表、表格或引用在 Stage 4 必须被单独决策。
-- 把阻塞性歧义写入 `open_questions`。
+## 禁止事项
 
-### Stage 1 门禁
-
-- `supporting_elements_status=complete`
-- `supporting_elements` 已落盘
-- 相关歧义已进入 `open_questions`
-
-## Stage 2：目标偏好确认
-
-### 必收集字段
-
-- `figure_table_preference`
-- `reference_handling_preference`
-
-### 规则
-
-- 这里收集的是偏好和边界，不是具体 keep/drop 清单。
-- 必须在 Stage 2 readback 中一起确认。
-- 只要这两个字段为空，`user_confirmed` 就不能置为 `true`。
-
-## Stage 3：风格指导
-
-### 关注点
-
-- figure caption / table title 的表达风格
-- citation sentence 的叙述方式
-- references presentation 的规范风格
-
-### 落盘位置
-
-- `style-profile.md`
-
-## Stage 4：迁移方案收敛
-
-### 必写章节
-
-- `## Figure / Table Plan`
-- `## Reference Plan`
-
-### Figure / Table Plan 最低要求
-
-- 明确保留哪些图表
-- 明确哪些表格改写为正文
-- 明确哪些元素删除或仅保留占位
-- 明确这些决策如何服务于目标稿的论证结构
-
-### Reference Plan 最低要求
-
-- 明确保留哪些关键引用
-- 明确哪些引用可压缩或删除
-- 明确最终稿是否沿用 BibTeX / citekey 结构
-- 明确 bibliography 层如何在最终稿中表示
-
-### Stage 4 门禁
-
-- 以上两节都非空
-- `Approval` 已记录 `Status: approved`
-
-## Stage 5：最终落地
-
-### 必须做到
-
-- 已批准保留的 supporting elements 不能静默丢失。
-- 能完整迁移的元素应完整迁移。
-- 当前轮次不能精修的元素必须保留清晰占位。
-- 最终稿中的 supporting-elements 表达应遵循 `Target Style Guidance`。
-- `rewrite-report.md` 必须对关键图表、关键表格、关键引用给出可追踪的说明。
-
-### 常见失败场景
-
-#### 只有正文，没有 supporting elements
-
-- 表现：
-  - 最终稿正文写完了，但已批准保留的图、表或引用没有出现在 `final-draft.tex`
-- 处理：
-  - 回到 Stage 5，按 `Figure / Table Plan` 和 `Reference Plan` 补齐迁移或占位
-
-#### 引用被重写时失去 citekey 结构
-
-- 表现：
-  - 原稿是 BibTeX / citekey 流程，但最终稿把引用关系改写成不可追踪的纯文本
-- 处理：
-  - 回到 Stage 5，恢复可追踪的 citation / bibliography 结构
-
-#### 图表取舍只留在聊天里
-
-- 表现：
-  - 对话中已经讨论保留哪些图表，但 `Figure / Table Plan` 为空或不完整
-- 处理：
-  - 回到 Stage 4，把决策写入真源后再继续写作
+- 不得把 inventory 留在聊天上下文，不写 DB。
+- 不得在 Stage 6 静默丢弃已批准保留的 supporting elements。
+- 不得让最终稿继续直接引用原稿图片路径。

@@ -1,0 +1,41 @@
+# Content Selection Board
+
+- Current substep: `{{ runtime.current_substep }}`
+- Next action: `{{ runtime.next_action }}`
+- Suggested items: {{ items|length }}
+
+{% for bucket in ["must_keep", "simplify_first", "must_avoid"] %}
+## {{ bucket }}
+{% set bucket_items = items | selectattr("bucket", "equalto", bucket) | list %}
+{% if bucket_items %}
+{% for item in bucket_items %}
+### {{ item.item_order }}. {{ item.title }}
+- Item id: `{{ item.item_id }}`
+- Status: `{{ item.status }}`
+- Summary: {{ item.summary }}
+- Rationale: {{ item.rationale }}
+{% if item.note %}- Note: {{ item.note }}{% endif %}
+
+#### Semantic Units
+{% if item.semantic_units %}
+{% for unit in item.semantic_units %}
+- `{{ unit.unit_id }}`{% if unit.unit_title %} | {{ unit.unit_title }}{% endif %}{% if unit.summary %} | {{ unit.summary }}{% endif %}
+{% if unit.member_segments %}
+  Raw members:
+{% for member in unit.member_segments %}
+    - `{{ member.segment_id }}` | {{ member.segment_kind }} | role={{ member.scope_role }} | bucket=`{{ member.scope_bucket_id }}`{% if member.heading_context %} | {{ member.heading_context }}{% endif %} | {{ member.source_text_preview }}
+{% endfor %}
+{% else %}
+  Raw members: （空）
+{% endif %}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+{% endfor %}

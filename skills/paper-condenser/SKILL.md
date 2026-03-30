@@ -1,326 +1,598 @@
 ---
 name: paper-condenser
-description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to guide a user through staged manuscript understanding, target-setting, style analysis, condensation planning, and only then final journal-paper drafting with explicit confirmations and persistent intermediate artifacts.
+description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to guide a user through staged manuscript understanding, target-setting, style analysis, condensation planning, and final journal-paper drafting with a SQLite single source of truth and strict gate-driven progression.
 ---
 
 # Paper Condenser
 
-## Overview
+## Mission
 
-将长篇学术论文、研究报告或章节转写为期刊论文式凝缩稿时，先做确定性初始化、intake 与 supporting-elements inventory，再做语义理解、提问、方案确认，最后才进入正式撰写。本 skill 的运行方式是强约束协作：脚本负责确定性、重复性高、可验证的工作，LLM 负责语义理解、用户交互、判断与写作。
+本 skill 的目标，是把一篇较长的学术原稿，或其中一个主要章节，经过**交互式、阶段化、可追溯**的流程，转写成适合期刊论文体例的凝缩版稿件。
 
-## Input Contract
+这不是“一步到位直接生成论文”的 skill。你要先帮助用户逐步完成：
 
-- 首版正式输入是单个 UTF-8 `.tex` 原稿文件路径。
-- 只读读取原稿文件，不直接修改原文件。
-- 文件路径输入场景下，必须先在当前项目目录下建立 `.paper-condenser-tmp/<document-slug>/` 任务目录，再继续任何语义分析。
-- 如果用户没有明确目标约束，必须先收集目标语言、目标体例、目标期刊类型、LaTeX 模板、目标正文长度、图表处理偏好和参考文献处理偏好，再继续推进。
+- 原稿理解
+- 处理范围界定
+- 目标设置
+- 风格画像
+- 凝缩方案
+- 分节撰写与审阅
+- 最终 bundle 渲染
+
+只有当当前阶段已经落库并通过 gate，才允许进入下一阶段。
+
+## Working Style
+
+- 以 SQLite 为唯一运行态真源。
+- 以 gate-driven 方式推进，每次只执行 gate 返回的 `next_action`。
+- 与用户逐阶段确认关键决策，不替用户做学术和写作决定。
+- 优先收敛方案，再写正文。
+- 优先保持可追溯性，而不是追求一次性写完。
+
+## Reading Strategy
+
+默认先只读这份 `SKILL.md`。
+
+- 不要在开始时把 `references/` 全部读一遍。
+- 先依靠本文件理解总体目标、运行模型、阶段目的和动作顺序。
+- 只有在遇到当前阶段的困难、歧义、blocker，或需要更细的 payload / gate / DB 规则时，才按需读取对应 reference。
+
+换言之：`SKILL.md` 是主指令，`references/` 是按需加载的补充说明，而不是首次执行时必须通读的全集。
+
+## Runtime Model
+
+本 skill 采用 **Database SSOT & gate-driven** 范式。
+
+- 正式输入是单个 UTF-8 `.tex` 原稿文件路径。
+- 原稿只读，不直接修改。
+- 运行态 workspace 固定在当前项目目录下的 `.paper-condenser-tmp/<document-slug>/`。
+- 唯一运行态真源是 `.paper-condenser-tmp/<document-slug>/paper-condenser.db`。
+- 中间工件全部是只读 Markdown 视图，不得当作真源直接编辑。
+- `final-draft.tex` 与 `rewrite-report.md` 是数据库渲染出的正式输出，不是并列真源。
+
+当前只读视图包括：
+
+- `01-agent-resume.md`
+- `02-manuscript-profile.md`
+- `03-target-settings.md`
+- `04-style-profile.md`
+- `05-condensation-plan.md`
+- `06-supporting-elements-inventory.md`
+- `07-scope-segments.md`
+- `08-semantic-source-units.md`
+- `09-section-rewrite-plan.md`
+- `10-section-drafting-board.md`
+- `11-content-selection-board.md`
+- `section-reviews/<section_order>-<section_id>.md`
+
+这些视图由 `assets/render-templates/` 下的 Jinja2 模板渲染。模板缺失或渲染失败时，runtime 必须直接失败，不能静默降级到 Python 内联字符串渲染。
 
 ## Hard Constraints
 
-- 禁止一步到位直接生成目标论文全文。
-- 禁止替用户做语言、体例、目标期刊、正文长度、重点取舍等关键决策。
-- 禁止在最终稿中静默丢弃已批准保留的图、表、引用或参考文献结构。
+- 禁止一步到位直接产出最终论文。
+- 禁止绕过 gate 直接推进阶段。
+- 禁止把只读 Markdown 视图当作真源直接编辑。
+- 禁止静默丢弃已批准保留的图、表、引用或参考文献结构。
 - 禁止直接修改原稿。
-- 禁止跳过阶段门禁直接进入后续阶段。
-- 仅把 `paper-condenser/references/` 下的文件视为包内参考资料；仓库根 `references/` 是开发资料，不是运行时包资源。
-
-## Script Responsibilities
-
-- `scripts/bootstrap_runtime.py`
-  - 只负责文件路径输入场景下的统一运行入口。
-  - 负责生成 `document-slug`、在当前项目目录下创建 `.paper-condenser-tmp/<document-slug>/`、初始化运行期工件、并首填充 `manuscript-profile.json` 的确定性字段。
-- `scripts/init_artifacts.py`
-  - 只负责在已知 `artifact-root` 的前提下创建或补齐缺失工件。
-  - 负责从 `assets/artifact-templates/` 复制模板，不负责语义判断。
-- `scripts/stage1_intake.py`
-  - 只负责 Stage 1 的确定性 intake。
-  - 负责读取单文件 `.tex` 原稿、写入 `content_preview`、`source_stats`、`intake_status`。
-- `scripts/extract_supporting_elements.py`
-  - 只负责 Stage 1 的 supporting-elements inventory。
-  - 负责从单文件 `.tex` 原稿中提取 figure、table、citation 和 bibliography 的确定性清单，并写回 `manuscript-profile.json`。
-- `scripts/init_final_draft.py`
-  - 只负责 Stage 5 的确定性 preflight 与 `final-draft.tex` 骨架初始化。
-  - 负责校验四个核心工件、读取 `latex_template_id`、确认方案已批准，并从内置模板复制出 `final-draft.tex`。
-- 所有脚本都只能承担确定性、重复性高、可验证的工作。
 
-## LLM Responsibilities
+## Formal Entrypoints
 
-- 理解原稿主题、主要工作、创新点、章节结构和可裁剪内容。
-- 判断哪些内容必须保留、哪些内容可以压缩或删除。
-- 询问并确认所有用户拥有决策权的事项。
-- 分析原稿风格、提出修正建议、形成目标风格原则。
-- 制定凝缩方案，包括重点/非重点、大纲、篇幅分配、删改策略。
-- 在所有门禁满足后，根据已锁定方案撰写最终凝缩稿。
+正式入口只有两个。
 
-## Forbidden Delegation
+1. gate
 
-- 禁止让脚本承担主题判断、研究问题理解、创新点归纳、重点/非重点决策。
-- 禁止让脚本自动生成目标文稿大纲、篇幅分配或删改策略。
-- 禁止让脚本替用户决定目标语言、体例、目标期刊类型、正文长度和保留项。
-- 禁止让脚本承担最终写作策略和目标稿正文撰写。
-
-## Artifact Protocol
-
-必须维护以下四个核心工件，且职责边界不能混淆：
-
-- `manuscript-profile.json`
-  - 保存原稿事实层信息、确定性 intake 元信息、supporting-elements inventory，以及后续语义分析结果。
-- `target-settings.json`
-  - 保存用户确认后的目标约束，包括 LaTeX preset 选择、图表偏好和参考文献处理偏好。
-- `style-profile.md`
-  - 保存风格观察、问题诊断、修正建议和目标风格原则，包括 caption、table title、citation sentence 与 references presentation 的风格要求。
-- `condensation-plan.md`
-  - 保存凝缩执行方案、篇幅分配、图表/参考文献迁移决策和用户批准记录。
-- `final-draft.tex`
-  - 保存 Stage 5 的正式 LaTeX 成稿；它不是中间工件，但它是最终输出的运行态真源。
-- `rewrite-report.md`
-  - 保存 Stage 5 的正式转写报告；它不是中间工件，但它是最终交付的伴随输出真源。
+```bash
+python -u paper-condenser/scripts/gate_runtime.py --source-path <SOURCE_PATH>
+python -u paper-condenser/scripts/gate_runtime.py --artifact-root <ARTIFACT_ROOT>
+```
 
-运行态工件默认必须创建在**当前项目目录**下的 `.paper-condenser-tmp/` 中，而不是 Skill 包目录内部。
+2. stage write
 
-文件路径输入场景下，优先运行统一运行入口：
-`python -u paper-condenser/scripts/bootstrap_runtime.py --source-path <SOURCE_PATH>`
+```bash
+python -u paper-condenser/scripts/stage_runtime.py <ACTION> --artifact-root <ARTIFACT_ROOT> [--payload-file <PAYLOAD_JSON>]
+```
 
-完成 runtime bootstrap 后，必须运行 Stage 1 intake：
-`python -u paper-condenser/scripts/stage1_intake.py --artifact-root <ARTIFACT_ROOT>`
+bootstrap 是唯一例外，允许直接带 `--source-path`：
 
-完成 intake 后，必须运行 supporting-elements extraction：
-`python -u paper-condenser/scripts/extract_supporting_elements.py --artifact-root <ARTIFACT_ROOT>`
+```bash
+python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source-path <SOURCE_PATH>
+```
 
-若只需要对一个已确定的工件目录做底层初始化，则运行：
-`python -u paper-condenser/scripts/init_artifacts.py --artifact-root <ARTIFACT_ROOT>`
+旧入口脚本只允许作为兼容包装层或弃用 shim，不再是正式执行契约的一部分。
 
-进入 Stage 5 前，必须先初始化最终稿骨架：
-`python -u paper-condenser/scripts/init_final_draft.py --artifact-root <ARTIFACT_ROOT>`
+## Gate Discipline
 
-## Stage Workflow
+- 首次进入必须先运行 `gate_runtime.py`。
+- 每次正式写库后都必须重新运行 `gate_runtime.py`。
+- 只能执行 gate 返回的 `next_action`。
+- 若 gate 返回 blocker、pending confirmation 或 repair 指示，必须先处理。
+- 恢复执行时也必须先走 gate，而不是凭上下文继续。
 
-### Stage 1. 原稿理解
+## Stage Overview
 
-**Preconditions**
+### Stage 0: Bootstrap
 
-- 文件路径输入场景下，`.paper-condenser-tmp/<document-slug>/` 已存在。
-- `manuscript-profile.json` 已存在。
+**Purpose**
 
-**Required Script Calls**
+为当前原稿建立 workspace、数据库与初始视图。
 
-- 收到新的原稿文件路径时，先运行 `bootstrap_runtime.py`。
-- 若已知 `artifact-root` 但工件不完整，必须运行 `init_artifacts.py`。
-- 在任何语义分析前，必须运行 `stage1_intake.py` 并确认 `intake_status=complete`。
-- 在任何图、表、参考文献相关的语义判断前，必须运行 `extract_supporting_elements.py` 并确认 `supporting_elements_status=complete`。
+**What To Do**
 
-**LLM Tasks**
+- 用 `--source-path` 进入 gate。
+- 当 gate 返回 `bootstrap_runtime_db` 时初始化 runtime。
 
-- 按以下顺序执行 Stage 1：
-  1. 识别处理范围，判断当前输入对应整篇原稿、单章、附录式材料还是其他局部片段，并写入 `scope`。
-  2. 归纳主题与核心研究问题，形成可工作的 `topic` 草案。
-  3. 提炼 `main_work` 与 `novelty`，要求是结构化列表而不是口头总结。
-  4. 形成 `section_outline`，至少覆盖当前处理范围内的主要章节或结构单元。
-  5. 审阅 `supporting_elements` inventory，判断当前原稿中的图、表、引用和参考文献结构是否构成核心证据层，并把明显的风险或歧义写入 `open_questions`。
-  6. 识别可疑的非核心内容并写入 `removable_candidates`，其中包括可能被删改、并入正文或仅保留占位的图表候选。
-  7. 把仍未解决的理解歧义写入 `open_questions`，而不是留在聊天上下文里。
-- 只有当范围不清、文档边界不清、原稿明显过长且需要先锁定处理部分时，才向用户发起 Stage 1 提问。
+**How To Work**
 
-**Outputs**
+- 这一阶段只做运行态准备，不做语义理解。
+- 完成后，后续流程都应从 `--artifact-root` 恢复。
 
-- 更新 `manuscript-profile.json`，至少补齐 `scope`、`topic`、`main_work`、`novelty`、`section_outline`、`removable_candidates`、`open_questions`，并保留 supporting-elements inventory。
-- 当 Stage 1 达到可用理解草案时，把 `status` 更新为 `analysis_complete`。
+**Do Not**
 
-**Do Not Advance Until**
+- 不要跳过 bootstrap 直接手写 DB。
+- 不要直接创建伪造的视图文件。
 
-- 已完成 deterministic intake。
-- 已完成 supporting-elements inventory extraction。
-- 已识别当前处理范围并写入 `scope`。
-- `topic`、`main_work`、`novelty`、`section_outline`、`removable_candidates` 都已形成可用草案。
-- `open_questions` 已作为显式列表写回工件，即使当前为空也必须保留。
-- `manuscript-profile.json` 已成为 Stage 1 真源，而不是只在上下文中存在分析结论。
+**Done When**
 
-### Stage 2. 目标设置
+- `paper-condenser.db` 已建立。
+- gate 不再停留在 `stage_0_bootstrap`。
 
-**Preconditions**
+### Stage 1: Intake And Inventory
 
-- Stage 1 的基础理解已完成。
+**Purpose**
 
-**Required Script Calls**
+把原稿的确定性信息读入运行态，并提取图表、引用、参考文献等 supporting elements inventory。
 
-- 无新增必调脚本。
+**What To Do**
 
-**LLM Tasks**
+- 执行 `persist_intake_and_inventory`。
+- 让脚本完成 `content_preview`、`source_stats` 和 inventory 提取。
 
-- 按以下顺序执行 Stage 2：
-  1. 基于 Stage 1 的原稿理解，先询问并写入 `target_language`。
-  2. 询问并写入 `target_form`。
-  3. 询问并写入 `target_journal_type`。
-  4. 询问并写入 `latex_template_id`；首版只允许选择 skill 内置 preset。
-  5. 询问并写入 `target_body_length.value` 与 `target_body_length.unit`。
-  6. 询问并写入 `figure_table_preference`。
-  7. 询问并写入 `reference_handling_preference`。
-  8. 询问并写入 `must_keep`。
-  9. 询问并写入 `must_avoid`。
-  10. 在字段逐步补齐过程中持续更新 `target-settings.json`，但在正式确认前保持 `user_confirmed=false`。
-  11. 当整组设置齐备后，向用户做一次完整 readback，其中必须包含模板选择、图表偏好和参考文献处理偏好。
-  12. 只有在用户明确确认整组设置后，才把 `user_confirmed` 更新为 `true`。
+**How To Work**
 
-**Outputs**
+- 这一阶段只做 deterministic intake。
+- 输出是后续语义分析的基础，不承担主题判断和结构取舍。
 
-- 更新 `target-settings.json`。
+**Do Not**
 
-**Do Not Advance Until**
+- 不要在 Stage 1 里做语义归纳。
+- 不要直接编辑 `02` 和 `06` 视图。
 
-- `target_language`、`target_form`、`target_journal_type`、`target_body_length`、`figure_table_preference`、`reference_handling_preference`、`must_keep`、`must_avoid` 都已写入。
-- `latex_template_id` 已写入。
-- 已对整组设置做过完整 readback。
-- 用户已明确确认，且 `user_confirmed=true`。
+**Done When**
 
-### Stage 3. 风格画像
+- intake 状态完成。
+- supporting-elements inventory 已完成。
 
-**Preconditions**
+### Stage 2: Manuscript Analysis
 
-- Stage 1 的原稿理解已完成。
-- `target-settings.json` 已完成整组确认，且 `user_confirmed=true`。
+**Purpose**
 
-**Required Script Calls**
+理解原稿的主题、主要工作、创新点、结构，并把写作来源从原稿切分为可追踪的语义单元。
 
-- 无新增必调脚本。
+**What To Do**
 
-**LLM Tasks**
+- 先写 manuscript analysis。
+- 再做 raw main/aux segmentation。
+- 最后做 semantic consolidation。
 
-- 按以下顺序执行 Stage 3：
-  1. 基于 Stage 1 与 Stage 2 的结果审视原稿的表达风格、结构习惯、语气和论述方式。
-  2. 在 `Source Style` 中记录原稿已有的风格特征、优点、惯用表达和结构习惯。
-  3. 在 `Problems To Fix` 中记录需要纠正的风格、规范、语气或表达问题，包括 caption、table title、citation sentence 和 references presentation 的问题。
-  4. 在 `Target Style Guidance` 中形成面向目标稿的可执行写作原则和风格指导，包括 supporting elements 的表达方式。
-  5. 在 `Open Questions` 中记录仍需用户确认的风格偏好、语气边界或规范选择。
-- 只有在风格偏好、语气边界或表达规范存在不确定性时，才向用户发起 Stage 3 提问。
+**How To Work**
 
-**Outputs**
+- 用 `main_scope + main_scope_locator + aux_scopes[*]` 固定本轮主转写范围与辅助支撑范围。
+- `main_scope` 是主要转写目标。
+- `aux_scopes` 是支撑来源，可用于背景、综述、方法概述等补充材料，但不是第二主 scope。
+- raw segmentation 只做事实切分：
+  - paragraph
+  - figure
+  - table
+  - display block
+- semantic source units 才是后续 Stage 5/6 能正式消费的写作来源。
 
-- 更新 `style-profile.md`。
+**Do Not**
 
-**Do Not Advance Until**
+- 不要把 raw blocks 直接当成可写作真源。
+- 不要让脚本承担语义合并责任。
 
-- `Source Style` 已写入原稿风格特征。
-- `Problems To Fix` 已写入明确问题。
-- `Target Style Guidance` 已写入可执行指导。
-- `Open Questions` 已写入未决风格问题；若当前无未决项，也必须保留该章节。
+**Done When**
 
-### Stage 4. 凝缩方案
+- analysis 已写库。
+- raw segments 已写库并标注 `main|aux`。
+- semantic source units 已写库，可供后续规划消费。
 
-**Preconditions**
+### Stage 3: Target Settings
 
-- 已具备原稿理解、目标设置和风格画像。
+**Purpose**
 
-**Required Script Calls**
+固定目标稿的机械设置，并把“保留什么、优先精简什么、必须排除什么”单独收敛成经用户确认的三类列表。
 
-- 无新增必调脚本。
+**What To Do**
 
-**LLM Tasks**
+- 先写基本目标设置。
+- 再生成内容取舍建议板。
+- 再让用户确认或调整三类列表。
+- 最后执行 Stage 3 的最终确认。
 
-- 按以下顺序执行 Stage 4：
-  1. 基于 Stage 1 到 Stage 3 的结果锁定目标稿必须保留的核心信息。
-  2. 在 `Core Message` 中记录目标稿的核心论旨与必须保留的信息。
-  3. 在 `Priority Map` 中记录重点/非重点和保留优先级。
-  4. 在 `Target Outline` 中记录目标稿大纲。
-  5. 在 `Length Allocation` 中记录各部分篇幅分配。
-  6. 在 `Omit / Merge Strategy` 中记录压缩、合并、删除策略。
-  7. 在 `Figure / Table Plan` 中记录哪些图表保留、哪些表格改写为正文、哪些元素仅保留占位或删除。
-  8. 在 `Reference Plan` 中记录哪些引用必须保留、哪些参考文献结构沿用 BibTeX / citekey、哪些引用可合并或删除。
-  9. 在 `Approval` 中记录当前是否获得用户批准；仅在用户明确批准后将 `Status` 更新为 `approved`。
-- 只有在方案收敛或批准存在不确定性时，才向用户发起 Stage 4 提问。
+**How To Work**
 
-**Outputs**
+- 基本设置只处理目标语言、体例、期刊类型、LaTeX 模板、正文长度、图表偏好、参考文献偏好等硬设置。
+- 内容取舍建议板基于 semantic source units 生成三类建议：
+  - `must_keep`
+  - `simplify_first`
+  - `must_avoid`
+- 建议项必须是语义聚合内容，而不是机械段落映射。
+- 建议项需要展示 semantic units 与底层 raw segments 的溯源。
 
-- 更新 `condensation-plan.md`。
+**Do Not**
 
-**Do Not Advance Until**
+- 不要把所有 Stage 3 问题一次性抛给用户。
+- 不要把 `simplify_first` 误当作 `must_avoid`。
+- 不要在内容取舍未确认前把 `user_confirmed` 置为 `true`。
 
-- `Core Message`、`Priority Map`、`Target Outline`、`Length Allocation`、`Omit / Merge Strategy`、`Figure / Table Plan`、`Reference Plan` 都已写入可执行内容。
-- `Approval` 已显式记录 `Status: approved`。
+**Done When**
 
-### Stage 5. 最终撰写
+- 基本目标设置已写库。
+- 三类内容列表已确认并汇总回 `target_settings`。
+- `user_confirmed=true`。
 
-**Preconditions**
+### Stage 4: Style Profile
 
-- 四个核心工件齐备。
-- `target-settings.json` 已确认。
-- `target-settings.json.latex_template_id` 非空。
-- `condensation-plan.md` 已记录用户批准。
+**Purpose**
 
-**Required Script Calls**
+总结原稿风格、识别需要修正的问题，并形成目标稿应遵循的风格指导。
 
-- 进入最终写作前，必须先运行 `init_final_draft.py` 完成 drafting preflight，并初始化 `final-draft.tex` 的单文件骨架。
+**What To Do**
 
-**LLM Tasks**
+- 写入 `source_style`
+- 写入 `problems_to_fix`
+- 写入 `target_style_guidance`
+- 写入 `open_questions`
 
-1. 在骨架初始化完成后，按 `Target Outline` 顺序逐段写作，把内容持续落到 `final-draft.tex`，并同时遵循已批准的 `Figure / Table Plan` 与 `Reference Plan`。
-2. 完成整稿整合，统一标题、摘要、章节层级、过渡关系、LaTeX 结构以及 supporting elements 的嵌入方式。
-3. 对已批准保留的图、表、引用、参考文献做完整迁移；若当前轮次无法精修，必须保留清晰占位，而不是静默省略。
-4. 生成 `rewrite-report.md`，记录本轮转写的关键阶段决策、最终稿各部分相对原文的参照关系，以及后续修改风险。
-5. 做整稿与报告校对，检查术语一致性、风格一致性、长度分配遵循情况，以及是否满足 `must_keep` / `must_avoid`，并检查 supporting elements 没有被静默丢弃，且报告中的参照说明与最终稿一致。
-6. 若发现上游工件仍有关键缺口，暂停最终写作并回到相应阶段补齐；否则保留 `final-draft.tex` 与 `rewrite-report.md` 作为正式交付结果。
+**How To Work**
 
-**Outputs**
+- 既要尊重原稿已有风格，也要指出需要纠正的表达、规范和结构问题。
+- 若风格边界仍需用户决定，必须进入待确认状态。
 
-- 生成 `.paper-condenser-tmp/<document-slug>/final-draft.tex` 作为正式成稿。
-- 生成 `.paper-condenser-tmp/<document-slug>/rewrite-report.md` 作为正式转写报告。
+**Do Not**
 
-**Do Not Advance Until**
+- 不要把 Stage 4 变成简单的原稿风格复述。
+- 不要跳到具体 section 写作。
 
-- 已确认不存在未补齐的关键方案缺口。
-- `final-draft.tex` 已落盘。
-- `rewrite-report.md` 已落盘。
+**Done When**
 
-## Question Policy
+- 风格画像已写库。
+- 无阻塞推进的待确认项，或这些待确认项已明确暴露给 gate。
 
-- 只要遇到用户拥有决策权的事项，就必须提问，不得自行假定。
-- 每一阶段优先问完成该阶段所需的最少问题，避免一次抛出过多无关问题。
-- Stage 1 只允许询问原稿范围、边界、章节归属和理解阻塞点，不得提前询问目标语言、目标体例、目标期刊类型或目标篇幅。
-- 如果 Stage 1 存在未决但不阻塞进入下一阶段的问题，先把它们写入 `manuscript-profile.json.open_questions`。
-- Stage 2 只允许询问目标语言、目标体例、目标期刊类型、LaTeX 模板选择、目标正文长度、图表处理偏好、参考文献处理偏好、`must_keep` 和 `must_avoid`，不得提前进入风格画像或凝缩方案。
-- Stage 2 的模板选择只允许使用 skill 内置 preset，不接受首版外部模板路径。
-- Stage 2 收集到部分设置后，应先回写 `target-settings.json`，再继续补齐剩余字段；没有完整 readback 和明确确认前，不得把 `user_confirmed` 置为 `true`。
-- Stage 3 只允许询问风格偏好、语气边界、表达规范和修辞层面的取舍，不得提前进入 Stage 4 的重点/非重点、大纲或篇幅分配讨论。
-- 如果 Stage 3 存在未决但不阻塞进入下一阶段的风格问题，先把它们写入 `style-profile.md` 的 `Open Questions`。
-- Stage 4 只允许询问核心信息保留、重点/非重点、大纲、篇幅分配、删改策略、图表取舍、引用与参考文献迁移策略和方案批准，不得提前进入最终撰写。
-- 如果 Stage 4 仍未获得明确批准，先把结果写回 `condensation-plan.md`，保持 `Approval` 为 `Status: not approved`。
-- Stage 5 只允许处理最终 LaTeX 撰写、整稿整合、整稿校对和必要的回退判定，不得把 Stage 5 变成重新谈判 Stage 2-4 的默认入口。
-- Stage 5 生成转写报告时，不得编造原文依据；所有参照说明都必须来自四个核心工件、supporting-elements inventory 和最终稿本身。
-- 如果发现原稿风格、结构或规范存在明显问题，可以提出建议，但建议不能替代用户确认。
-- 如果用户试图跳过分析和方案确认，明确说明当前缺失的工件或确认项，并把流程拉回到最近未完成阶段。
-- 运行态工件默认只能写入当前项目目录下的 `.paper-condenser-tmp/`，不得把中间工件或最终稿直接写进 Skill 包目录。
+### Stage 5: Condensation Plan
 
-## Drafting Gate
+**Purpose**
 
-只有同时满足以下条件，才允许进入最终撰写阶段：
+先形成整体凝缩方案，再把它细化为 section 级转写真源。
 
-- `.paper-condenser-tmp/<document-slug>/manuscript-profile.json` 已形成可用版本。
-- `.paper-condenser-tmp/<document-slug>/target-settings.json` 中关键目标设置已获得用户确认。
-- `.paper-condenser-tmp/<document-slug>/target-settings.json` 中 `latex_template_id` 已明确。
-- `.paper-condenser-tmp/<document-slug>/style-profile.md` 已总结出可执行的风格指导。
-- `.paper-condenser-tmp/<document-slug>/condensation-plan.md` 已记录目标大纲、篇幅分配、图表/参考文献迁移决策和用户批准。
-- `.paper-condenser-tmp/<document-slug>/final-draft.tex` 是正式成稿的运行态真源。
-- `.paper-condenser-tmp/<document-slug>/rewrite-report.md` 是正式转写报告的运行态真源。
+**What To Do**
 
-只要其中任一条件不成立，就继续分析、提问或修订方案，不得生成最终凝缩稿。
+- 先写整体 condensation plan。
+- 获得批准后，再写 `section_rewrite_plan`。
 
-## Resources
+**How To Work**
 
-- `references/stage-workflow.md`：分阶段配方与门禁的展开说明。
-- `references/artifact-protocol.md`：四个工件的最小字段、内容边界和更新时间。
-- `references/stage1-playbook.md`：Stage 1 子步骤、提问边界、失败处理与交接检查清单。
-- `references/stage2-playbook.md`：Stage 2 子步骤、提问顺序、失败处理与交接检查清单。
-- `references/stage3-playbook.md`：Stage 3 子步骤、提问边界、失败处理与交接检查清单。
-- `references/stage4-playbook.md`：Stage 4 子步骤、提问边界、失败处理与交接检查清单。
-- `references/stage5-playbook.md`：Stage 5 LaTeX 模板初始化、分段写作、整稿整合、整稿校对与回退判定。
-- `references/rewrite-report-playbook.md`：Stage 5 转写报告的固定结构、混合级参照规则与失败处理。
-- `references/supporting-elements-playbook.md`：图、表、参考文献在 Stage 1 / 4 / 5 中的横切处理规则与脚本边界。
-- `references/SCI_paper_guidance.md`：SCI 论文体例、IMRaD 结构、图表与引文规范参考；在判断英文期刊稿的结构和表达规范时按需查阅。
-- `references/Chinese_paper_guidance.md`：中文期刊论文体例、摘要/图表/参考文献规范参考；在判断中文期刊稿的结构和表达规范时按需查阅。
-- `assets/artifact-templates/`：四个运行期工件的初始化模板。
-- `assets/latex-templates/`：Stage 5 使用的内置单文件 LaTeX preset。
-- `scripts/bootstrap_runtime.py`：文件路径输入场景的统一运行入口。
-- `scripts/stage1_intake.py`：单文件 `.tex` 原稿的 Stage 1 确定性 intake 入口。
-- `scripts/extract_supporting_elements.py`：单文件 `.tex` 原稿的 supporting-elements inventory 提取入口。
-- `scripts/init_artifacts.py`：正式工件初始化入口。
-- `scripts/init_final_draft.py`：Stage 5 的最终稿骨架初始化入口。
+- 整体方案需要收敛：
+  - 核心信息
+  - 重点/非重点
+  - 大纲
+  - 篇幅分配
+  - 图表策略
+  - 引用与参考文献策略
+- section rewrite plan 必须显式消费：
+  - `must_keep`
+  - `simplify_first`
+  - `must_avoid`
+- section rewrite plan 的来源主路径必须是 `semantic_unit:<unit_id>`。
+- 若使用 aux 支撑内容，必须写清理由。
+
+**Do Not**
+
+- 不要只给一个大纲和粗略字数目标就进入最终写作。
+- 不要让 Stage 6 脱离 section rewrite plan 自由发挥。
+
+**Done When**
+
+- condensation plan 已批准。
+- section rewrite plan 已落库，足以驱动逐节写作。
+
+### Stage 6: Final Drafting
+
+**Purpose**
+
+按 section 循环进行撰写、校验、审阅和批准，最后再渲染最终 bundle。
+
+**What To Do**
+
+- 先准备当前 active section。
+- 写入该 section 的 draft 与 provenance。
+- 通过字数校验。
+- 生成 section review 工件并等待批准。
+- 全部 section 完成后，再确认输出目录并渲染最终 bundle。
+
+**How To Work**
+
+- 每节都必须经过：
+  - 准备
+  - 撰写
+  - 字数校验
+  - 审阅
+  - 批准
+- `source_refs` 只允许引用 `semantic_unit:<unit_id>`。
+- 当前 section 草稿字数默认必须落在计划值的 `±15%` 容差内。
+- section review 工件必须显示：
+  - 转写结果
+  - planned vs actual count
+  - semantic units
+  - main/aux 构成
+  - 相关图表/引用/参考文献
+- 全部 section 批准后，先询问输出目录；默认当前工作目录。
+- 最终渲染时，若最终稿实际引用了图片，必须复制到输出目录下的 `images/` 子目录并改写路径。
+
+**Do Not**
+
+- 不要一次性生成整篇 final draft。
+- 不要在某节未批准前进入下一节。
+- 不要让最终稿继续引用原稿位置上的图片路径。
+
+**Done When**
+
+- 所有 section 已批准。
+- 输出目录已确认。
+- `final-draft.tex` 与 `rewrite-report.md` 已渲染。
+- 若用到图片，输出目录下的 `images/` 已就绪。
+
+## Workflow State Machine
+
+- `stage_0_bootstrap`
+  - `next_action=bootstrap_runtime_db`
+- `stage_1_intake_and_inventory`
+  - `next_action=persist_intake_and_inventory`
+- `stage_2_manuscript_analysis`
+  - `next_action=persist_manuscript_analysis` or `persist_raw_scope_segments` or `persist_semantic_source_units`
+- `stage_3_target_settings`
+  - `next_action=persist_target_settings_basics` or `persist_content_selection_board` or `confirm_content_selection` or `finalize_target_settings`
+- `stage_4_style_profile`
+  - `next_action=persist_style_profile`
+- `stage_5_condensation_plan`
+  - `next_action=persist_condensation_plan` or `persist_section_rewrite_plan`
+- `stage_6_final_drafting`
+  - `next_action=prepare_section_drafting` / `persist_section_draft` / `approve_section_draft` / `persist_output_target` / `render_final_output_bundle`
+- `stage_7_completed`
+  - `next_action=completed`
+
+## Action Summary
+
+### `bootstrap_runtime_db`
+
+- 用途：
+  - 初始化 workspace 与 SQLite schema
+  - 写入 source metadata
+  - 首次渲染只读视图
+- 输入：
+  - `--source-path`
+
+### `persist_intake_and_inventory`
+
+- 用途：
+  - 读取源文件
+  - 写入 deterministic intake
+  - 写入 supporting-elements inventory
+- 输入：
+  - `--artifact-root`
+- 不接受 LLM 语义 payload
+
+### `persist_manuscript_analysis`
+
+- 用途：
+  - 持久化 Stage 2 的 manuscript analysis 结果
+- 输入 payload 至少包含：
+  - `main_scope`
+  - `main_scope_locator`
+  - `aux_scopes`
+  - `topic`
+  - `main_work`
+  - `novelty`
+  - `section_outline`
+  - `removable_candidates`
+  - `open_questions`
+- 可选：
+  - `pending_confirmations`
+
+### `persist_raw_scope_segments`
+
+- 用途：
+  - 在 `main_scope` 与 `aux_scopes` 内执行 deterministic raw segmentation
+  - 将 paragraph / figure / table / display block 写入 DB，并标记 `scope_role=main|aux`
+- 输入：
+  - `--artifact-root`
+- 不接受 LLM 语义 payload
+
+### `persist_semantic_source_units`
+
+- 用途：
+  - 基于 raw segmentation 写入真正可供 Stage 5 / 6 使用的 semantic source units
+- 输入 payload 至少包含：
+  - `units`
+- 每个 unit 至少包含：
+  - `unit_id`
+  - `unit_title`
+  - `unit_kind`
+  - `summary`
+  - `member_segment_ids`
+- 可选：
+  - `elements`
+
+### `persist_target_settings_basics`
+
+- 用途：
+  - 先持久化 Stage 3 的基本目标设置
+  - 暂不要求在这一步完成三类内容取舍的最终确认
+- 输入 payload 至少包含：
+  - `target_language`
+  - `target_form`
+  - `target_journal_type`
+  - `latex_template_id`
+  - `target_body_length`
+  - `figure_table_preference`
+  - `reference_handling_preference`
+
+### `persist_content_selection_board`
+
+- 用途：
+  - 基于 `semantic_source_units` 生成内容取舍建议板
+  - 组织 `must_keep` / `simplify_first` / `must_avoid`
+- 输入 payload 至少包含：
+  - `items`
+
+### `confirm_content_selection`
+
+- 用途：
+  - 接收用户对三类内容列表的确认与调整
+  - 将最终确认结果汇总回 `target_settings`
+- 输入 payload 至少包含：
+  - `items`
+
+### `finalize_target_settings`
+
+- 用途：
+  - 在基本设置和内容取舍都完成后执行 Stage 3 最终确认
+- 输入 payload 至少包含：
+  - `user_confirmed=true`
+
+### `persist_style_profile`
+
+- 用途：
+  - 持久化风格画像
+- 输入 payload 至少包含：
+  - `source_style`
+  - `problems_to_fix`
+  - `target_style_guidance`
+  - `open_questions`
+
+### `persist_condensation_plan`
+
+- 用途：
+  - 持久化凝缩方案与批准状态
+- 输入 payload 至少包含：
+  - `core_message`
+  - `priority_map`
+  - `target_outline`
+  - `length_allocation`
+  - `omit_merge_strategy`
+  - `figure_table_plan`
+  - `reference_plan`
+  - `approval_status`
+
+### `persist_section_rewrite_plan`
+
+- 用途：
+  - 按目标 section 持久化更细的转写方案
+  - 绑定 semantic units、supporting elements 和篇幅计划
+  - 消费已确认的 `must_keep` / `simplify_first` / `must_avoid`
+- 输入 payload 至少包含：
+  - `sections`
+
+### `prepare_section_drafting`
+
+- 用途：
+  - 选择下一个未批准 section
+  - 设置 active section 并重渲染 drafting board
+- 输入：
+  - `--artifact-root`
+
+### `persist_section_draft`
+
+- 用途：
+  - 持久化当前 active section 的 draft 内容与 provenance
+  - 计算实际字数并执行 `±15%` 容差校验
+  - 生成当前 section 的独立审阅工件
+- 输入 payload 至少包含：
+  - `section_id`
+  - `draft_tex`
+  - `source_refs`
+
+### `approve_section_draft`
+
+- 用途：
+  - 记录用户对当前 active section 的批准或驳回
+- 输入 payload 至少包含：
+  - `section_id`
+  - `approved`
+
+### `persist_output_target`
+
+- 用途：
+  - 持久化最终 bundle 的输出目录
+  - 若用户未指定目录，默认当前工作目录
+- 输入 payload 至少包含：
+  - `user_confirmed`
+- 可选：
+  - `output_dir`
+
+### `render_final_output_bundle`
+
+- 用途：
+  - 将全部已批准 section 装配为 `final-draft.tex`
+  - 生成最终 `rewrite-report.md`
+  - 复制最终稿实际引用图片到输出目录下的 `images/`
+  - 改写 LaTeX 图像路径
+- 输入：
+  - `--artifact-root`
+
+## Responsibilities
+
+### Must Be Done By LLM
+
+- manuscript analysis
+- semantic consolidation from raw blocks to semantic source units
+- target setting negotiation
+- content selection reasoning
+- style reasoning
+- condensation planning
+- section-level rewrite planning
+- section drafting
+- rewrite report 内容生成
+
+### Must Be Done By Scripts
+
+- SQLite schema 初始化
+- gate 计算与 `next_action` 判定
+- source metadata / intake / supporting-elements inventory 的确定性提取
+- raw main/aux scope segmentation
+- DB 写入与状态同步
+- 只读视图渲染
+- 中间工件模板加载与 Markdown 渲染
+- section 字数校验
+- 最终 bundle 渲染与图片复制
+
+## Reference Loading Guide
+
+默认不要批量读取 `references/`。只有遇到当前任务真正需要的细节时，才读取对应文件。
+
+- 需要 DB schema、表职责或字段语义时：
+  - `references/runtime-database-contract.md`
+- 需要 gate、CLI、恢复执行纪律时：
+  - `references/gate-and-stage-runtime.md`
+- 需要确认只读视图和最终输出的渲染语义时：
+  - `references/artifact-protocol.md`
+- 需要快速看状态机、门禁和 `next_action` 总览时：
+  - `references/stage-workflow.md`
+- 需要当前阶段的细化执行规则时：
+  - `references/stage0-playbook.md`
+  - `references/stage1-playbook.md`
+  - `references/stage2-playbook.md`
+  - `references/stage3-playbook.md`
+  - `references/stage4-playbook.md`
+  - `references/stage5-playbook.md`
+  - `references/stage6-playbook.md`
+- 需要图、表、引用、参考文献的横切规则时：
+  - `references/supporting-elements-playbook.md`
+- 需要最终转写报告的细则时：
+  - `references/rewrite-report-playbook.md`
+- 需要中文或 SCI 期刊写作规范参考时：
+  - `references/Chinese_paper_guidance.md`
+  - `references/SCI_paper_guidance.md`
+
+这些文档是按需加载的补充材料，不是首次执行时必须通读的前置集合。
