@@ -3,13 +3,18 @@
 - User confirmed: `{{ settings.user_confirmed }}`
 
 ## Core Settings
+- Working language: {{ settings.working_language or "（空）" }}
+- Language context confirmed: `{{ settings.language_context_confirmed }}`
 - Target language: {{ settings.target_language or "（空）" }}
+- Target language source: {{ settings.target_language_source or "（空）" }}
 - Target form: {{ settings.target_form or "（空）" }}
 - Target journal type: {{ settings.target_journal_type or "（空）" }}
 - LaTeX template id: {{ settings.latex_template_id or "（空）" }}
 - Target body length: {{ settings.target_body_length_display or "（空）" }}
 - Figure/table preference: {{ settings.figure_table_preference or "（空）" }}
 - Reference handling preference: {{ settings.reference_handling_preference or "（空）" }}
+- Runtime template language: {{ settings.runtime_template_language or "（空）" }}
+- Runtime templates ready: `{{ settings.runtime_templates_ready }}`
 - Basics completed: `{{ settings.basics_completed }}`
 - Content-selection board ready: `{{ settings.content_selection_board_ready }}`
 - Content-selection confirmed: `{{ settings.content_selection_confirmed }}`

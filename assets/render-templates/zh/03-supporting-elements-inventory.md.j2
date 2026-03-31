@@ -1,0 +1,47 @@
+# 支撑元素清单
+
+- 状态：`{{ inventory.status }}`
+
+## 摘要
+- 图：{{ summary.figures_count }}
+- 表：{{ summary.tables_count }}
+- 引用：{{ summary.citations_count }}
+- 参考文献模式：{{ summary.bibliography_mode }}
+
+## 图
+{% if inventory.figures %}
+{% for item in inventory.figures %}
+- 图 {{ item.index }}：label=`{{ item.label }}` caption=`{{ item.caption_preview }}` 行={{ item.source_line_start }}-{{ item.source_line_end }}
+{% endfor %}
+{% else %}
+- 无
+{% endif %}
+
+## 表
+{% if inventory.tables %}
+{% for item in inventory.tables %}
+- 表 {{ item.index }}：label=`{{ item.label }}` caption=`{{ item.caption_preview }}` 行={{ item.source_line_start }}-{{ item.source_line_end }}
+{% endfor %}
+{% else %}
+- 无
+{% endif %}
+
+## 引用
+{% if inventory.citations %}
+{% for item in inventory.citations %}
+- 引用 {{ item.index }}：command=`{{ item.command }}` keys=[{{ item["keys"] | join(", ") }}] 行={{ item.source_line }}
+{% endfor %}
+{% else %}
+- 无
+{% endif %}
+
+## 参考文献
+- 模式：`{{ bibliography.mode }}`
+- 资源：
+{% if bibliography.resources %}
+{% for item in bibliography.resources %}
+  - {{ item }}
+{% endfor %}
+{% else %}
+  - 无
+{% endif %}

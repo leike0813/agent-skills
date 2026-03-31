@@ -9,6 +9,7 @@
 {% if sections %}
 {% for item in sections %}
 - [{{ item.section_order }}] {{ item.section_title }} | status=`{{ item.plan_status }}` | review=`{{ item.review_status }}` | count=`{{ item.actual_count_value }}` / {{ item.planned_count_value }} {{ item.count_unit }} | check=`{{ item.count_check_status }}` | semantic-units={{ item.semantic_source_count }}
+  Summary: {{ item.section_summary or "（空）" }}
 {% endfor %}
 {% else %}
 - （空）

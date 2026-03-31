@@ -1,0 +1,24 @@
+# 原始 Scope 切分
+
+## 摘要
+- Main scope 定位器：`{{ main_scope_locator.mode }}{% if main_scope_locator.mode == "line_range" %}:{{ main_scope_locator.line_start }}-{{ main_scope_locator.line_end }}{% endif %}`
+- Aux scope 数量：{{ aux_scopes|length }}
+- Segment 数量：{{ segments|length }}
+
+{% if aux_scopes %}
+## Aux Scope Buckets
+{% for item in aux_scopes %}
+- `{{ item.aux_id }}` | {{ item.label }} | {{ item.purpose }} | `{{ item.locator.mode }}{% if item.locator.mode == "line_range" %}:{{ item.locator.line_start }}-{{ item.locator.line_end }}{% endif %}`
+{% endfor %}
+{% endif %}
+
+## 原始块
+{% if segments %}
+{% for item in segments %}
+- [{{ item.segment_order }}] {{ item.segment_id }} | {{ item.segment_kind }} | role={{ item.scope_role }} | bucket=`{{ item.scope_bucket_id }}` | label={{ item.scope_label }} | {{ item.heading_context or "（无 heading）" }} | 行={{ item.source_line_start }}-{{ item.source_line_end }} | chars={{ item.char_count }}
+
+  {{ item.source_text_preview }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}

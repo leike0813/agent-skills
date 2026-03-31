@@ -1,0 +1,46 @@
+# 运行摘要
+
+## 运行态
+- 工件根目录：`{{ runtime.artifact_root }}`
+- 数据库路径：`{{ runtime.db_path }}`
+- 当前阶段：`{{ runtime.workflow_stage }}`
+- 下一动作：`{{ runtime.next_action }}`
+- 工作语言：{{ runtime.working_language or "（空）" }}
+- 目标文稿语言：{{ runtime.target_language or "（空）" }}
+- 目标语言来源：{{ runtime.target_language_source or "（空）" }}
+
+## 原稿
+- 原稿路径：`{{ source.source_path }}`
+- 原稿类型：`{{ source.source_type }}`
+
+## Blockers
+{% if blockers %}
+{% for item in blockers %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- 无 blocker
+{% endif %}
+
+## 待确认事项
+{% if pending_confirmations %}
+{% for item in pending_confirmations %}
+- [{{ item.stage_name }}] {{ item.item_key }}: {{ item.prompt }}
+{% endfor %}
+{% else %}
+- 无待确认事项
+{% endif %}
+
+## 指令引用
+{% if instruction_refs %}
+{% for item in instruction_refs %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- 无
+{% endif %}
+
+## 已渲染视图
+{% for item in rendered_views %}
+- {{ item.name }}: `{{ item.path }}`
+{% endfor %}

@@ -1,0 +1,47 @@
+# 目标设置
+
+- 用户总确认：`{{ settings.user_confirmed }}`
+
+## 核心设置
+- 工作语言：{{ settings.working_language or "（空）" }}
+- 语言上下文已确认：`{{ settings.language_context_confirmed }}`
+- 目标文稿语言：{{ settings.target_language or "（空）" }}
+- 目标语言来源：{{ settings.target_language_source or "（空）" }}
+- 目标体例：{{ settings.target_form or "（空）" }}
+- 目标期刊类型：{{ settings.target_journal_type or "（空）" }}
+- LaTeX 模板 id：{{ settings.latex_template_id or "（空）" }}
+- 目标正文篇幅：{{ settings.target_body_length_display or "（空）" }}
+- 图表偏好：{{ settings.figure_table_preference or "（空）" }}
+- 参考文献偏好：{{ settings.reference_handling_preference or "（空）" }}
+- 模板副本语言：{{ settings.runtime_template_language or "（空）" }}
+- 模板副本已就绪：`{{ settings.runtime_templates_ready }}`
+- Basics 完成：`{{ settings.basics_completed }}`
+- 内容取舍建议板已生成：`{{ settings.content_selection_board_ready }}`
+- 内容取舍已确认：`{{ settings.content_selection_confirmed }}`
+
+## Must Keep
+{% if settings.must_keep %}
+{% for item in settings.must_keep %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+## Simplify First
+{% if settings.simplify_first %}
+{% for item in settings.simplify_first %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+## Must Avoid
+{% if settings.must_avoid %}
+{% for item in settings.must_avoid %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}

@@ -1,20 +1,20 @@
-# Section Review
+# Section 审阅
 
-## Section
-- Section id: `{{ section.section_id }}`
-- Title: {{ section.section_title }}
-- Order: {{ section.section_order }}
-- Planned count: {{ section.planned_count_value }} {{ section.count_unit }}
-- Actual count: {{ section.actual_count_value }} {{ section.count_unit }}
-- Tolerance: ±{{ section.tolerance_percent }}%
-- Count check: `{{ section.count_check_status }}`
-- Review status: `{{ section.review_status }}`
+## 章节
+- Section id：`{{ section.section_id }}`
+- 标题：{{ section.section_title }}
+- 顺序：{{ section.section_order }}
+- 计划篇幅：{{ section.planned_count_value }} {{ section.count_unit }}
+- 实际篇幅：{{ section.actual_count_value }} {{ section.count_unit }}
+- 容差：±{{ section.tolerance_percent }}%
+- 字数校验：`{{ section.count_check_status }}`
+- 审阅状态：`{{ section.review_status }}`
 
-## Section Constraints
-### Section Summary
+## 章节约束
+### 本节摘要
 {{ section.section_summary or "（空）" }}
 
-### Section Strategy
+### 组织策略
 {{ section.section_strategy or "（空）" }}
 
 ### Must Cover
@@ -44,7 +44,7 @@
 - （空）
 {% endif %}
 
-### Figure / Table Usage
+### 图表使用
 {% if section.figure_table_usage %}
 {% for figure_table in section.figure_table_usage %}
 - {{ figure_table.element_kind }} `{{ figure_table.element_ref }}` -> `{{ figure_table.action }}`{% if figure_table.note %} | {{ figure_table.note }}{% endif %}
@@ -53,7 +53,7 @@
 - （空）
 {% endif %}
 
-### Reference Usage
+### 引用使用
 {% if section.reference_usage %}
 {% for item in section.reference_usage %}
 - {{ item }}
@@ -62,22 +62,22 @@
 - （空）
 {% endif %}
 
-### Aux Usage Rationale
+### Aux 使用理由
 {{ section.aux_usage_rationale or "（空）" }}
 
-## Draft
+## 草稿
 ```tex
 {{ section.draft_tex }}
 ```
 
-## Provenance
+## 溯源
 {% if section.sources_expanded %}
 {% for source in section.sources_expanded %}
-- {{ source.source_kind }}: `{{ source.source_ref }}`{% if source.usage_note %} | {{ source.usage_note }}{% endif %}
+- {{ source.source_kind }}：`{{ source.source_ref }}`{% if source.usage_note %} | {{ source.usage_note }}{% endif %}
 {% if source.semantic_unit is defined %}
-  Unit title: {{ source.semantic_unit.unit_title }}
-  Summary: {{ source.semantic_unit.summary }}
-  Raw members:
+  单元标题：{{ source.semantic_unit.unit_title }}
+  摘要：{{ source.semantic_unit.summary }}
+  原始成员：
 {% if source.semantic_unit.member_segments %}
 {% for member in source.semantic_unit.member_segments %}
     - `{{ member.segment_id }}` | {{ member.segment_kind }} | role={{ member.scope_role }} | bucket=`{{ member.scope_bucket_id }}`{% if member.scope_label %} | {{ member.scope_label }}{% endif %} | {{ member.source_text_preview }}
@@ -91,7 +91,7 @@
 - （空）
 {% endif %}
 
-## Events
+## 事件
 {% if section.events %}
 {% for event in section.events %}
 - {{ event.created_at }} | {{ event.event_type }}{% if event.note %} | {{ event.note }}{% endif %}

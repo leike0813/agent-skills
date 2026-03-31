@@ -2,6 +2,7 @@
 
 ## Summary
 - Planned sections: {{ sections|length }}
+- Stage 5 entry rule: this detailed plan must be approved before any section drafting can begin.
 
 {% for item in sections %}
 ## {{ item.section_order }}. {{ item.section_title }}
@@ -9,6 +10,12 @@
 - Planned count: {{ item.planned_count_value }} {{ item.count_unit }}
 - Tolerance: ±{{ item.tolerance_percent }}%
 - Status: `{{ item.status }}`
+
+### Section Summary
+{{ item.section_summary or "（空）" }}
+
+### Section Strategy
+{{ item.section_strategy or "（空）" }}
 
 ### Must Cover
 {% if item.must_cover %}
@@ -36,6 +43,27 @@
 {% else %}
 - （空）
 {% endif %}
+
+### Figure / Table Usage
+{% if item.figure_table_usage %}
+{% for figure_table in item.figure_table_usage %}
+- {{ figure_table.element_kind }} `{{ figure_table.element_ref }}` -> `{{ figure_table.action }}`{% if figure_table.note %} | {{ figure_table.note }}{% endif %}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Reference Usage
+{% if item.reference_usage %}
+{% for ref in item.reference_usage %}
+- {{ ref }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### Aux Usage Rationale
+{{ item.aux_usage_rationale or "（空）" }}
 
 ### Source Bindings
 {% if item.sources_expanded %}

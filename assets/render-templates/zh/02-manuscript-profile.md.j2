@@ -1,0 +1,85 @@
+# 原稿画像
+
+## 原稿
+- 原稿路径：`{{ source.source_path }}`
+- 原稿类型：`{{ source.source_type }}`
+
+## Intake
+- Intake 状态：`{{ intake.intake_status }}`
+- 字符数：{{ intake.source_stats.char_count }}
+- 行数：{{ intake.source_stats.line_count }}
+- 文件大小（字节）：{{ intake.source_stats.file_size_bytes }}
+
+### 内容预览
+{{ intake.content_preview or "（空）" }}
+
+## 支撑元素摘要
+- 图：{{ supporting_elements_summary.figures_count }}
+- 表：{{ supporting_elements_summary.tables_count }}
+- 引用：{{ supporting_elements_summary.citations_count }}
+- 参考文献模式：{{ supporting_elements_summary.bibliography_mode }}
+
+## 分析
+- 状态：`{{ analysis.status }}`
+
+### Scope
+#### Main
+- 范围：{{ analysis.main_scope or "（空）" }}
+- 定位器：`{{ analysis.main_scope_locator.mode }}{% if analysis.main_scope_locator.mode == "line_range" %}:{{ analysis.main_scope_locator.line_start }}-{{ analysis.main_scope_locator.line_end }}{% endif %}`
+
+#### Aux
+{% if analysis.aux_scopes %}
+{% for item in analysis.aux_scopes %}
+- `{{ item.aux_id }}` | {{ item.label }} | {{ item.purpose }} | `{{ item.locator.mode }}{% if item.locator.mode == "line_range" %}:{{ item.locator.line_start }}-{{ item.locator.line_end }}{% endif %}`
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### 主题
+{{ analysis.topic or "（空）" }}
+
+### 主要工作
+{% if analysis.main_work %}
+{% for item in analysis.main_work %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### 创新点
+{% if analysis.novelty %}
+{% for item in analysis.novelty %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### 结构提取
+{% if analysis.section_outline %}
+{% for item in analysis.section_outline %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### 可删减候选
+{% if analysis.removable_candidates %}
+{% for item in analysis.removable_candidates %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+### 开放问题
+{% if analysis.open_questions %}
+{% for item in analysis.open_questions %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
