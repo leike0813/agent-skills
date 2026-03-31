@@ -21,7 +21,7 @@
 - 例如：
   - `runtime_inputs.source_path` 一旦在 bootstrap 写入，`normalize_source` 只能读取它
   - `section_scopes.citation_scope` 一旦在 stage 2 写入，`prepare_citation_workset` 只能读取它
-  - `render_and_validate --mode render` 只能读取 DB 内容；它不允许重传输入源，但允许可选 `--out-dir` 仅覆盖最终输出目录
+  - `render_and_validate --mode render` 只能读取 DB 内容；它不允许重传输入源或临时覆盖输出目录
 
 ## CLI
 
@@ -80,11 +80,16 @@ stdout 只输出一个 JSON 对象，字段固定为：
   - 用途：
     - 告诉 agent 当前这一步该补读哪些附录
     - 避免 agent 在启动阶段一次性读取全部 `references/` 文档
+- `core_instruction: string`
+  - gate 每一步都返回的固定核心指令块。
+  - 用途：
+    - 反复提醒跨阶段都必须遵守的主规则
+    - 让长上下文场景中的 agent 不必只靠早先读过的 `SKILL.md` 记忆执行纪律
 - `execution_note: string`
   - 当前动作的一条短执行提示。
   - 用途：
     - 收口当前一步最重要的即时约束
-    - 与 `instruction_refs` 配合使用；前者给短提示，后者给详细附录
+    - 与 `instruction_refs`、`core_instruction` 配合使用；`core_instruction` 给固定主指令，`execution_note` 给短提示，`instruction_refs` 给详细附录
 - `sql_examples: object[]`
   - 当前动作对应的最小 SQL 示例列表。
   - 每项结构：
@@ -129,9 +134,26 @@ stdout 只输出一个 JSON 对象，字段固定为：
 
 - 启动时先读 `SKILL.md`
 - 进入具体阶段后，再按 `instruction_refs` 读取附录
-- 同时遵守 gate 返回的 `execution_note`
+- 同时遵守 gate 返回的 `core_instruction` 与 `execution_note`
 - 若当前 step 因 payload 错误被 gate 卡住，优先查看当前阶段文档和 `stage_runtime_interface.md` 中的 payload 约束
 - 若 gate 已进入 repair 路径，再补读 `references/failure_recovery.md`
+
+## `core_instruction` 约束
+
+`core_instruction` 是 gate 每一步都返回的固定核心指令块，用来重复提醒跨阶段都必须遵守的主规则。
+
+使用方式：
+
+- 每次读取 gate payload 后，都先看 `next_action`
+- 再看 `core_instruction`
+- 再看 `execution_note`
+- 然后按 `instruction_refs` 读取当前阶段附录
+
+职责分工：
+
+- `core_instruction`：跨阶段常驻规则
+- `execution_note`：当前一步最关键的即时执行提示
+- `instruction_refs`：当前一步需要按需阅读的详细附录
 
 ## `execution_note` 约束
 
@@ -145,8 +167,10 @@ stdout 只输出一个 JSON 对象，字段固定为：
 
 特殊约束：
 
+- 当 `next_action = bootstrap_runtime_db` 时，`execution_note` 会提示当前步先确定最终输出目录并写入 DB
 - 当 `next_action = render_and_validate` 时，`execution_note` 会提示当前已经进入最终发布前一步
 - 并提示最终 assistant 输出应直接采用 render 脚本 stdout 返回的 JSON
+- 并说明 render 会读取 DB 中的 `output_dir`，同时把同一个 JSON 镜像写到 `./literature-digest.result.json`
 - 这条约束只放在 stage 6 的 `execution_note` 中，不作为更高层的全局提示重复出现
 
 返回规律：
@@ -201,6 +225,9 @@ gate 至少检查这些关键前置：
   - 当 `next_action = persist_reference_entry_splits` 时，还要求：
     - `reference_entries`
     - `reference_parse_candidates`
+    - 当前 `prepare_references_workset` 已返回 `requires_split_review=true`
+    - 当前复核对象只来自 `suspect_blocks`
+    - `execution_note` 只允许做 `split` / `keep` / `merge` 边界决策，不允许抽 `author/title/year`
   - 当 `next_action = persist_references` 时，还要求：
     - `reference_entries`
     - `reference_parse_candidates`
@@ -237,7 +264,8 @@ gate 至少检查这些关键前置：
   "current_stage": "stage_0_bootstrap",
   "current_substep": "bootstrap_runtime_db",
   "stage_gate": "blocked",
-  "next_action": "bootstrap_runtime_db"
+  "next_action": "bootstrap_runtime_db",
+  "core_instruction": "## 核心执行指令\n..."
 }
 ```
 
@@ -248,7 +276,9 @@ gate 至少检查这些关键前置：
   "current_stage": "stage_4_references",
   "current_substep": "prepare_references_workset",
   "stage_gate": "ready",
-  "next_action": "prepare_references_workset"
+  "next_action": "prepare_references_workset",
+  "core_instruction": "## 核心执行指令\n...",
+  "execution_note": "Prepare the references workset from the stored references_scope first; let the script build entries, batches, and parse candidates."
 }
 ```
 

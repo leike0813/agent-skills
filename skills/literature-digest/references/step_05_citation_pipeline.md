@@ -16,6 +16,68 @@
 - `unmapped_mentions`
 - `report_md`
 
+最小 `citation_analysis.json` 示例：
+
+```json
+{
+  "meta": {
+    "language": "zh-CN",
+    "scope": {
+      "section_title": "Introduction",
+      "line_start": 1,
+      "line_end": 80
+    }
+  },
+  "summary": "原文先用早期注意力与集合预测工作铺背景，再对比主流检测范式与直接集合预测路线，最后引出本文关注的问题设置。",
+  "timeline": {
+    "early": {
+      "summary": "早期工作主要提供注意力与匹配式建模背景。",
+      "ref_indexes": [2, 8]
+    },
+    "mid": {
+      "summary": "中期工作更多体现成熟检测基线和后处理改良路线。",
+      "ref_indexes": [15, 24]
+    },
+    "recent": {
+      "summary": "近期工作把 transformer 与 end-to-end 检测放到直接对比位置。",
+      "ref_indexes": [36, 45]
+    }
+  },
+  "items": [
+    {
+      "ref_index": 36,
+      "ref_number": 37,
+      "citation_label": "[37]",
+      "author_year_label": "Carion, 2020",
+      "reference": {
+        "author": ["Carion, N."],
+        "title": "End-to-End Object Detection with Transformers",
+        "year": 2020
+      },
+      "mentions": [
+        {
+          "mention_id": "m1",
+          "marker": "[37]",
+          "style": "numeric",
+          "line_start": 12,
+          "line_end": 12,
+          "snippet": "..."
+        }
+      ],
+      "function": "contrast",
+      "topic": "end-to-end object detection",
+      "usage": "原文借它界定与本文最接近的直接集合预测路线。",
+      "keywords": ["transformer", "object detection", "set prediction"],
+      "summary": "原文把该工作当作直接集合预测路线的代表，用来衬托本文如何组织相关工作的技术谱系。",
+      "is_key_reference": true,
+      "confidence": 0.93
+    }
+  ],
+  "unmapped_mentions": [],
+  "report_md": "## 文献综述章节引文线索\n..."
+}
+```
+
 ### `items` 数组中条目的最小结构
 
 - `ref_index`

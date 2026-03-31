@@ -51,7 +51,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
   - `normalize_source` 只能读 `source_path`
   - `prepare_references_workset` 只能读前序已确定的 `references_scope`
   - `prepare_citation_workset` 只能读前序已确定的 `citation_scope`
-  - `render_and_validate --mode render` 只能读 DB 内容，不能显式指定 `source_path`；只允许可选 `--out-dir` 覆盖输出目录
+  - `render_and_validate --mode render` 只能读 DB 内容，不能显式指定 `source_path`；正式输出目录来自 DB 中的 `output_dir`
 
 ### 辅助工具 subcommand
 
@@ -70,6 +70,7 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
   [--db-path PATH] \
   --source-path PATH \
   [--language LANG] \
+  [--output-dir DIR] \
   [--input-hash HASH] \
   [--generated-at ISO8601] \
   [--model MODEL]
@@ -83,6 +84,8 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
   - 可选。输出语言；缺省时脚本应回退默认值。
 - `--input-hash`
   - 可选。若不提供，由脚本自行计算。
+- `--output-dir`
+  - 可选。正式公开产物目录；若不提供，脚本把当前工作目录写入 DB。
 - `--generated-at`
   - 可选。若不提供，由脚本生成 UTC 时间。
 - `--model`
@@ -93,7 +96,8 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
 ```bash
 python scripts/stage_runtime.py bootstrap_runtime_db \
   --source-path "/abs/path/paper.md" \
-  --language "zh-CN"
+  --language "zh-CN" \
+  --output-dir "/abs/path/artifacts"
 ```
 
 ### 典型非法示例
@@ -109,6 +113,7 @@ python scripts/stage_runtime.py bootstrap_runtime_db
 ```json
 {
   "db_path": "/abs/path/.literature_digest_tmp/literature_digest.db",
+  "output_dir": "/abs/path/artifacts",
   "error": null
 }
 ```
@@ -134,7 +139,7 @@ python scripts/stage_runtime.py normalize_source \
 
 - 不接受业务 payload
 - 只读取 bootstrap 已写入的 `source_path` 与 `language`
-- 不再接受 `--source-path`、`--language`
+- 本步只接受 `--out-md`、`--out-meta`、`--persist-db-only` 这三个可选 CLI 参数
 
 ### 参数含义
 
@@ -407,6 +412,7 @@ python scripts/stage_runtime.py prepare_references_workset \
 
 - 不接受业务 payload
 - 只依赖前序已入库决策：标准化文本与 `references_scope`
+- deterministic splitting 固定采用 `line-first`：先按行切，单行内再做 inline split；疑似跨行续写只会进入 review，不会自动合并
 
 ### 输出字段说明
 
@@ -422,10 +428,13 @@ python scripts/stage_runtime.py prepare_references_workset \
   - 编号异常、pattern 歧义、title 边界可疑等 warning 列表
 - `entry_style`
   - 当前 references workset 的著录风格：`numeric` / `author-year` / `mixed`
+- `split_mode`
+  - 当前 deterministic splitting 策略；固定为 `line-first`
 - `requires_split_review`
-  - 若为 `true`，说明 deterministic splitting 之后仍存在 grouped-entry 风险，下一步必须先执行 `persist_reference_entry_splits`
-- `suspect_entries`
-  - 仍可能包含多条著录的 raw entry 及原因说明
+  - 若为 `true`，说明 deterministic splitting 之后仍存在边界存疑的 block，下一步必须先执行 `persist_reference_entry_splits`
+- `suspect_blocks`
+  - 仍需要边界复核的 block 及原因说明
+  - 每个 block 至少带 `block_index`、`source_text`、`line_start`、`line_end`、`reasons`、`proposed_entries`、`suspicion_kind`
 
 ### 最小合法示例
 
@@ -452,9 +461,10 @@ python scripts/stage_runtime.py prepare_references_workset --payload-file /tmp/r
   "workset_path": "/tmp/references_workset.json",
   "review_path": "/tmp/references_workset_review.json",
   "entry_style": "numeric",
+  "split_mode": "line-first",
   "grouping_suspect_count": 0,
   "requires_split_review": false,
-  "suspect_entries": [],
+  "suspect_blocks": [],
   "error": null
 }
 ```
@@ -487,31 +497,35 @@ python scripts/stage_runtime.py persist_reference_entry_splits \
 
 ```json
 {
-  "entries": []
+  "blocks": []
 }
 ```
 
 ### 字段说明
 
-- `entries`
-  - 必填。复核后的单条 raw references 条目数组。
-  - 每项至少应包含：`entry_index`、`raw`。
-  - `entry_index` 必须等于数组中的 0-based 顺序位置。
-  - `raw` 只能调整条目边界，不能改写原文文本。
-  - 全部 `entries[*].raw` 连接后的规范化文本必须与原始 references scope 完全一致。
+- `blocks`
+  - 必填。仅包含当前 `suspect_blocks` 的局部复核结果。
+- `blocks[*].block_index`
+  - 必填。必须对应当前 workset 返回的 suspect block。
+- `blocks[*].resolution`
+  - 必填。只允许 `split` / `keep` / `merge`。
+- `blocks[*].entries`
+  - 必填。复核后的 raw entry 列表。
+  - 这些文本只能调整边界，不能改写原文内容。
+  - 全部 `blocks[*].entries[]` 连接后的规范化文本必须与对应 suspect block 的 `source_text` 完全一致。
 
 ### 最小合法示例
 
 ```json
 {
-  "entries": [
+  "blocks": [
     {
-      "entry_index": 0,
-      "raw": "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020."
-    },
-    {
-      "entry_index": 1,
-      "raw": "Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150, 2020."
+      "block_index": 3,
+      "resolution": "split",
+      "entries": [
+        "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020.",
+        "Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150, 2020."
+      ]
     }
   ]
 }
@@ -521,16 +535,19 @@ python scripts/stage_runtime.py persist_reference_entry_splits \
 
 ```json
 {
-  "entries": [
+  "blocks": [
     {
-      "entry_index": 0,
-      "raw": "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020."
+      "block_index": 3,
+      "resolution": "split",
+      "entries": [
+        "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020."
+      ]
     }
   ]
 }
 ```
 
-原因：只保留了部分 references scope 文本，脚本会以 `reference_entry_splitting_failed` 拒绝。
+原因：`resolution=split` 但只提交了一个 entry，脚本会以 `reference_entry_splitting_failed` 拒绝。
 
 ### 成功输出
 
@@ -657,7 +674,7 @@ python scripts/stage_runtime.py prepare_citation_workset \
 
 - 不接受业务 payload
 - 只依赖前序已入库决策：标准化文本、`citation_scope`、`reference_items`
-- 不再接受 `--md-path`、`--language`、`--scope-file`、`--scope-start`、`--scope-end`、`--scope-title`
+- 本步只接受 `--out` 与 `--persist-db-only` 这两个可选 CLI 参数
 
 ### 输出字段说明
 
@@ -799,7 +816,7 @@ python scripts/stage_runtime.py persist_citation_semantics \
 }
 ```
 
-原因：缺少 `topic`、`usage`、`keywords`、`is_key_reference`；同时旧字段 `mentions`、`reference`、`report_md` 已禁止出现在本步 payload 中。
+原因：缺少 `topic`、`usage`、`keywords`、`is_key_reference`，不满足本步 payload 结构。
 
 ### 成功输出
 
@@ -818,7 +835,7 @@ python scripts/stage_runtime.py persist_citation_semantics \
 - `keywords` 为空、包含空字符串，或被写成整句
 - `is_key_reference` 不是布尔值
 - 把不同文献都写成“提供背景支持/作为方法对比”式的批量套话
-- 传入了 `mentions`、`reference`、`report_md` 等旧字段
+- 传入了不属于本步 payload 的额外字段
 
 ## `persist_citation_timeline`
 
@@ -1004,14 +1021,15 @@ python scripts/stage_runtime.py persist_citation_summary \
 #### 命令
 
 ```bash
-python scripts/stage_runtime.py render_and_validate [--db-path PATH] --mode render [--out-dir DIR]
+python scripts/stage_runtime.py render_and_validate [--db-path PATH] --mode render
 ```
 
 #### 输入方式
 
 - 不接受外部业务 payload
 - 正式发布只从 DB 派生最终成品
-- 允许可选 `--out-dir` 仅覆盖最终写盘目录
+- 正式 render 的写盘目录只读取 `runtime_inputs.output_dir`
+- 若库中缺失 `runtime_inputs.output_dir`，回退到当前工作目录
 - `citation_analysis.md` / `citation_analysis.json.report_md` 会共同包含由 renderer 生成的“关键文献”与“时间线分析”小节
 - numeric 型引用保留原始 `[n]`
 - author-year 型引用在最终渲染时按首次出现顺序合成 `[AY-k]`
@@ -1023,12 +1041,6 @@ python scripts/stage_runtime.py render_and_validate [--db-path PATH] --mode rend
 python scripts/stage_runtime.py render_and_validate --mode render
 ```
 
-如需仅改变输出目录：
-
-```bash
-python scripts/stage_runtime.py render_and_validate --mode render --out-dir /abs/path/artifacts
-```
-
 #### 典型非法示例
 
 ```bash
@@ -1036,6 +1048,12 @@ python scripts/stage_runtime.py render_and_validate --mode render --source-path 
 ```
 
 原因：正式发布路径不允许覆盖输入来源。
+
+```bash
+python scripts/stage_runtime.py render_and_validate --mode render --out-dir /abs/path/artifacts
+```
+
+原因：正式发布路径不再接受输出目录覆盖；该目录必须在 `bootstrap_runtime_db` 中先写入 DB。
 
 #### 成功输出
 
@@ -1045,8 +1063,37 @@ python scripts/stage_runtime.py render_and_validate --mode render --source-path 
   "references_path": "/abs/path/references.json",
   "citation_analysis_path": "/abs/path/citation_analysis.json",
   "citation_analysis_report_path": "/abs/path/citation_analysis.md",
+  "provenance": {
+    "generated_at": "2026-03-31T09:00:00Z",
+    "input_hash": "sha256:0123456789abcdef",
+    "model": "gpt-5.4"
+  },
   "warnings": [],
   "error": null
+}
+```
+
+最终 stdout JSON 的权威示例以本页代码块与 `SKILL.md` 的“核心执行指令”部分为准。
+
+render 还会把同一个 JSON 对象镜像写入当前工作目录下固定文件 `./literature-digest.result.json`。
+
+#### 失败输出示例
+
+```json
+{
+  "digest_path": "",
+  "references_path": "",
+  "citation_analysis_path": "",
+  "provenance": {
+    "generated_at": "",
+    "input_hash": "",
+    "model": ""
+  },
+  "warnings": [],
+  "error": {
+    "code": "citation_report_failed",
+    "message": "render mode does not accept explicit source/preprocess/stdin/output-dir inputs; render output location is DB-authoritative"
+  }
 }
 ```
 
@@ -1054,7 +1101,7 @@ python scripts/stage_runtime.py render_and_validate --mode render --source-path 
 
 - DB 中缺少 digest / references / citation 所需前序数据
 - 试图通过 CLI 覆盖正式发布输入来源
-- 误把 `--out-dir` 当成文件名或 stdout 结构覆盖开关
+- 误以为可以在 render 阶段临时覆盖输出目录
 
 ### 辅助工具路径
 

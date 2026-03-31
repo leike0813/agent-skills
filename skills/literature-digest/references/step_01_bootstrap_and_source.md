@@ -33,11 +33,13 @@
    - PDF：优先尝试 `pymupdf4llm` 转 Markdown；失败则使用标准库兜底解析；两者都失败才返回错误
    - 若调用方需要，才额外物化 `<cwd>/.literature_digest_tmp/source.md`
 3) 对原始 `source_path` 计算 `input_hash`（sha256）。
+4) 在 bootstrap 时确定最终公开产物输出目录，并写入 `runtime_inputs.output_dir`。
 
 在当前 SQLite runtime 中，这些动作对应：
 - 初始化或恢复 `<cwd>/.literature_digest_tmp/literature_digest.db`
 - 写入 `runtime_inputs.source_path`
 - 写入 `runtime_inputs.language`
+- 写入 `runtime_inputs.output_dir`
 - 通过 `stage_runtime.py normalize_source` 生成标准化内容后写入 `source_documents.normalized_source`
 - 登记 `generated_at` 与 `input_hash`
 
@@ -49,6 +51,7 @@
 - `runtime_inputs.language`
 - `runtime_inputs.generated_at`
 - `runtime_inputs.input_hash`
+- `runtime_inputs.output_dir`
 - `source_documents.normalized_source`
 
 可选物化副产物：
@@ -60,7 +63,7 @@
 
 硬约束：
 
-- `bootstrap_runtime_db` 是唯一允许确定 `source_path`、`language`、`generated_at`、`input_hash` 的步骤
+- `bootstrap_runtime_db` 是唯一允许确定 `source_path`、`language`、`generated_at`、`input_hash`、`output_dir` 的步骤
 - `stage_1_normalize_source` 之后，后续主路径不得再通过 CLI / JSON 覆盖这些字段
 
 ## 默认行为协议（必须遵守）
@@ -79,6 +82,26 @@
   - `error` 填充 `{code,message}`
 - `language` 非支持值：回退 `zh-CN` 并写入 `warnings`
 
+读取失败时的最小失败态 stdout JSON 示例：
+
+```json
+{
+  "digest_path": "",
+  "references_path": "",
+  "citation_analysis_path": "",
+  "provenance": {
+    "generated_at": "",
+    "input_hash": "",
+    "model": ""
+  },
+  "warnings": [],
+  "error": {
+    "code": "normalize_source_failed",
+    "message": "read source failed: [Errno 2] No such file or directory"
+  }
+}
+```
+
 ## 脚本（可选但推荐）
 
 本 skill 推荐使用 **skill 包内预置脚本** 承担确定性工作（审计信息生成、状态推进、输出格式验证、自我修复），以降低 LLM 负担并提高一致性。
@@ -92,8 +115,22 @@
 用途：
 - 初始化 `<cwd>/.literature_digest_tmp/literature_digest.db`
 - 写入 `runtime_inputs.source_path`、`runtime_inputs.language`
+- 写入 `runtime_inputs.output_dir`
 - 写入 `runtime_inputs.generated_at`、`runtime_inputs.input_hash`
 - 将工作流推进到 `stage_1_normalize_source`
+
+推荐命令：
+
+```bash
+python scripts/stage_runtime.py bootstrap_runtime_db \
+  --source-path "/abs/path/paper.md" \
+  --language "zh-CN" \
+  --output-dir "/abs/path/artifacts"
+```
+
+规则：
+- `--output-dir` 可选；若缺省，脚本直接把当前工作目录写入 `runtime_inputs.output_dir`
+- 后续 `render_and_validate --mode render` 只能读取这个 DB 中的目录，不能再临时覆盖
 
 ### `scripts/stage_runtime.py normalize_source`
 
