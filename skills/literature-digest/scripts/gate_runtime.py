@@ -15,12 +15,19 @@ from runtime_db import (  # noqa: E402
     connect_db,
     default_db_path,
     fetch_artifact_registry,
+    fetch_action_receipts,
     fetch_runtime_inputs,
     fetch_workflow_state,
 )
 
 ASSETS_DIR = SCRIPT_DIR.parent / "assets"
 CORE_INSTRUCTION_PATH = ASSETS_DIR / "core_instruction.md"
+REQUIRED_STAGE5_RECEIPTS = (
+    "prepare_citation_workset",
+    "persist_citation_semantics",
+    "persist_citation_timeline",
+    "persist_citation_summary",
+)
 
 
 STAGE_RULES: dict[str, dict[str, Any]] = {
@@ -394,6 +401,7 @@ def _emit(payload: dict[str, Any], exit_code: int = 0) -> int:
 
 def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str]:  # type: ignore[no-untyped-def]
     inputs = fetch_runtime_inputs(connection)
+    receipts = fetch_action_receipts(connection)
     missing: list[str] = []
 
     def count(table: str) -> int:
@@ -431,13 +439,19 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
             missing.append("reference_items")
         if next_action == "persist_citation_semantics" and count("citation_workset_items") == 0:
             missing.append("citation_workset_items")
+        if next_action == "persist_citation_semantics" and "prepare_citation_workset" not in receipts:
+            missing.append("action_receipts.prepare_citation_workset")
         if next_action == "persist_citation_timeline" and count("citation_items") == 0:
             missing.append("citation_items")
+        if next_action == "persist_citation_timeline" and "persist_citation_semantics" not in receipts:
+            missing.append("action_receipts.persist_citation_semantics")
         if next_action == "persist_citation_summary":
             if count("citation_items") == 0:
                 missing.append("citation_items")
             if count("citation_timeline") == 0:
                 missing.append("citation_timeline")
+            if "persist_citation_timeline" not in receipts:
+                missing.append("action_receipts.persist_citation_timeline")
     elif stage == "stage_6_render_and_validate":
         if count("digest_slots") == 0:
             missing.append("digest_slots")
@@ -453,6 +467,9 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
             missing.append("citation_timeline")
         if count("citation_summary") == 0:
             missing.append("citation_summary")
+        for action_name in REQUIRED_STAGE5_RECEIPTS:
+            if action_name not in receipts:
+                missing.append(f"action_receipts.{action_name}")
     elif stage == "stage_7_completed":
         artifacts = fetch_artifact_registry(connection)
         for key in ["digest_path", "references_path", "citation_analysis_path"]:

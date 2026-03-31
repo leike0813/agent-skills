@@ -110,6 +110,14 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS action_receipts (
+            action_name TEXT PRIMARY KEY,
+            stage TEXT NOT NULL,
+            status TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS source_documents (
             doc_key TEXT PRIMARY KEY,
             content TEXT NOT NULL,
@@ -467,6 +475,65 @@ def fetch_workflow_state(connection: sqlite3.Connection) -> dict[str, Any] | Non
     if row is None:
         return None
     return dict(row)
+
+
+def store_action_receipt(
+    connection: sqlite3.Connection,
+    *,
+    action_name: str,
+    stage: str,
+    status: str = "succeeded",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    now = utc_now_iso()
+    connection.execute(
+        """
+        INSERT INTO action_receipts (action_name, stage, status, metadata_json, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(action_name) DO UPDATE SET
+            stage = excluded.stage,
+            status = excluded.status,
+            metadata_json = excluded.metadata_json,
+            updated_at = excluded.updated_at
+        """,
+        (action_name, stage, status, _json_dump(metadata or {}), now),
+    )
+    touch_runtime(connection)
+
+
+def delete_action_receipts(connection: sqlite3.Connection, action_names: list[str]) -> None:
+    if not action_names:
+        return
+    placeholders = ", ".join("?" for _ in action_names)
+    connection.execute(
+        f"DELETE FROM action_receipts WHERE action_name IN ({placeholders})",
+        tuple(action_names),
+    )
+    touch_runtime(connection)
+
+
+def fetch_action_receipts(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT action_name, stage, status, metadata_json, updated_at FROM action_receipts ORDER BY action_name ASC"
+    ).fetchall()
+    receipts: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        receipts[str(row["action_name"])] = {
+            "action_name": str(row["action_name"]),
+            "stage": str(row["stage"]),
+            "status": str(row["status"]),
+            "metadata": json.loads(str(row["metadata_json"])),
+            "updated_at": str(row["updated_at"]),
+        }
+    return receipts
+
+
+def has_action_receipt(connection: sqlite3.Connection, action_name: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM action_receipts WHERE action_name = ? LIMIT 1",
+        (action_name,),
+    ).fetchone()
+    return row is not None
 
 
 def store_source_document(

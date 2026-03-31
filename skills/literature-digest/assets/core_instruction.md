@@ -6,8 +6,9 @@
 4. 同时遵守 gate 返回的 `instruction_refs`、`core_instruction` 与 `execution_note`。
 5. 所有语义判断结果都必须先整理为结构化 payload，再通过 `scripts/stage_runtime.py <next_action>` 写入 SQLite。
 6. 一旦某项决策已经在前序阶段写入 DB，后续阶段只能从 DB 读取，不能重新指定。
-7. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 渲染生成。
-8. **最终 assistant 输出必须是一个 JSON 对象，并且必须满足 stdout schema。**
+7. 不要直接写 SQLite 表来伪造阶段完成；阶段推进必须由对应脚本动作成功写库。
+8. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 渲染生成。
+9. **最终 assistant 输出必须是一个 JSON 对象，并且必须满足 stdout schema。**
 
 成功态 stdout JSON 示例：
 

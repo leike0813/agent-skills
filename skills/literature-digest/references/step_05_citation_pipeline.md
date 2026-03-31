@@ -268,7 +268,13 @@ workset 准备完成后，运行时至少应持久化并可查询：
 2) author-year（作者-年份型，高质量要求）：
   - 必须识别：`(Smith, 2020)`、`Smith et al. (2020)`、`(Smith & Jones, 2020; Brown, 2019)` 等
 - 映射规则（禁止硬猜）：
-  - 优先在 `reference_items` 中按 `year + first-author surname` 匹配
+  - 优先在 `reference_items` 中按 `year + first-author surname aliases` 匹配
+  - first-author surname aliases 至少包含：
+    - 第一作者逗号前完整片段的小写规范化形式
+    - 第一作者逗号前最后一个 surname-like token
+  - 例如：
+    - `Cheng, G.` 会产生 `cheng`
+    - `Waqas Zamir, S.` 会产生 `waqas zamir` 与 `zamir`
   - 必要时结合 `raw` 和 snippet 做二次判别
   - 无法可靠映射时写入 `unmapped_mentions`
 
@@ -278,8 +284,10 @@ workset 准备完成后，运行时至少应持久化并可查询：
   - 输出 schema 兼容 JSON，`citation_analysis_path=""`，`error={code,message}`。
 - `citation_scope` 过窄：
   - 输出 schema 兼容 JSON，`citation_analysis_path=""`，`error={code,message}`。
-- `citation_scope` 存在但未检测到任何 citation：
-  - 允许输出空 `items=[]`、`unmapped_mentions=[]`，并由 renderer 在 `report_md` 明确“本章节未检测到稳定引用标记”。
+- `citation_scope` 属于 review-like 章节或包含 citation-shaped 文本，但 `prepare_citation_workset` 仍未得到稳定 mention / workset：
+  - 直接以 `citation_mentions_not_found` 或 `citation_workset_empty` 失败，不能继续写 `timeline` / `summary`。
+- 若当前 scope 真无稳定引用：
+  - 必须在 `prepare_citation_workset` 明确得到终止结果，而不是继续写空 `items`、空 `timeline` 或空 `summary`。
 - `reference_items` 不足或不可用：
   - mention 仍需抽取；无法映射的 mention 全部进入 `unmapped_mentions(reason=reference_unavailable)`。
 - 门禁失败（`coverage < 1.0`）：
@@ -302,6 +310,7 @@ workset 准备完成后，运行时至少应持久化并可查询：
 8. agent 最后写入全局 `citation_summary`
 9. `stage_6_render_and_validate` 再基于 `citation_summary` / `citation_timeline` / `citation_items` / `citation_unmapped_mentions` / `citation_scope` 生成最终 `report_md`
 10. 仅当唯一性、workset 覆盖、timeline、summary 与 report 渲染都通过时，才可发布最终 `citation_analysis.json`
+11. stage 5 不能靠手工写 SQLite 的 `workflow_state`、`citation_summary` 或 `citation_timeline` 伪造完成态；gate 与 render 会检查脚本动作链是否完整
 
 ### Merge 门禁（强制）
 

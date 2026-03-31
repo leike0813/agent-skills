@@ -18,8 +18,9 @@ compatibility: Requires local filesystem read access to source_path; no network 
 4. 同时遵守 gate 返回的 `instruction_refs`、`core_instruction` 和 `execution_note`。
 5. 所有语义判断结果都必须先整理为结构化 payload，再通过 `scripts/stage_runtime.py <next_action>` 写入 SQLite。
 6. 一旦某项决策已经在前序阶段写入 DB，后续阶段只能从 DB 读取，不能重新指定。
-7. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 渲染生成。
-8. **最终 assistant 输出必须是一个 JSON 对象，并且必须满足 stdout schema。**
+7. 不要直接写 SQLite 表来伪造阶段完成；阶段推进必须由对应脚本动作成功写库。
+8. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 渲染生成。
+9. **最终 assistant 输出必须是一个 JSON 对象，并且必须满足 stdout schema。**
 
 成功态 stdout JSON 示例：
 
@@ -720,11 +721,13 @@ python scripts/stage_runtime.py render_and_validate --mode render
 
 - digest 阶段不得提交近最终 Markdown，只能提交结构化槽位
 - citation 语义阶段不得重做 mention-reference join，只能消费 DB 中已有 `citation_workset_items`
+- stage 5 的 `prepare_citation_workset -> persist_citation_semantics -> persist_citation_timeline -> persist_citation_summary` 必须通过对应脚本动作逐步完成，不能手工写 SQLite 代替
 - citation 阶段不得直接写 `report_md`
 - `citation_analysis.summary` 是必填全局字段
 - `persist_citation_semantics.items[*]` 必须包含 `topic`、`usage`、`keywords`、`is_key_reference`
 - `persist_citation_timeline.timeline` 必须包含 `early`、`mid`、`recent`
-- `persist_citation_summary.basis` 必须包含 `research_threads`、`argument_shape`、`key_ref_indexes`
+- `persist_citation_timeline.timeline.*.ref_indexes` 与 `persist_citation_summary.basis.key_ref_indexes` 都必须引用已持久化到 `citation_items` 的 `ref_index`
+- author-year 型映射按 `year + first-author surname aliases` 匹配，而不是简单取作者字符串首 token
 - 对 author-year 型引用，renderer 会按首次出现顺序合成 `[AY-k]`，避免与原始 numeric `[n]` 冲突
 
 ## 按需读取附录
