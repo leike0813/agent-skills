@@ -19,6 +19,9 @@ from runtime_db import (  # noqa: E402
     fetch_workflow_state,
 )
 
+ASSETS_DIR = SCRIPT_DIR.parent / "assets"
+CORE_INSTRUCTION_PATH = ASSETS_DIR / "core_instruction.md"
+
 
 STAGE_RULES: dict[str, dict[str, Any]] = {
     "stage_0_bootstrap": {
@@ -348,7 +351,7 @@ def _sql_examples(stage: str, next_action: str) -> list[dict[str, str]]:
 
 def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> str:
     if next_action == "bootstrap_runtime_db":
-        return "Initialize or resume the runtime DB first, then rerun gate before doing anything else."
+        return "Initialize or resume the runtime DB first, decide the final output directory in this step, write it to DB, then rerun gate before doing anything else."
     if next_action == "normalize_source":
         return "Run source normalization now. Do not respecify source_path or language; this step must read the bootstrap state from DB."
     if next_action == "persist_outline_and_scopes":
@@ -358,7 +361,7 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
     if next_action == "prepare_references_workset":
         return "Prepare the references workset from the stored references_scope first; let the script build entries, batches, and parse candidates."
     if next_action == "persist_reference_entry_splits":
-        return "The prepared references still look grouped. Review and resubmit raw entry boundaries only; do not extract author, title, or year in this step."
+        return "The prepared references still have suspect blocks. Review only those block boundaries with split/keep/merge decisions; do not extract author, title, or year in this step."
     if next_action == "persist_references":
         return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries."
     if next_action == "prepare_citation_workset":
@@ -370,7 +373,7 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
     if next_action == "persist_citation_summary":
         return "Write the global citation summary now. Keep it narrative and based on research threads, argument shape, and key references."
     if next_action == "render_and_validate":
-        return "You are at the final publish step. Run `python scripts/stage_runtime.py render_and_validate --mode render` next, and directly use that script's stdout JSON as the final assistant output."
+        return "You are at the final publish step. Run `python scripts/stage_runtime.py render_and_validate --mode render` next. Render will use the DB-stored output_dir, mirror the same stdout JSON into `./literature-digest.result.json`, and you should directly use that stdout JSON as the final assistant output."
     if next_action == "repair_workflow_state":
         return "Repair workflow_state first. Do not continue the main path until gate returns a non-repair next_action."
     if next_action == "repair_db_state":
@@ -378,6 +381,10 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
     if stage_gate == "blocked":
         return "The current state is blocked. Repair the runtime state before trying to continue."
     return "Follow the current next_action exactly, then rerun gate."
+
+
+def _core_instruction() -> str:
+    return CORE_INSTRUCTION_PATH.read_text(encoding="utf-8").strip()
 
 
 def _emit(payload: dict[str, Any], exit_code: int = 0) -> int:
@@ -476,6 +483,7 @@ def _payload(
         "required_reads": list(rules["required_reads"]),
         "required_writes": list(rules["required_writes"]),
         "instruction_refs": _instruction_refs(current_stage, next_action),
+        "core_instruction": _core_instruction(),
         "execution_note": _execution_note(current_stage, next_action, stage_gate),
         "sql_examples": _sql_examples(current_stage, next_action),
         "resume_packet": {

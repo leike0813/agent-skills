@@ -166,13 +166,21 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 
 按 `SKILL.md` 的“参数词表（全项目统一）”定义，本阶段已经改成“正常直通、异常复核”的双路径：
 
+- 默认切分策略固定为 `line-first`：
+  - 先按行切
+  - 单行内若明显存在第二条文献起点，再做 inline split
+  - 若像跨行续写，只打标，不自动合并
+- 真正的跨行合并只允许出现在 `persist_reference_entry_splits` 的 `resolution="merge"` 复核结果中。
+
 1. `prepare_references_workset`
-   - 脚本从 `source_documents.normalized_source` 与 `section_scopes.references_scope` 中切分 raw entry
+   - 脚本先按行切分 `source_documents.normalized_source` 与 `section_scopes.references_scope`，把每个非空行视为一个候选 block
+   - 若单行明显包含多条文献，脚本会在该行内部继续做 inline split
+   - 若出现疑似跨行续写，脚本只打标，不自动合并
    - 脚本为每个 `entry` 生成多组 `patterns[]` 候选，并写入 `reference_parse_candidates`
    - 若 deterministic splitting 后仍有 grouped-entry 风险，脚本会返回 `requires_split_review=true`
 2. `persist_reference_entry_splits`（仅在 `requires_split_review=true` 时出现）
-   - agent 只复核 raw entry 边界，不抽 `author/title/year`
-   - `entries[*].raw` 必须保持原文顺序与原文文本，只允许改变分条边界
+   - agent 只复核 suspect blocks 的 raw entry 边界，不抽 `author/title/year`
+   - `blocks[*].entries[]` 必须保持原文顺序与原文文本，只允许改变分条边界
 3. `persist_references`
    - agent 只在候选中选择 `selected_pattern`
    - agent 在选中候选的基础上 refine 完整 `author[] / title / year`
@@ -218,19 +226,27 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 脚本还会额外输出：
 
 - `entry_style`
+- `split_mode`
 - `grouping_suspect_count`
 - `requires_split_review`
-- `suspect_entries`
+- `suspect_blocks`
 
-其中 `requires_split_review=true` 表示当前 workset 仍可能把多条著录 grouped 在单个 `raw` 中，此时不得直接进入 `persist_references`。
+其中 `requires_split_review=true` 表示当前 workset 仍存在边界存疑的 block，此时不得直接进入 `persist_references`。
 
 ### author-year 段落式 references 额外规则
 
 对 author-year bibliography，脚本不能只依赖空行切分。若 references 中出现“多条 `Author. Title. Venue, Year.` 连续排在一个段落或少数段落中”的情况，脚本必须：
 
-- 先按单行尾部 year 标记尽量拆出单条著录
-- 再检查单个 `raw` 中是否仍残留多个 year-tail
-- 若仍可疑，则把该条目放入 `suspect_entries` 并要求进入 `persist_reference_entry_splits`
+- 先按行切分
+- 单行内若明显出现第二条文献起点，再做 inline split
+- 对疑似跨行续写只做 suspicion 检测，不自动合并
+- 若仍可疑，则把对应 block 放入 `suspect_blocks` 并要求进入 `persist_reference_entry_splits`
+
+以 SOPSeg 这类 remote sensing 论文为例，下面这些都应被视为单条文献内部结构，而不是自动切分点：
+
+- `Li, C.; ... 2020. Feature-Attentioned ... In 2020 IEEE ...`
+- `Milletari, F.; ... 2016. V-net ... In 2016 fourth ...`
+- `Su, H.; ... 2019. ... IGARSS 2019 ...`
 
 允许的 year-tail 至少包括：
 
@@ -249,14 +265,14 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 
 ```json
 {
-  "entries": [
+  "blocks": [
     {
-      "entry_index": 0,
-      "raw": "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020."
-    },
-    {
-      "entry_index": 1,
-      "raw": "Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150, 2020."
+      "block_index": 3,
+      "resolution": "split",
+      "entries": [
+        "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020.",
+        "Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150, 2020."
+      ]
     }
   ]
 }
@@ -265,8 +281,9 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 要求：
 
 - 这一步只修 entry boundary，不抽 `author[] / title / year`
-- `entries[*].entry_index` 必须等于复核后的 0-based 顺序位置
-- 全部 `entries[*].raw` 规范化后连接起来，必须与原始 references scope 文本完全一致
+- `blocks[*].block_index` 必须来自 gate 返回的 `suspect_blocks`
+- `blocks[*].resolution` 只允许 `split` / `keep` / `merge`
+- 全部 `blocks[*].entries[]` 规范化后连接起来，必须与对应 suspect block 的 `source_text` 完全一致
 - 若复核后仍残留 grouped-entry suspicion，脚本必须以 `reference_entry_splitting_failed` 阻断本阶段
 
 ### `persist_references` 结构化持久化契约

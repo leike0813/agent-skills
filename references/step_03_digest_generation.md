@@ -44,7 +44,7 @@
 
 ## 结构化写库契约
 
-`stage_runtime.py persist_digest` 不再接受最终 Markdown section 块，而是要求 LLM 提供结构化 payload：
+`stage_runtime.py persist_digest` 要求 LLM 提供结构化 payload：
 
 ```json
 {
@@ -66,7 +66,7 @@
 
 约束：
 
-- 不允许再提交旧的 `sections[]`
+- 本步只接受 `digest_slots + section_summaries`
 - `digest_slots` 必须完整覆盖 5 个固定槽位
 - `section_summaries` 必须按大纲顺序提供
 - 最终 digest 直接由 `digest_slots + section_summaries` 渲染
@@ -92,7 +92,6 @@
 
 ### 失败语义
 
-- `sections[]` 是非法旧接口，必须直接失败
 - 缺少任一固定 slot、slot 形状不合法、或 `section_summaries` 结构错误时，属于 `persist_digest` 阶段失败
 - 固定 slot 为空、或 `section_summaries` 对主要章节覆盖不足时，也属于 `persist_digest` 阶段失败或 warning
 - 失败后不得猜测性生成最终 digest 文本
@@ -117,7 +116,7 @@
 }
 ```
 
-### 非法旧 payload 示例
+### 非法 payload 示例
 
 ```json
 {
@@ -132,7 +131,7 @@
 - 最终 digest 排版由 renderer 和模板文件决定：
   - `assets/templates/digest.zh-CN.md.j2`
   - `assets/templates/digest.en-US.md.j2`
-- 本文档不再内嵌最终 Markdown 模版骨架，避免被误读为 LLM 输入模版。
+- 本文档不内嵌最终 Markdown 模版骨架，避免被误读为 LLM 输入模版。
 - agent 在本阶段只应提交结构化 `digest_slots + section_summaries`，不得直接提交接近最终成品的 Markdown。
 
 ## 当前阶段动作提示

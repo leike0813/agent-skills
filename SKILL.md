@@ -8,6 +8,57 @@ compatibility: Requires local filesystem read access to source_path; no network 
 
 本 skill 运行于后台自动化场景：不得向用户提问做决策。stdout 只能输出一个 JSON 对象。
 
+## 核心执行指令
+
+这部分是 gate 返回的 `core_instruction` 的完整等价内容。它只保留跨阶段都必须反复遵守的规则。
+
+1. 先读 `SKILL.md`，不要预读整个 `references/` 目录。
+2. 首次进入和每次正式写库后，都必须重新运行 `scripts/gate_runtime.py`。
+3. 只能执行 gate 返回的 `next_action`。
+4. 同时遵守 gate 返回的 `instruction_refs`、`core_instruction` 和 `execution_note`。
+5. 所有语义判断结果都必须先整理为结构化 payload，再通过 `scripts/stage_runtime.py <next_action>` 写入 SQLite。
+6. 一旦某项决策已经在前序阶段写入 DB，后续阶段只能从 DB 读取，不能重新指定。
+7. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 渲染生成。
+8. **最终 assistant 输出必须是一个 JSON 对象，并且必须满足 stdout schema。**
+
+成功态 stdout JSON 示例：
+
+```json
+{
+  "digest_path": "/abs/path/digest.md",
+  "references_path": "/abs/path/references.json",
+  "citation_analysis_path": "/abs/path/citation_analysis.json",
+  "citation_analysis_report_path": "/abs/path/citation_analysis.md",
+  "provenance": {
+    "generated_at": "2026-03-31T09:00:00Z",
+    "input_hash": "sha256:0123456789abcdef",
+    "model": "gpt-5.4"
+  },
+  "warnings": [],
+  "error": null
+}
+```
+
+失败态 stdout JSON 示例：
+
+```json
+{
+  "digest_path": "",
+  "references_path": "",
+  "citation_analysis_path": "",
+  "provenance": {
+    "generated_at": "",
+    "input_hash": "",
+    "model": ""
+  },
+  "warnings": [],
+  "error": {
+    "code": "normalize_source_failed",
+    "message": "read source failed: [Errno 2] No such file or directory"
+  }
+}
+```
+
 ## 输入输出硬契约
 
 - 输入只读取 prompt payload 中的 `source_path` 与 `language`
@@ -35,6 +86,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - `unmapped_mentions`
   - `report_md`
 - `citation_analysis.md` 内容必须与 `citation_analysis.json.report_md` 完全一致
+- gate 每一步都会返回固定的 `core_instruction`；它是本节核心规则的精简镜像，不是另一套独立契约
 
 ## SQLite SSOT
 
@@ -61,7 +113,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
 - 每次正式写库后都必须重新运行 `scripts/gate_runtime.py`
 - 只能执行 gate 返回的 `next_action`
 - 若 gate 返回 blocker 或 repair 路径，必须先修复 DB 状态再继续
-- gate 输出中的 `instruction_refs`、`execution_note` 和 `sql_examples` 是当前动作的显式参考，不得跳过
+- gate 输出中的 `instruction_refs`、`core_instruction`、`execution_note` 和 `sql_examples` 是当前动作的显式参考，不得跳过
 
 ## LLM 与脚本职责边界
 
@@ -93,6 +145,10 @@ compatibility: Requires local filesystem read access to source_path; no network 
 - `language`
   - 中文名：输出语言
   - 定义：控制 digest 与 citation 分析语言；缺省回退 `zh-CN`。
+  - 适用动作：`bootstrap_runtime_db`
+- `output_dir`
+  - 中文名：产物输出目录
+  - 定义：step 1 确定并写入 DB 的最终公开产物目录；stage 6 只读取它，不再临时覆盖。
   - 适用动作：`bootstrap_runtime_db`
 - `outline_nodes`
   - 中文名：大纲节点
@@ -134,9 +190,9 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 中文名：需要条目切分复核
   - 定义：`prepare_references_workset` 判断当前 references workset 仍存在 grouped-entry 风险时返回的布尔标记。
   - 适用动作：`prepare_references_workset`
-- `suspect_entries`
-  - 中文名：可疑条目列表
-  - 定义：脚本判断仍可能包含多条著录的 raw entry 列表及其原因说明。
+- `suspect_blocks`
+  - 中文名：可疑分块列表
+  - 定义：脚本判断边界仍不稳定、需要后续复核的 source block 列表及其原因说明。
   - 适用动作：`prepare_references_workset`
 - `mention_id`
   - 中文名：引文标记 ID
@@ -190,6 +246,10 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 中文名：执行提示
   - 定义：gate 为当前 `next_action` 返回的一条短提示，概括这一动作最关键的即时执行约束。
   - 适用动作：`gate_runtime.py` 输出，所有阶段遵守
+- `core_instruction`
+  - 中文名：核心执行指令
+  - 定义：gate 每一步都返回的固定精简主指令，用来反复提醒跨阶段都必须遵守的规则。
+  - 适用动作：`gate_runtime.py` 输出，所有阶段遵守
 - `next_action`
   - 中文名：下一动作
   - 定义：gate 当前唯一允许执行的阶段动作名。
@@ -197,7 +257,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
 
 ## 最小执行主路径
 
-启动时只读本文件。不要一开始读取整个 `references/` 目录；只有在 gate 返回 `instruction_refs` 后，才按当前阶段按需读取对应附录文档。并且每一步都要同时遵守 gate 返回的 `execution_note`。不得在开始阶段一次性读取全部 step 文档。
+启动时只读本文件。不要一开始读取整个 `references/` 目录；只有在 gate 返回 `instruction_refs` 后，才按当前阶段按需读取对应附录文档。并且每一步都要同时遵守 gate 返回的 `core_instruction` 与 `execution_note`。不得在开始阶段一次性读取全部 step 文档。
 
 ### 1. `bootstrap_runtime_db`
 
@@ -207,14 +267,17 @@ compatibility: Requires local filesystem read access to source_path; no network 
 ```bash
 python scripts/stage_runtime.py bootstrap_runtime_db \
   --source-path "/abs/path/paper.md" \
-  --language "zh-CN"
+  --language "zh-CN" \
+  --output-dir "/abs/path/artifacts"
 ```
 - 必须提供的参数 / payload：
   - CLI 参数：`--source-path`
   - CLI 参数：`--language`（可省略，脚本会回退默认值）
+  - CLI 参数：`--output-dir`（可省略；缺省时脚本把当前工作目录写入 DB）
 - 各 payload 字段含义：
   - `source_path`：唯一内容来源文件路径
   - `language`：后续 digest 与 citation 分析语言
+  - `output_dir`：最终 `digest.md`、`references.json`、`citation_analysis.json`、`citation_analysis.md` 的输出目录
 - 最小合法示例：
 ```bash
 python scripts/stage_runtime.py bootstrap_runtime_db --source-path "/tmp/paper.md" --language "zh-CN"
@@ -222,9 +285,6 @@ python scripts/stage_runtime.py bootstrap_runtime_db --source-path "/tmp/paper.m
 - 完成后应该看到的 gate 结果：
   - 再运行一次 `python scripts/gate_runtime.py`
   - `next_action` 应推进为 `normalize_source`
-- 本步最常见错误：
-  - 在后续阶段重新传 `source_path` 或 `language`
-  - 传入相对路径但当前工作目录不稳定
 
 ### 2. `normalize_source`
 
@@ -245,9 +305,6 @@ python scripts/stage_runtime.py normalize_source
 ```
 - 完成后应该看到的 gate 结果：
   - 再运行 gate 后，`next_action` 应推进为 `persist_outline_and_scopes`
-- 本步最常见错误：
-  - 误以为需要再次提供 `source_path`
-  - 把 `source.md` 当作后续阶段唯一输入，而不是把它视作可选副产物
 
 ### 3. `persist_outline_and_scopes`
 
@@ -315,9 +372,6 @@ python scripts/stage_runtime.py persist_outline_and_scopes --payload-file /tmp/o
 ```
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_digest`
-- 本步最常见错误：
-  - `outline_nodes` 只给标题字符串，不给顺序信息
-  - `citation_scope` 写得过于模糊，导致后续 workset 无法稳定抽取
 
 ### 4. `persist_digest`
 
@@ -359,9 +413,6 @@ python scripts/stage_runtime.py persist_digest --payload-file /tmp/digest_payloa
 ```
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `prepare_references_workset`
-- 本步最常见错误：
-  - 仍提交旧的 `sections[]`
-  - 直接写接近最终成品的 Markdown，而不是结构化槽位
 
 ### 5. `prepare_references_workset`
 
@@ -374,13 +425,15 @@ python scripts/stage_runtime.py prepare_references_workset --out /tmp/references
 - 必须提供的参数 / payload：
   - 无业务 payload；本步只读标准化文本与 `references_scope`
 - 各输出字段含义：
+  - 本步默认按行切分；若单行里明显存在第二条文献起点，脚本会在该行内部继续 split；若像跨行续写，只会标记为 suspect block，不会自动合并
   - `workset_path`：完整 references workset 导出路径；每个条目带 `patterns[]`
-  - `review_path`：轻量审阅视图路径；只保留 `entry_index / detected_ref_number / raw / pattern_summaries`
+  - `review_path`：轻量审阅视图路径；包含 block 级审阅信息与条目级候选摘要
   - `stored_reference_entries`：本次切分出的 raw 条目数量
   - `stored_reference_candidates`：本次生成的 candidate 总数
   - `entry_style`：本次 references 著录风格，可能为 `numeric` / `author-year` / `mixed`
+  - `split_mode`：当前 deterministic splitting 策略；本项目固定为 `line-first`
   - `requires_split_review`：是否需要先执行条目边界复核
-  - `suspect_entries`：脚本认为仍可能包含多条著录的可疑条目
+  - `suspect_blocks`：脚本认为边界仍不稳定、需要局部复核的 block 列表
   - `warnings`：编号异常、pattern 歧义、title 边界可疑等 warning
 - 最小合法示例：
 ```bash
@@ -389,11 +442,6 @@ python scripts/stage_runtime.py prepare_references_workset --out /tmp/references
 - 完成后应该看到的 gate 结果：
   - 若 `requires_split_review=false`：`next_action` 应推进为 `persist_references`
   - 若 `requires_split_review=true`：`next_action` 应推进为 `persist_reference_entry_splits`
-- 本步最常见错误：
-  - 误以为本步需要 agent 直接填写最终 references 结果
-  - 只保留一个“看起来最像”的切分结果，而没有保留多组候选
-  - 看到 `requires_split_review=true` 仍直接跳去做 `persist_references`
-  - 忽略 `review_path`，直接回原文重复做人肉切分
 
 ### 6. `persist_reference_entry_splits`
 
@@ -404,31 +452,28 @@ python scripts/stage_runtime.py prepare_references_workset --out /tmp/references
 python scripts/stage_runtime.py persist_reference_entry_splits --payload-file /tmp/reference_entry_splits.json
 ```
 - 必须提供的参数 / payload：
-  - `entries`
+  - `blocks`
 - 各 payload 字段含义：
-  - `entries[*].entry_index`：复核后的 0-based 顺序编号；必须与数组位置一致
-  - `entries[*].raw`：复核后的单条 raw references 条目；只能调整边界，不得改写文本内容
+  - `blocks[*].block_index`：当前需要复核的 suspect block 编号；只能来自 gate 返回的 `suspect_blocks`
+  - `blocks[*].resolution`：当前 block 的边界决策，只允许 `split` / `keep` / `merge`
+  - `blocks[*].entries`：复核后的 raw entry 列表；只能调整边界，不得改写文本内容
 - 最小合法示例：
 ```json
 {
-  "entries": [
+  "blocks": [
     {
-      "entry_index": 0,
-      "raw": "Joshua Ainslie, Santiago Ontanon, Chris Alberti, Philip Pham, Anirudh Ravula, and Sumit Sanghai. Etc: Encoding long and structured data in transformers. arXiv preprint arXiv:2004.08483, 2020."
-    },
-    {
-      "entry_index": 1,
-      "raw": "Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150, 2020."
+      "block_index": 11,
+      "resolution": "split",
+      "entries": [
+        "Li, C.; Xu, C.; Cui, Z.; Wang, D.; Zhang, T.; and Yang, J. 2020. Feature-Attentioned Object Detection in Remote Sensing Imagery. In 2020 IEEE International Conference on Image Processing (ICIP), 3886–3890.",
+        "Li, F.; Zhang, H.; Xu, H.; Liu, S.; Zhang, L.; Ni, L. M.; and Shum, H.-Y. 2023a. Mask dino: Towards a unified transformer-based framework for object detection and segmentation. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, 3041–3050."
+      ]
     }
   ]
 }
 ```
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_references`
-- 本步最常见错误：
-  - 在这一步就开始抽 `author/title/year`
-  - 跳过条目、交换顺序，或修改 raw 文本本身
-  - 只提交 suspect entry，而不是覆盖整个 references scope 的切分结果
 
 ### 7. `persist_references`
 
@@ -469,12 +514,6 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - 非法：`["Al-Rfou", "R.", "Choe", "D.", "Constant", "N.", "Guo", "M.", "Jones", "L."]`
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `prepare_citation_workset`
-- 本步最常见错误：
-  - 继续提交旧的 `entries + batches + items`
-  - `selected_pattern` 不存在于预解析候选中
-  - 只拆出第一作者，导致剩余作者吞进 `title`
-  - 已有稳定 `author_candidates` 时又把一个作者拆成多个数组元素
-  - `title` 带前导标点
 ### 8. `prepare_citation_workset`
 
 - 何时执行：
@@ -499,10 +538,6 @@ python scripts/stage_runtime.py prepare_citation_workset --out /tmp/workset.json
 ```
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_semantics`
-- 本步最常见错误：
-  - 试图重新传 `citation_scope` 或 `md_path`
-  - 误以为 workset 需要由 agent 手工拼装
-  - 忽略轻量审阅视图，反复让模型消费完整大 payload
 
 ### 9. `persist_citation_semantics`
 
@@ -542,12 +577,6 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
 ```
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_timeline`
-- 本步最常见错误：
-  - 重做 mention-reference join
-  - 把不同文献都写成“提供背景支持/作为方法对比”这类批量套话
-  - 把 `summary` 写成文献简介，而不是“原文如何使用这篇文献”
-  - 漏掉 `keywords`，或把 `keywords` 写成整句
-  - 传入 `report_md`、`mentions`、`reference` 等旧字段
 
 ### 10. `persist_citation_timeline`
 
@@ -584,10 +613,6 @@ python scripts/stage_runtime.py persist_citation_timeline --payload-file /tmp/ci
 ```
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_summary`
-- 本步最常见错误：
-  - 缺少 `early` / `mid` / `recent` 任一 bucket
-  - 让同一个 `ref_index` 同时出现在多个 bucket
-  - 忘记把所有有稳定年份的条目都归入时间线
 
 ### 11. `persist_citation_summary`
 
@@ -625,10 +650,6 @@ python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/cit
 ```
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `render_and_validate`
-- 本步最常见错误：
-  - 把这里写成按功能数量、百分比或条目数的统计型 summary
-  - 把这里写成按功能分组后的完整报告正文
-  - 重复粘贴每条 item 的 summary，而没有给出原文组织 related work 的全局归纳
 
 ### 12. `render_and_validate --mode render`
 
@@ -638,29 +659,62 @@ python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/cit
 ```bash
 python scripts/stage_runtime.py render_and_validate --mode render
 ```
-- 如存在外部注入要求改写输出目录，可改为：
-```bash
-python scripts/stage_runtime.py render_and_validate --mode render --out-dir "/abs/path/artifacts"
-```
 - 必须提供的参数 / payload：
   - 无；正式发布路径不接受外部业务 payload
-  - `--out-dir` 仅为可选 CLI 覆盖，用来改变输出目录
 - 各输出字段含义：
   - `digest_path`：最终 digest 文件路径
   - `references_path`：最终 references 文件路径
   - `citation_analysis_path`：最终 citation analysis JSON 路径
   - `citation_analysis_report_path`：可选 Markdown 报告路径
+  - `literature-digest.result.json`：render 脚本把最终 stdout JSON 同步镜像到当前工作目录的固定结果文件
 - 最小合法示例：
 ```bash
 python scripts/stage_runtime.py render_and_validate --mode render
 ```
+- 成功态 stdout JSON 示例：
+```json
+{
+  "digest_path": "/abs/path/digest.md",
+  "references_path": "/abs/path/references.json",
+  "citation_analysis_path": "/abs/path/citation_analysis.json",
+  "citation_analysis_report_path": "/abs/path/citation_analysis.md",
+  "provenance": {
+    "generated_at": "2026-03-31T09:00:00Z",
+    "input_hash": "sha256:0123456789abcdef",
+    "model": "gpt-5.4"
+  },
+  "warnings": [],
+  "error": null
+}
+```
+- 同步写出的固定结果文件：
+  - 当前工作目录下固定写出 `./literature-digest.result.json`
+  - 文件内容与上面的 stdout JSON 完全一致
+- 失败态 stdout JSON 示例：
+```json
+{
+  "digest_path": "",
+  "references_path": "",
+  "citation_analysis_path": "",
+  "provenance": {
+    "generated_at": "",
+    "input_hash": "",
+    "model": ""
+  },
+  "warnings": [],
+  "error": {
+    "code": "citation_report_failed",
+    "message": "render mode failed before validation: runtime_inputs.source_path missing"
+  }
+}
+```
+- 输出路径规则：
+  - render 只读取 DB 中的 `output_dir`
+  - 若库中缺失 `output_dir`，脚本回退到当前工作目录
+  - render 阶段不再接受目录覆盖参数
 - 完成后应该看到的 gate 结果：
   - `current_stage` 进入 `stage_7_completed`
   - `artifact_registry` 中的公开产物路径都已登记
-- 本步最常见错误：
-  - 试图传入 `source-path` 或其他业务输入覆盖
-  - 误以为 `--out-dir` 可以改变文件名或 stdout 结构
-  - 误以为 `report_md` 由 agent 直接提供
 
 阶段性最低输出约束：
 
