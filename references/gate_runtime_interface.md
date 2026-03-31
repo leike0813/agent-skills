@@ -18,6 +18,7 @@
 
 - gate 一旦确认某项前置状态已经存在于 DB，后续主路径阶段不得再通过 CLI / JSON 重新指定它
 - stage 5 的固定顺序是：`prepare_citation_workset` → `persist_citation_semantics` → `persist_citation_timeline` → `persist_citation_summary` → `render_and_validate`
+- stage 5 / stage 6 不只检查目标表是否有数据，还会检查对应脚本动作的 receipt 链是否完整；不能通过手工写 SQLite 表绕过主路径
 - 例如：
   - `runtime_inputs.source_path` 一旦在 bootstrap 写入，`normalize_source` 只能读取它
   - `section_scopes.citation_scope` 一旦在 stage 2 写入，`prepare_citation_workset` 只能读取它
@@ -72,6 +73,13 @@ stdout 只输出一个 JSON 对象，字段固定为：
   - 当前阶段预期读取的表/字段。
 - `required_writes: string[]`
   - 当前阶段预期写入的表/字段。
+- `action_receipts`
+  - 虽然不单独作为 payload 字段返回，但 gate 会把它当作 stage 5 / stage 6 的关键前置之一。
+  - stage 5 需要顺序存在：
+    - `prepare_citation_workset`
+    - `persist_citation_semantics`
+    - `persist_citation_timeline`
+    - `persist_citation_summary`
 - `instruction_refs: object[]`
   - 当前动作需要优先阅读的文档列表。
   - 每项结构：
@@ -235,6 +243,9 @@ gate 至少检查这些关键前置：
   - `source_documents.normalized_source`
   - `section_scopes.citation_scope`
   - `reference_items`
+  - `action_receipts.prepare_citation_workset` 是 `persist_citation_semantics` 的前置
+  - `action_receipts.persist_citation_semantics` 是 `persist_citation_timeline` 的前置
+  - `action_receipts.persist_citation_timeline` 是 `persist_citation_summary` 的前置
 - `stage_6_render_and_validate`
   - `digest_slots`
   - `digest_section_summaries`
@@ -242,8 +253,13 @@ gate 至少检查这些关键前置：
   - `section_scopes.citation_scope`
   - `citation_workset_items`
   - `citation_items`
+  - `citation_timeline`
   - `citation_summary`
   - `citation_unmapped_mentions`
+  - `action_receipts.prepare_citation_workset`
+  - `action_receipts.persist_citation_semantics`
+  - `action_receipts.persist_citation_timeline`
+  - `action_receipts.persist_citation_summary`
 - `stage_7_completed`
   - `artifact_registry.digest_path`
   - `artifact_registry.references_path`

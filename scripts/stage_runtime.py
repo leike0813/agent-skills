@@ -47,10 +47,13 @@ from runtime_db import (  # noqa: E402
     fetch_section_scope,
     fetch_source_document,
     initialize_database,
+    delete_action_receipts,
+    has_action_receipt,
     register_artifact,
     set_runtime_error,
     set_runtime_input,
     set_workflow_state,
+    store_action_receipt,
     store_citation_batch,
     store_citation_items,
     store_citation_mention_links,
@@ -138,6 +141,94 @@ WARNING_DIGEST_UNDERCOVERAGE = "digest_undercoverage"
 LITERAL_STRING_RE = re.compile(r"\((?:\\.|[^\\)])*\)")
 TJ_ARRAY_RE = re.compile(r"\[(.*?)\]\s*TJ", re.DOTALL)
 TJ_SINGLE_RE = re.compile(r"(\((?:\\.|[^\\)])*\))\s*Tj")
+
+ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
+    "bootstrap_runtime_db": [
+        "normalize_source",
+        "persist_outline_and_scopes",
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "persist_references",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "normalize_source": [
+        "persist_outline_and_scopes",
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "persist_references",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_outline_and_scopes": [
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "persist_references",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_digest": ["render_and_validate"],
+    "prepare_references_workset": [
+        "persist_reference_entry_splits",
+        "persist_references",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_reference_entry_splits": [
+        "persist_references",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_references": [
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "prepare_citation_workset": [
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_citation_semantics": [
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_citation_timeline": [
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_citation_summary": ["render_and_validate"],
+    "render_and_validate": [],
+}
+
+REQUIRED_STAGE5_RECEIPTS = (
+    "prepare_citation_workset",
+    "persist_citation_semantics",
+    "persist_citation_timeline",
+    "persist_citation_summary",
+)
 TEXT_BLOCK_RE = re.compile(r"BT(.*?)ET", re.DOTALL)
 
 DIGEST_FILENAME = "digest.md"
@@ -215,6 +306,54 @@ def _normalized_output_dir(path_value: str) -> Path:
 
 def _write_render_result_json(payload: dict[str, Any]) -> None:
     _write_json(Path.cwd() / RESULT_JSON_FILENAME, payload)
+
+
+def _record_action_receipt(
+    connection,
+    *,
+    action_name: str,
+    stage: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    delete_action_receipts(connection, ACTION_RECEIPT_INVALIDATIONS.get(action_name, []))
+    store_action_receipt(connection, action_name=action_name, stage=stage, status="succeeded", metadata=metadata)
+
+
+def _missing_required_receipts(connection, actions: tuple[str, ...]) -> list[str]:
+    return [action for action in actions if not has_action_receipt(connection, action)]
+
+
+def _scope_contains_citation_signals(lines: list[str], scope: Scope) -> bool:
+    for line_no in range(scope.line_start, scope.line_end + 1):
+        raw = lines[line_no - 1]
+        sanitized = _sanitize_citation_line(raw)
+        if BRACKET_NUMERIC_RE.search(sanitized):
+            return True
+        if AUTHOR_YEAR_PARENS_RE.search(sanitized) or AUTHOR_YEAR_NARRATIVE_RE.search(sanitized):
+            return True
+    return False
+
+
+def _is_review_like_scope(scope: Scope) -> bool:
+    return bool(re.search(r"\b(related|review|background|prior|survey|introduction)\b", scope.section_title, re.IGNORECASE))
+
+
+def _first_author_aliases(authors: object) -> set[str]:
+    if not isinstance(authors, list) or not authors:
+        return set()
+    first_author = str(authors[0]).strip()
+    if not first_author:
+        return set()
+    pre_comma = first_author.split(",", 1)[0].strip()
+    aliases: set[str] = set()
+    target = pre_comma or first_author
+    normalized_target = re.sub(r"\s+", " ", target.lower()).strip()
+    if normalized_target:
+        aliases.add(normalized_target)
+    surname_matches = SURNAME_RE.findall(target)
+    if surname_matches:
+        aliases.add(surname_matches[-1].lower())
+    return aliases
 
 
 def _read_json_payload(path_value: str) -> dict[str, Any]:
@@ -1616,8 +1755,7 @@ def _build_citation_workset(
             by_ref_number[ref_number] = entry
         authors = entry.get("author", [])
         if isinstance(authors, list) and authors and entry.get("year") is not None:
-            surname = re.split(r"[, ]", str(authors[0]).strip())[0]
-            by_author_year.append({**entry, "surname_hint": surname.lower()})
+            by_author_year.append({**entry, "surname_aliases": sorted(_first_author_aliases(authors))})
 
     grouped: dict[int, dict[str, Any]] = {}
     mention_links: list[dict[str, Any]] = []
@@ -1634,7 +1772,8 @@ def _build_citation_workset(
             surname = str(mention["surname_hint"]).lower()
             year = int(mention["year_hint"])
             for candidate in by_author_year:
-                if candidate.get("surname_hint") == surname and candidate.get("year") == year:
+                surname_aliases = candidate.get("surname_aliases", [])
+                if surname in surname_aliases and candidate.get("year") == year:
                     candidate_reference = candidate
                     resolution_method = "author_year_hint"
                     resolution_confidence = 0.85
@@ -2061,7 +2200,7 @@ def _validate_citation_semantics_payload(
 
 def _validate_citation_summary_basis(
     basis: object,
-    workset_items: list[dict[str, Any]],
+    citation_items: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(basis, dict):
         return None, "basis must be object"
@@ -2089,7 +2228,7 @@ def _validate_citation_summary_basis(
             return None, "basis.key_ref_indexes must be non-empty integer array"
         key_ref_indexes.append(item)
 
-    expected_ref_indexes = {int(item["ref_index"]) for item in workset_items}
+    expected_ref_indexes = {int(item["ref_index"]) for item in citation_items}
     unknown = sorted(index for index in key_ref_indexes if index not in expected_ref_indexes)
     if unknown:
         return None, f"basis.key_ref_indexes contains unknown ref_index values: {unknown}"
@@ -2104,17 +2243,20 @@ def _validate_citation_summary_basis(
 def _validate_citation_timeline_payload(
     payload: dict[str, Any],
     workset_items: list[dict[str, Any]],
+    citation_items: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, list[str], str | None]:
     timeline = payload.get("timeline")
     if not isinstance(timeline, dict):
         return None, [], "timeline must be object"
 
-    known_ref_indexes = {int(item["ref_index"]) for item in workset_items}
+    known_ref_indexes = {int(item["ref_index"]) for item in citation_items}
     dated_ref_indexes: set[int] = set()
     undated_ref_indexes: set[int] = set()
     for item in workset_items:
         reference = dict(item.get("reference", {}))
         ref_index = int(item["ref_index"])
+        if ref_index not in known_ref_indexes:
+            continue
         if isinstance(reference.get("year"), int):
             dated_ref_indexes.add(ref_index)
         else:
@@ -2645,6 +2787,7 @@ def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
             next_action="normalize_source",
             status="runtime database bootstrapped",
         )
+        _record_action_receipt(connection, action_name="bootstrap_runtime_db", stage="stage_0_bootstrap")
         connection.commit()
     print(json.dumps({"db_path": str(db_path), "output_dir": str(output_dir), "error": None}, ensure_ascii=False))
     return 0
@@ -2806,6 +2949,7 @@ def _dispatch_source(
             next_action="persist_outline_and_scopes",
             status="normalized source persisted",
         )
+        _record_action_receipt(connection, action_name="normalize_source", stage="stage_1_normalize_source")
         connection.commit()
     return payload, 0
 
@@ -2850,6 +2994,7 @@ def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
             ),
         )
         _set_success_state(connection, stage="stage_3_digest", substep="persist_digest", next_action="persist_digest", status="outline and scopes persisted")
+        _record_action_receipt(connection, action_name="persist_outline_and_scopes", stage="stage_2_outline_and_scopes")
         connection.commit()
     print(
         json.dumps(
@@ -2892,6 +3037,7 @@ def _handle_persist_digest(args: argparse.Namespace) -> int:
             next_action="prepare_references_workset",
             status="digest sections persisted",
         )
+        _record_action_receipt(connection, action_name="persist_digest", stage="stage_3_digest")
         connection.commit()
     print(
         json.dumps(
@@ -2954,6 +3100,16 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
             substep="persist_reference_entry_splits" if requires_split_review else "persist_references",
             next_action="persist_reference_entry_splits" if requires_split_review else "persist_references",
             status="reference entry split review required" if requires_split_review else "reference workset prepared",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="prepare_references_workset",
+            stage="stage_4_references",
+            metadata={
+                "requires_split_review": requires_split_review,
+                "entry_style": str(prepared["entry_style"]),
+                "grouping_suspect_count": len(suspect_blocks),
+            },
         )
         connection.commit()
 
@@ -3191,6 +3347,12 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
             next_action="persist_references",
             status="reference entries re-split and candidates regenerated",
         )
+        _record_action_receipt(
+            connection,
+            action_name="persist_reference_entry_splits",
+            stage="stage_4_references",
+            metadata={"stored_reference_entries": len(normalized_entries)},
+        )
         connection.commit()
 
     workset_payload = _build_reference_workset_export(
@@ -3382,6 +3544,12 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
         for warning in list(dict.fromkeys(warnings)):
             add_runtime_warning_once(connection, warning)
         _set_success_state(connection, stage="stage_5_citation", substep="prepare_citation_workset", next_action="prepare_citation_workset", status="references persisted")
+        _record_action_receipt(
+            connection,
+            action_name="persist_references",
+            stage="stage_4_references",
+            metadata={"stored_reference_items": len(normalized_items)},
+        )
         connection.commit()
     print(json.dumps({"stored_reference_items": len(normalized_items), "warnings": list(dict.fromkeys(warnings)), "error": None}, ensure_ascii=False))
     return 0
@@ -3477,6 +3645,14 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         workset_payload["stats"]["unresolved_mentions"] = len(workset["unresolved_mentions"])
         workset_payload["stats"]["filtered_false_positive_mentions"] = filtered_false_positive_mentions
         workset_payload["review_items"] = _build_citation_review_view(workset_payload)["items"]
+        if (
+            not workset_payload["mentions"]
+            or not workset_payload["workset_items"]
+        ) and (_is_review_like_scope(scope) or _scope_contains_citation_signals(lines, scope)):
+            workset_payload["error"] = {
+                "code": "citation_mentions_not_found",
+                "message": "citation scope contains citation-like signals but prepare_citation_workset produced no stable mentions/workset items",
+            }
 
     if not args.persist_db_only:
         _write_json(out_path, workset_payload)
@@ -3485,7 +3661,7 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
     with connect_db(db_path) as connection:
         if workset_payload["error"] is not None:
             error = dict(workset_payload["error"])
-            set_runtime_error(connection, "citation_scope_failed", str(error["message"]), "stage_5_citation")
+            set_runtime_error(connection, str(error["code"]), str(error["message"]), "stage_5_citation")
             connection.commit()
             print(
                 json.dumps(
@@ -3515,6 +3691,7 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         )
         connection.execute("DELETE FROM citation_batches")
         connection.execute("DELETE FROM citation_items")
+        connection.execute("DELETE FROM citation_timeline")
         connection.execute("DELETE FROM citation_summary")
         store_citation_mentions(connection, [dict(mention) for mention in workset_payload["mentions"]])
         store_citation_mention_links(connection, [dict(link) for link in workset_payload["mention_links"]])
@@ -3546,6 +3723,16 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         if workset_payload["meta"]["scope_decision"].get("fallback_reason"):
             add_runtime_warning_once(connection, WARNING_SCOPE_FALLBACK_USED)
         _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_semantics", next_action="persist_citation_semantics", status="citation workset prepared")
+        _record_action_receipt(
+            connection,
+            action_name="prepare_citation_workset",
+            stage="stage_5_citation",
+            metadata={
+                "total_mentions": workset_payload["stats"]["total_mentions"],
+                "resolved_items": workset_payload["stats"]["resolved_items"],
+                "unresolved_mentions": workset_payload["stats"]["unresolved_mentions"],
+            },
+        )
         connection.commit()
     print(
         json.dumps(
@@ -3650,6 +3837,12 @@ def _handle_persist_citation_semantics(args: argparse.Namespace) -> int:
             final_items.append(item_obj)
         store_citation_items(connection, final_items)
         _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_timeline", next_action="persist_citation_timeline", status="citation semantics persisted")
+        _record_action_receipt(
+            connection,
+            action_name="persist_citation_semantics",
+            stage="stage_5_citation",
+            metadata={"stored_citation_items": len(final_items)},
+        )
         connection.commit()
     print(json.dumps({"stored_citation_items": len(final_items), "error": None}, ensure_ascii=False))
     return 0
@@ -3667,7 +3860,7 @@ def _handle_persist_citation_timeline(args: argparse.Namespace) -> int:
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
             return 2
         workset_items = fetch_citation_workset_items(connection)
-        normalized_timeline, warnings, error = _validate_citation_timeline_payload(payload, workset_items)
+        normalized_timeline, warnings, error = _validate_citation_timeline_payload(payload, workset_items, citation_items)
         if error is not None or normalized_timeline is None:
             set_runtime_error(connection, "citation_timeline_failed", error or "invalid citation timeline payload", "stage_5_citation")
             connection.commit()
@@ -3677,6 +3870,7 @@ def _handle_persist_citation_timeline(args: argparse.Namespace) -> int:
         for warning in warnings:
             add_runtime_warning_once(connection, warning)
         _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_summary", next_action="persist_citation_summary", status="citation timeline persisted")
+        _record_action_receipt(connection, action_name="persist_citation_timeline", stage="stage_5_citation")
         connection.commit()
     print(json.dumps({"stored_citation_timeline": True, "warnings": warnings, "error": None}, ensure_ascii=False))
     return 0
@@ -3706,8 +3900,7 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "summary must be non-empty string"}}, ensure_ascii=False))
             return 2
-        workset_items = fetch_citation_workset_items(connection)
-        normalized_basis, error = _validate_citation_summary_basis(basis, workset_items)
+        normalized_basis, error = _validate_citation_summary_basis(basis, citation_items)
         if error is not None or normalized_basis is None:
             set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation summary basis", "stage_5_citation")
             connection.commit()
@@ -3715,9 +3908,25 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
             return 2
         store_citation_summary(connection, summary.strip(), normalized_basis)
         _set_success_state(connection, stage="stage_6_render_and_validate", substep="render_and_validate", next_action="render_and_validate", status="citation summary persisted")
+        _record_action_receipt(connection, action_name="persist_citation_summary", stage="stage_5_citation")
         connection.commit()
     print(json.dumps({"stored_citation_summary": True, "error": None}, ensure_ascii=False))
     return 0
+
+
+def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no-untyped-def]
+    missing_receipts = _missing_required_receipts(connection, REQUIRED_STAGE5_RECEIPTS)
+    if missing_receipts:
+        return f"missing action receipts before render: {missing_receipts}"
+    if not fetch_citation_workset_items(connection):
+        return "citation_workset_items missing before render"
+    if not fetch_citation_items(connection):
+        return "citation_items missing before render"
+    if fetch_citation_timeline(connection) is None:
+        return "citation_timeline missing before render"
+    if fetch_citation_summary(connection) is None:
+        return "citation_summary missing before render"
+    return None
 
 
 def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
@@ -3780,6 +3989,23 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
             _write_render_result_json(payload)
             print(json.dumps(payload, ensure_ascii=False))
             return 2
+        with connect_db(db_path) as connection:
+            prereq_error = _validate_render_prerequisites(connection)
+        if prereq_error is not None:
+            payload = {
+                "digest_path": "",
+                "references_path": "",
+                "citation_analysis_path": "",
+                "provenance": {"generated_at": "", "input_hash": "", "model": ""},
+                "warnings": [],
+                "error": {
+                    "code": "citation_report_failed",
+                    "message": f"render mode failed before validation: {prereq_error}",
+                },
+            }
+            _write_render_result_json(payload)
+            print(json.dumps(payload, ensure_ascii=False))
+            return 2
         try:
             payload = _render_public_artifacts(db_path)
             errors = _validate_public_output(payload, preprocess_artifact=None, db_path=db_path)
@@ -3806,6 +4032,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
                 print(json.dumps(payload, ensure_ascii=False))
                 return 2
             _set_success_state(connection, stage="stage_7_completed", substep="render_and_validate", next_action="render_and_validate", status="artifacts rendered and validated")
+            _record_action_receipt(connection, action_name="render_and_validate", stage="stage_6_render_and_validate")
             connection.commit()
             payload = build_public_output_payload(connection)
         _write_render_result_json(payload)

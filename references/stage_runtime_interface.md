@@ -9,6 +9,7 @@
 - 输入协议探测与标准化
 - SQLite 持久化
 - citation workset 准备
+- 主路径动作收据（action receipts）写入
 - 最终渲染与输出校验
 
 它不负责决定下一步执行什么；下一动作只能由 `scripts/gate_runtime.py` 返回。
@@ -694,6 +695,8 @@ python scripts/stage_runtime.py prepare_citation_workset \
   - 被图片链接、URL、资源路径、图片/PDF 尾缀或日期型字符串过滤掉的假阳性数量。
 - `review_path`
   - 轻量审阅视图路径，只保留 `ref_index`、`title`、`mention_count`、`snippets`。
+- review-like scope 或 citation-shaped 文本中若最终得到 `0` mentions / `0` workset_items`
+  - 直接失败，不继续 stage 5 后续动作。
 
 ### 最小合法示例
 
@@ -738,6 +741,7 @@ python scripts/stage_runtime.py prepare_citation_workset --scope-file /tmp/scope
 
 - DB 中缺少 `citation_scope`
 - 试图在本步重开范围决策
+- review-like scope 中未抽到任何稳定 citation mention / workset item
 - 忽略轻量审阅视图，反复让模型消费完整大 payload
 
 ## `persist_citation_semantics`
@@ -781,6 +785,7 @@ python scripts/stage_runtime.py persist_citation_semantics \
   - 必填。是否属于当前综述范围内需要在全局总结中显式点出的关键文献。
 - `items[*].confidence`
   - 必填。0~1 置信度。
+- 本步必须由 `prepare_citation_workset` 之后的脚本主路径写入，不能靠手工写 SQLite 表跳过。
 
 ### 最小合法示例
 
@@ -871,7 +876,7 @@ python scripts/stage_runtime.py persist_citation_timeline \
 - `timeline.*.summary`
   - 必填。该时段在当前综述范围内的研究脉络总结。
 - `timeline.*.ref_indexes`
-  - 必填。落入该时间段的 `ref_index` 数组。
+  - 必填。落入该时间段的 `ref_index` 数组；每个值都必须已经存在于 `citation_items`。
 - bucket 边界由 agent 判断，不使用固定年份阈值。
 - 所有有稳定年份的 citation items 必须恰好进入一个 bucket。
 - 无稳定年份的条目允许不进入 timeline；脚本会记录 `citation_timeline_missing_year` warning。
@@ -961,8 +966,9 @@ python scripts/stage_runtime.py persist_citation_summary \
   - `basis.argument_shape`
     - 必填。2 条及以上原文组织这些文献的叙述动作。
   - `basis.key_ref_indexes`
-    - 必填。非空整数数组；每个 `ref_index` 都必须能在当前 `citation_workset_items` 中找到。
+    - 必填。非空整数数组；每个 `ref_index` 都必须能在当前 `citation_items` 中找到。
 - `persist_citation_summary` 只能在 `persist_citation_timeline` 之后执行。
+- `persist_citation_timeline` 与 `persist_citation_summary` 都必须建立在已持久化的 `citation_items` 之上，不能通过手工写 SQLite 绕过脚本动作链。
 
 ### 最小合法示例
 
