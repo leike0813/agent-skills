@@ -1,0 +1,16 @@
+# 分节写作面板
+
+## 运行态
+- 当前激活 section：`{{ runtime.active_section_id or "" }}`
+- 当前子步：`{{ runtime.current_substep or "" }}`
+- 下一动作：`{{ runtime.next_action }}`
+
+## 章节列表
+{% if sections %}
+{% for item in sections %}
+- [{{ item.section_order }}] {{ item.section_title }} | 计划状态=`{{ item.plan_status }}` | 审阅=`{{ item.review_status }}` | 字数=`{{ item.actual_count_value }}` / {{ item.planned_count_value }} {{ item.count_unit }} | 校验=`{{ item.count_check_status }}` | semantic-units={{ item.semantic_source_count }}
+  摘要：{{ item.section_summary or "（空）" }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}

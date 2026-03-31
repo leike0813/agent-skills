@@ -14,7 +14,7 @@ Stage 1 对应 `stage_1_intake_and_inventory`。
 - 提取 figure / table / citation / bibliography inventory
 - 重渲染：
   - `02-manuscript-profile.md`
-  - `06-supporting-elements-inventory.md`
+  - `03-supporting-elements-inventory.md`
 
 ## 写入真源
 

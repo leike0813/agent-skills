@@ -1,0 +1,41 @@
+# 内容取舍建议板
+
+- 当前子步：`{{ runtime.current_substep }}`
+- 下一动作：`{{ runtime.next_action }}`
+- 建议项数量：{{ items|length }}
+
+{% for bucket in ["must_keep", "simplify_first", "must_avoid"] %}
+## {{ bucket }}
+{% set bucket_items = items | selectattr("bucket", "equalto", bucket) | list %}
+{% if bucket_items %}
+{% for item in bucket_items %}
+### {{ item.item_order }}. {{ item.title }}
+- Item id：`{{ item.item_id }}`
+- 状态：`{{ item.status }}`
+- 摘要：{{ item.summary }}
+- 理由：{{ item.rationale }}
+{% if item.note %}- 备注：{{ item.note }}{% endif %}
+
+#### 语义单元
+{% if item.semantic_units %}
+{% for unit in item.semantic_units %}
+- `{{ unit.unit_id }}`{% if unit.unit_title %} | {{ unit.unit_title }}{% endif %}{% if unit.summary %} | {{ unit.summary }}{% endif %}
+{% if unit.member_segments %}
+  原始成员：
+{% for member in unit.member_segments %}
+    - `{{ member.segment_id }}` | {{ member.segment_kind }} | role={{ member.scope_role }} | bucket=`{{ member.scope_bucket_id }}`{% if member.heading_context %} | {{ member.heading_context }}{% endif %} | {{ member.source_text_preview }}
+{% endfor %}
+{% else %}
+  原始成员： （空）
+{% endif %}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}
+
+{% endfor %}

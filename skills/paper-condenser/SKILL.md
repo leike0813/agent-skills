@@ -14,7 +14,6 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 - 原稿理解
 - 处理范围界定
 - 目标设置
-- 风格画像
 - 凝缩方案
 - 分节撰写与审阅
 - 最终 bundle 渲染
@@ -35,7 +34,9 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 
 - 不要在开始时把 `references/` 全部读一遍。
 - 先依靠本文件理解总体目标、运行模型、阶段目的和动作顺序。
-- 只有在遇到当前阶段的困难、歧义、blocker，或需要更细的 payload / gate / DB 规则时，才按需读取对应 reference。
+- 后续恢复执行时，优先读取 gate 返回的 `runtime_digest` 作为核心纪律提醒。
+- 若 gate 返回的 `next_action` 需要 payload，先看 gate 一起返回的 `next_action_payload_example`。
+- 只有当这个最小样例仍不足以执行，或你遇到当前阶段的困难、歧义、blocker、DB 语义问题时，才按需读取对应 reference。
 
 换言之：`SKILL.md` 是主指令，`references/` 是按需加载的补充说明，而不是首次执行时必须通读的全集。
 
@@ -47,6 +48,9 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 - 原稿只读，不直接修改。
 - 运行态 workspace 固定在当前项目目录下的 `.paper-condenser-tmp/<document-slug>/`。
 - 唯一运行态真源是 `.paper-condenser-tmp/<document-slug>/paper-condenser.db`。
+- Stage 2 会先确认 `working_language` 与一个初始 `target_language`。
+- 从语言上下文确认完成后，所有运行态文本、只读视图和 section 草稿都统一使用 `working_language`。
+- Stage 3 会根据最终体例/模板覆盖 `target_language`；只有最终稿 section 正文会在最后阶段翻译成该语言。
 - 中间工件全部是只读 Markdown 视图，不得当作真源直接编辑。
 - `final-draft.tex` 与 `rewrite-report.md` 是数据库渲染出的正式输出，不是并列真源。
 
@@ -54,18 +58,18 @@ description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to g
 
 - `01-agent-resume.md`
 - `02-manuscript-profile.md`
-- `03-target-settings.md`
-- `04-style-profile.md`
-- `05-condensation-plan.md`
-- `06-supporting-elements-inventory.md`
-- `07-scope-segments.md`
-- `08-semantic-source-units.md`
-- `09-section-rewrite-plan.md`
-- `10-section-drafting-board.md`
-- `11-content-selection-board.md`
+- `03-supporting-elements-inventory.md`
+- `04-scope-segments.md`
+- `05-semantic-source-units.md`
+- `06-target-settings.md`
+- `07-content-selection-board.md`
+- `08-style-profile.md`
+- `09-condensation-plan.md`
+- `10-section-rewrite-plan.md`
+- `11-section-drafting-board.md`
 - `section-reviews/<section_order>-<section_id>.md`
 
-这些视图由 `assets/render-templates/` 下的 Jinja2 模板渲染。模板缺失或渲染失败时，runtime 必须直接失败，不能静默降级到 Python 内联字符串渲染。
+这些视图由 Jinja2 模板渲染。Stage 2 语言确认后，runtime 会在工作区物化 `render-templates/` 模板副本，后续渲染只读取这份副本；模板缺失或渲染失败时，runtime 必须直接失败，不能静默降级到 Python 内联字符串渲染。
 
 ## Hard Constraints
 
@@ -105,6 +109,8 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
 - 首次进入必须先运行 `gate_runtime.py`。
 - 每次正式写库后都必须重新运行 `gate_runtime.py`。
 - 只能执行 gate 返回的 `next_action`。
+- gate 还会返回 `runtime_digest`；恢复执行时先看它，再看 `next_action` 和 `next_action_payload_example`。
+- 若 `next_action` 需要 payload，先使用 gate 返回的 `next_action_payload_example` 作为最小起点；若仍不确定，再按需读取对应 stage playbook。
 - 若 gate 返回 blocker、pending confirmation 或 repair 指示，必须先处理。
 - 恢复执行时也必须先走 gate，而不是凭上下文继续。
 
@@ -170,12 +176,16 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
 
 **What To Do**
 
+- 先确认 `working_language` 与初始 `target_language`。
 - 先写 manuscript analysis。
 - 再做 raw main/aux segmentation。
 - 最后做 semantic consolidation。
 
 **How To Work**
 
+- gate 给 `confirm_language_context` 的 payload 示例应优先作为语言确认起点。
+- 一旦语言上下文确认完成，后续中间工件、规划文本和 section 草稿都必须使用 `working_language`。
+- 若 `working_language` 是 `zh/en`，直接复制预置模板副本；若不是，则先翻译一份工作区模板副本。
 - 用 `main_scope + main_scope_locator + aux_scopes[*]` 固定本轮主转写范围与辅助支撑范围。
 - `main_scope` 是主要转写目标。
 - `aux_scopes` 是支撑来源，可用于背景、综述、方法概述等补充材料，但不是第二主 scope。
@@ -193,6 +203,7 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
 
 **Done When**
 
+- 语言上下文已确认，且工作区模板副本已就绪。
 - analysis 已写库。
 - raw segments 已写库并标注 `main|aux`。
 - semantic source units 已写库，可供后续规划消费。
@@ -201,66 +212,43 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
 
 **Purpose**
 
-固定目标稿的机械设置，并把“保留什么、优先精简什么、必须排除什么”单独收敛成经用户确认的三类列表。
+固定目标稿的机械设置，并在同一阶段内完成内容取舍与风格画像，形成完整的目标设置结果。
 
 **What To Do**
 
 - 先写基本目标设置。
 - 再生成内容取舍建议板。
 - 再让用户确认或调整三类列表。
+- 再写风格画像。
 - 最后执行 Stage 3 的最终确认。
 
 **How To Work**
 
-- 基本设置只处理目标语言、体例、期刊类型、LaTeX 模板、正文长度、图表偏好、参考文献偏好等硬设置。
+- 基本设置只处理体例、期刊类型、LaTeX 模板、正文长度、图表偏好、参考文献偏好等硬设置。
+- `target_language` 不再在 Stage 3 手填，而是由最终体例/模板推导并覆盖 Stage 2 的初值。
 - 内容取舍建议板基于 semantic source units 生成三类建议：
   - `must_keep`
   - `simplify_first`
   - `must_avoid`
 - 建议项必须是语义聚合内容，而不是机械段落映射。
 - 建议项需要展示 semantic units 与底层 raw segments 的溯源。
+- 风格画像在内容取舍确认之后执行。
+- 风格画像仍写入独立的 `style_profile` 真源和 `08-style-profile.md` 视图，但不再单独占用一个 workflow stage。
 
 **Do Not**
 
 - 不要把所有 Stage 3 问题一次性抛给用户。
 - 不要把 `simplify_first` 误当作 `must_avoid`。
-- 不要在内容取舍未确认前把 `user_confirmed` 置为 `true`。
+- 不要在内容取舍和风格画像都未完成前把 `user_confirmed` 置为 `true`。
 
 **Done When**
 
 - 基本目标设置已写库。
 - 三类内容列表已确认并汇总回 `target_settings`。
+- 风格画像已写库。
 - `user_confirmed=true`。
 
-### Stage 4: Style Profile
-
-**Purpose**
-
-总结原稿风格、识别需要修正的问题，并形成目标稿应遵循的风格指导。
-
-**What To Do**
-
-- 写入 `source_style`
-- 写入 `problems_to_fix`
-- 写入 `target_style_guidance`
-- 写入 `open_questions`
-
-**How To Work**
-
-- 既要尊重原稿已有风格，也要指出需要纠正的表达、规范和结构问题。
-- 若风格边界仍需用户决定，必须进入待确认状态。
-
-**Do Not**
-
-- 不要把 Stage 4 变成简单的原稿风格复述。
-- 不要跳到具体 section 写作。
-
-**Done When**
-
-- 风格画像已写库。
-- 无阻塞推进的待确认项，或这些待确认项已明确暴露给 gate。
-
-### Stage 5: Condensation Plan
+### Stage 4: Condensation Plan
 
 **Purpose**
 
@@ -269,7 +257,8 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
 **What To Do**
 
 - 先写整体 condensation plan。
-- 获得批准后，再写 `section_rewrite_plan`。
+- 获得用户对整体 plan 的明确批准后，再写 `section_rewrite_plan`。
+- section rewrite plan 写完后，还必须再次停下来申请用户批准。
 
 **How To Work**
 
@@ -284,20 +273,26 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
   - `must_keep`
   - `simplify_first`
   - `must_avoid`
+- section rewrite plan 必须让用户能预演最终稿形态；每节至少写清：
+  - 本节会写什么
+  - 本节如何组织和压缩
+  - 本节使用哪些图表、哪些要简化、哪些不使用
+  - 本节关键引用如何使用
 - section rewrite plan 的来源主路径必须是 `semantic_unit:<unit_id>`。
 - 若使用 aux 支撑内容，必须写清理由。
 
 **Do Not**
 
 - 不要只给一个大纲和粗略字数目标就进入最终写作。
-- 不要让 Stage 6 脱离 section rewrite plan 自由发挥。
+- 不要让 Stage 5 脱离 section rewrite plan 自由发挥。
 
 **Done When**
 
-- condensation plan 已批准。
-- section rewrite plan 已落库，足以驱动逐节写作。
+- condensation plan 已获得用户批准。
+- section rewrite plan 已生成并获得用户批准。
+- 只有在这两层计划都批准后，才允许进入 Stage 5。
 
-### Stage 6: Final Drafting
+### Stage 5: Final Drafting
 
 **Purpose**
 
@@ -309,7 +304,9 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
 - 写入该 section 的 draft 与 provenance。
 - 通过字数校验。
 - 生成 section review 工件并等待批准。
-- 全部 section 完成后，再确认输出目录并渲染最终 bundle。
+- 全部 section 完成后，再确认输出目录。
+- 先把所有已批准 section 草稿翻译成最终 `target_language`。
+- 最后再渲染最终 bundle。
 
 **How To Work**
 
@@ -321,6 +318,7 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
   - 批准
 - `source_refs` 只允许引用 `semantic_unit:<unit_id>`。
 - 当前 section 草稿字数默认必须落在计划值的 `±15%` 容差内。
+- `persist_section_draft` 写入的永远是 `working_language` 草稿。
 - section review 工件必须显示：
   - 转写结果
   - planned vs actual count
@@ -328,20 +326,51 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
   - main/aux 构成
   - 相关图表/引用/参考文献
 - 全部 section 批准后，先询问输出目录；默认当前工作目录。
+- `persist_translated_sections` 负责把所有已批准草稿翻译成最终 `target_language`。
 - 最终渲染时，若最终稿实际引用了图片，必须复制到输出目录下的 `images/` 子目录并改写路径。
+- `render_final_output_bundle` 只是 assembly，不是 rewrite。
 
 **Do Not**
 
 - 不要一次性生成整篇 final draft。
 - 不要在某节未批准前进入下一节。
 - 不要让最终稿继续引用原稿位置上的图片路径。
+- 不要在最终 bundle 渲染时再新增、改写或润色章节正文。
+- 不要把 working-language 草稿直接拼进最终 `final-draft.tex`。
 
 **Done When**
 
 - 所有 section 已批准。
 - 输出目录已确认。
+- 所有已批准 section 草稿都已翻译成最终 `target_language`。
 - `final-draft.tex` 与 `rewrite-report.md` 已渲染。
 - 若用到图片，输出目录下的 `images/` 已就绪。
+
+### Stage 6: Completed
+
+**Purpose**
+
+标记所有门禁都已满足，运行态只允许查看与导出，不再允许新的正式写库。
+
+**What To Do**
+
+- 查看最终 bundle 和只读视图。
+- 如需恢复检查，只重新跑 gate。
+
+**How To Work**
+
+- 这不是新的写作阶段。
+- `completed` 仅表示 runtime 已达到稳定终态。
+
+**Do Not**
+
+- 不要把 `completed` 当作新的 drafting 入口。
+- 不要在这个状态下再试图追加 stage write。
+
+**Done When**
+
+- gate 返回 `completed`。
+- 所有正式输出都已存在。
 
 ## Workflow State Machine
 
@@ -352,200 +381,50 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
 - `stage_2_manuscript_analysis`
   - `next_action=persist_manuscript_analysis` or `persist_raw_scope_segments` or `persist_semantic_source_units`
 - `stage_3_target_settings`
-  - `next_action=persist_target_settings_basics` or `persist_content_selection_board` or `confirm_content_selection` or `finalize_target_settings`
-- `stage_4_style_profile`
-  - `next_action=persist_style_profile`
-- `stage_5_condensation_plan`
-  - `next_action=persist_condensation_plan` or `persist_section_rewrite_plan`
-- `stage_6_final_drafting`
+  - `next_action=persist_target_settings_basics` or `persist_content_selection_board` or `confirm_content_selection` or `persist_style_profile` or `finalize_target_settings`
+- `stage_4_condensation_plan`
+  - `next_action=persist_condensation_plan` or `confirm_condensation_plan` or `persist_section_rewrite_plan` or `confirm_section_rewrite_plan`
+- `stage_5_final_drafting`
   - `next_action=prepare_section_drafting` / `persist_section_draft` / `approve_section_draft` / `persist_output_target` / `render_final_output_bundle`
-- `stage_7_completed`
+- `stage_6_completed`
   - `next_action=completed`
 
 ## Action Summary
 
-### `bootstrap_runtime_db`
+以下只说明动作含义。具体 payload 形态不要在这里硬背：
 
-- 用途：
-  - 初始化 workspace 与 SQLite schema
-  - 写入 source metadata
-  - 首次渲染只读视图
-- 输入：
-  - `--source-path`
+- 先看 gate 返回的 `next_action_payload_example`
+- 若仍不够，再按需读对应 `stageN-playbook.md`
 
-### `persist_intake_and_inventory`
-
-- 用途：
-  - 读取源文件
-  - 写入 deterministic intake
-  - 写入 supporting-elements inventory
-- 输入：
-  - `--artifact-root`
-- 不接受 LLM 语义 payload
-
-### `persist_manuscript_analysis`
-
-- 用途：
-  - 持久化 Stage 2 的 manuscript analysis 结果
-- 输入 payload 至少包含：
-  - `main_scope`
-  - `main_scope_locator`
-  - `aux_scopes`
-  - `topic`
-  - `main_work`
-  - `novelty`
-  - `section_outline`
-  - `removable_candidates`
-  - `open_questions`
-- 可选：
-  - `pending_confirmations`
-
-### `persist_raw_scope_segments`
-
-- 用途：
-  - 在 `main_scope` 与 `aux_scopes` 内执行 deterministic raw segmentation
-  - 将 paragraph / figure / table / display block 写入 DB，并标记 `scope_role=main|aux`
-- 输入：
-  - `--artifact-root`
-- 不接受 LLM 语义 payload
-
-### `persist_semantic_source_units`
-
-- 用途：
-  - 基于 raw segmentation 写入真正可供 Stage 5 / 6 使用的 semantic source units
-- 输入 payload 至少包含：
-  - `units`
-- 每个 unit 至少包含：
-  - `unit_id`
-  - `unit_title`
-  - `unit_kind`
-  - `summary`
-  - `member_segment_ids`
-- 可选：
-  - `elements`
-
-### `persist_target_settings_basics`
-
-- 用途：
-  - 先持久化 Stage 3 的基本目标设置
-  - 暂不要求在这一步完成三类内容取舍的最终确认
-- 输入 payload 至少包含：
-  - `target_language`
-  - `target_form`
-  - `target_journal_type`
-  - `latex_template_id`
-  - `target_body_length`
-  - `figure_table_preference`
-  - `reference_handling_preference`
-
-### `persist_content_selection_board`
-
-- 用途：
-  - 基于 `semantic_source_units` 生成内容取舍建议板
-  - 组织 `must_keep` / `simplify_first` / `must_avoid`
-- 输入 payload 至少包含：
-  - `items`
-
-### `confirm_content_selection`
-
-- 用途：
-  - 接收用户对三类内容列表的确认与调整
-  - 将最终确认结果汇总回 `target_settings`
-- 输入 payload 至少包含：
-  - `items`
-
-### `finalize_target_settings`
-
-- 用途：
-  - 在基本设置和内容取舍都完成后执行 Stage 3 最终确认
-- 输入 payload 至少包含：
-  - `user_confirmed=true`
-
-### `persist_style_profile`
-
-- 用途：
-  - 持久化风格画像
-- 输入 payload 至少包含：
-  - `source_style`
-  - `problems_to_fix`
-  - `target_style_guidance`
-  - `open_questions`
-
-### `persist_condensation_plan`
-
-- 用途：
-  - 持久化凝缩方案与批准状态
-- 输入 payload 至少包含：
-  - `core_message`
-  - `priority_map`
-  - `target_outline`
-  - `length_allocation`
-  - `omit_merge_strategy`
-  - `figure_table_plan`
-  - `reference_plan`
-  - `approval_status`
-
-### `persist_section_rewrite_plan`
-
-- 用途：
-  - 按目标 section 持久化更细的转写方案
-  - 绑定 semantic units、supporting elements 和篇幅计划
-  - 消费已确认的 `must_keep` / `simplify_first` / `must_avoid`
-- 输入 payload 至少包含：
-  - `sections`
-
-### `prepare_section_drafting`
-
-- 用途：
-  - 选择下一个未批准 section
-  - 设置 active section 并重渲染 drafting board
-- 输入：
-  - `--artifact-root`
-
-### `persist_section_draft`
-
-- 用途：
-  - 持久化当前 active section 的 draft 内容与 provenance
-  - 计算实际字数并执行 `±15%` 容差校验
-  - 生成当前 section 的独立审阅工件
-- 输入 payload 至少包含：
-  - `section_id`
-  - `draft_tex`
-  - `source_refs`
-
-### `approve_section_draft`
-
-- 用途：
-  - 记录用户对当前 active section 的批准或驳回
-- 输入 payload 至少包含：
-  - `section_id`
-  - `approved`
-
-### `persist_output_target`
-
-- 用途：
-  - 持久化最终 bundle 的输出目录
-  - 若用户未指定目录，默认当前工作目录
-- 输入 payload 至少包含：
-  - `user_confirmed`
-- 可选：
-  - `output_dir`
-
-### `render_final_output_bundle`
-
-- 用途：
-  - 将全部已批准 section 装配为 `final-draft.tex`
-  - 生成最终 `rewrite-report.md`
-  - 复制最终稿实际引用图片到输出目录下的 `images/`
-  - 改写 LaTeX 图像路径
-- 输入：
-  - `--artifact-root`
+- `bootstrap_runtime_db`：初始化 workspace、SQLite schema 和首批只读视图；只接受 `--source-path`
+- `persist_intake_and_inventory`：执行原稿 deterministic intake 与 supporting-elements inventory；无 payload，只用 `--artifact-root`
+- `confirm_language_context`：确认 `working_language` 与初始 `target_language`，并初始化工作区模板副本；需要 payload
+- `persist_runtime_template_translation`：仅当工作语言不是 `zh/en` 时，写入翻译后的工作区模板副本；需要 payload
+- `persist_manuscript_analysis`：写入 Stage 2 的范围判定、主题理解、结构理解与开放问题；需要 payload
+- `persist_raw_scope_segments`：在 main/aux 范围内做 deterministic raw segmentation；无 payload，只用 `--artifact-root`
+- `persist_semantic_source_units`：把 raw blocks 合并为后续可写作的 semantic source units；需要 payload
+- `persist_target_settings_basics`：写入体例、模板、目标篇幅等基础设置，并最终覆盖 `target_language`；需要 payload
+- `persist_content_selection_board`：生成 `must_keep` / `simplify_first` / `must_avoid` 建议板；需要 payload
+- `confirm_content_selection`：把用户确认后的三类内容列表正式写库；需要 payload
+- `persist_style_profile`：在 Stage 3 内写入风格画像与风格改进指导；需要 payload
+- `finalize_target_settings`：在 Stage 3 的基本设置、内容取舍和风格画像都完成后做最终确认；需要 payload
+- `persist_condensation_plan`：写入 Stage 4 的整体 condensation plan 草案；需要 payload
+- `confirm_condensation_plan`：记录用户对整体 plan 的批准或退回修改；需要 payload
+- `persist_section_rewrite_plan`：把整体方案细化成 section 级转写真源；需要 payload
+- `confirm_section_rewrite_plan`：记录用户对详细 section plan 的批准或退回修改；需要 payload
+- `prepare_section_drafting`：激活下一个待写 section 并重渲染 drafting board；无 payload，只用 `--artifact-root`
+- `persist_section_draft`：写入当前 active section 的 draft 与 provenance，并触发字数校验；需要 payload
+- `approve_section_draft`：记录用户对当前 section 草稿的批准或驳回；需要 payload
+- `persist_output_target`：写入最终 bundle 的输出目录与确认状态；需要 payload
+- `persist_translated_sections`：把所有已批准 section 草稿翻译成最终 `target_language`；需要 payload
+- `render_final_output_bundle`：按已翻译 section drafts 装配最终 `final-draft.tex` 与 `rewrite-report.md`；无 payload，只用 `--artifact-root`
 
 ## Responsibilities
 
 ### Must Be Done By LLM
 
 - manuscript analysis
+- 非 `zh/en` 工作语言下的模板翻译
 - semantic consolidation from raw blocks to semantic source units
 - target setting negotiation
 - content selection reasoning
@@ -553,6 +432,7 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
 - condensation planning
 - section-level rewrite planning
 - section drafting
+- 最终 section 翻译
 - rewrite report 内容生成
 
 ### Must Be Done By Scripts
@@ -564,6 +444,7 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
 - DB 写入与状态同步
 - 只读视图渲染
 - 中间工件模板加载与 Markdown 渲染
+- 工作区模板副本复制
 - section 字数校验
 - 最终 bundle 渲染与图片复制
 
@@ -575,6 +456,10 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
   - `references/runtime-database-contract.md`
 - 需要 gate、CLI、恢复执行纪律时：
   - `references/gate-and-stage-runtime.md`
+- 需要恢复时的核心纪律摘要：
+  - 先看 gate 返回的 `runtime_digest`
+- 需要直接执行下一步动作的最小 payload 形态时：
+  - 先看 gate 返回的 `next_action_payload_example`
 - 需要确认只读视图和最终输出的渲染语义时：
   - `references/artifact-protocol.md`
 - 需要快速看状态机、门禁和 `next_action` 总览时：
@@ -586,7 +471,6 @@ python -u paper-condenser/scripts/stage_runtime.py bootstrap_runtime_db --source
   - `references/stage3-playbook.md`
   - `references/stage4-playbook.md`
   - `references/stage5-playbook.md`
-  - `references/stage6-playbook.md`
 - 需要图、表、引用、参考文献的横切规则时：
   - `references/supporting-elements-playbook.md`
 - 需要最终转写报告的细则时：

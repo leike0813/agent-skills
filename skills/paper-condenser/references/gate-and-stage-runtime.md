@@ -35,25 +35,45 @@ python -u paper-condenser/scripts/stage_runtime.py <ACTION> --artifact-root <ART
 ## 执行纪律
 
 1. 先跑 gate
-2. 读取 `next_action`
-3. 只执行这个 action
-4. action 写库后重新跑 gate
-5. 继续直到 `stage_7_completed`
+2. 先读取 `runtime_digest`
+3. 再读取 `next_action`
+4. 若该动作需要 payload，先读取 `next_action_payload_example`
+5. 只执行这个 action
+6. action 写库后重新跑 gate
+7. 继续直到 `stage_6_completed`
+
+## Gate 返回中的 runtime digest
+
+- gate 现在会返回顶层字段 `runtime_digest`
+- 它是独立静态维护的运行摘要，不是从 `SKILL.md` 动态解析得到的
+- 其用途是帮助 Agent 在长上下文或跨轮恢复时重新想起 skill 的核心纪律
+- 它不是新的真源，也不替代 `SKILL.md`
+
+## Gate 返回中的 payload 示例
+
+- gate 现在会和 `next_action` 一起返回 `next_action_payload_example`
+- 若该动作不需要 payload，该字段为 `null`
+- 若该动作需要 payload，该字段提供一个最小可执行 JSON 样例
+- 默认先看这个样例；只有当样例仍不足以执行时，再读对应 `stageN-playbook.md`
+- 对 `confirm_language_context`，样例中的 `working_language` 应优先视为“基于当前对话推断的默认值”，必要时再由用户修正
 
 ## 何时必须重新跑 gate
 
 - bootstrap 之后
 - intake / inventory 之后
+- language context 确认之后
+- runtime template translation 之后
 - manuscript analysis 之后
 - raw main/aux scope segmentation 之后
 - semantic source units 持久化之后
-- target settings 之后
 - style profile 之后
+- target settings 最终确认之后
 - condensation plan 之后
 - section rewrite plan 之后
 - 每次 section draft 写入之后
 - 每次 section 审批之后
 - output target 持久化之后
+- translated sections 持久化之后
 - final bundle 渲染之后
 - 中断恢复时
 
@@ -71,6 +91,5 @@ python -u paper-condenser/scripts/stage_runtime.py <ACTION> --artifact-root <ART
 - `stage_1_intake_and_inventory` → `references/stage1-playbook.md`
 - `stage_2_manuscript_analysis` → `references/stage2-playbook.md`
 - `stage_3_target_settings` → `references/stage3-playbook.md`
-- `stage_4_style_profile` → `references/stage4-playbook.md`
-- `stage_5_condensation_plan` → `references/stage5-playbook.md`
-- `stage_6_final_drafting` → `references/stage6-playbook.md`
+- `stage_4_condensation_plan` → `references/stage4-playbook.md`
+- `stage_5_final_drafting` → `references/stage5-playbook.md`

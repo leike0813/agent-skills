@@ -5,6 +5,9 @@
 - DB path: `{{ runtime.db_path }}`
 - Workflow stage: `{{ runtime.workflow_stage }}`
 - Next action: `{{ runtime.next_action }}`
+- Working language: {{ runtime.working_language or "（空）" }}
+- Target language: {{ runtime.target_language or "（空）" }}
+- Target language source: {{ runtime.target_language_source or "（空）" }}
 
 ## Source
 - Source path: `{{ source.source_path }}`

@@ -28,7 +28,7 @@
 - `semantic_source_unit_elements`
   - semantic unit 关联的 figure / table / citation / bibliography 线索
 - `target_settings`
-  - Stage 3 基本设置、三类列表汇总与 `user_confirmed`
+  - `working_language`、初始/最终 `target_language`、语言上下文确认状态、模板副本状态、Stage 3 基本设置、三类列表汇总与 `user_confirmed`
 - `content_selection_items`
   - Stage 3 内容取舍建议 / 确认项
 - `content_selection_item_units`
@@ -36,13 +36,16 @@
 - `style_profile`
   - 风格画像与 `status`
 - `condensation_plan`
-  - Stage 5 主方案与 `approval_status`
+  - Stage 4 主方案与 `approval_status`
 - `section_rewrite_plan`
   - 每个目标 section 的细化转写方案
+  - 至少包含 `section_summary`、`section_strategy`、`figure_table_usage`、`reference_usage`、`aux_usage_rationale`
 - `section_rewrite_plan_sources`
   - 每个目标 section 对应的 semantic units / 图表 / citations 来源
 - `draft_sections`
-  - 每节 draft 内容、实际字数、字数校验状态、审阅状态
+  - 每节 working-language draft 内容、实际字数、字数校验状态、审阅状态
+- `translated_sections`
+  - 每节翻译后的最终目标语言正文，以及所对应的 source draft 版本锚点
 - `draft_section_sources`
   - 每节草稿的 semantic unit 溯源记录
 - `draft_section_events`
@@ -63,17 +66,18 @@
   - `stage_1_intake_and_inventory`
   - `stage_2_manuscript_analysis`
   - `stage_3_target_settings`
-  - `stage_4_style_profile`
-  - `stage_5_condensation_plan`
-  - `stage_6_final_drafting`
-  - `stage_7_completed`
+  - `stage_4_condensation_plan`
+  - `stage_5_final_drafting`
+  - `stage_6_completed`
 - `workflow_state.current_substep`
   - 当前唯一允许执行的子动作
 - `workflow_state.active_section_id`
-  - Stage 6 当前活跃 section
+  - Stage 5 当前活跃 section
 - `manuscript_analysis.status`
   - `draft` / `analysis_complete`
 - `target_settings.user_confirmed`
+  - `false` / `true`
+- `target_settings.language_context_confirmed`
   - `false` / `true`
 - `target_settings.basics_completed`
   - `false` / `true`
@@ -84,13 +88,15 @@
 - `style_profile.status`
   - `draft` / `complete`
 - `condensation_plan.approval_status`
-  - `draft` / `approved`
+  - `draft` / `needs_revision` / `approved`
 - `section_rewrite_plan.status`
-  - 默认 `planned`
+  - `draft` / `needs_revision` / `approved`
 - `draft_sections.count_check_status`
   - `pending` / `failed` / `passed`
 - `draft_sections.review_status`
   - `draft` / `pending_review` / `approved` / `rejected`
+- `translated_sections.status`
+  - `draft` / `complete`
 - `final_outputs.status`
   - `draft` / `complete`
 
@@ -100,18 +106,21 @@
 - 中间工件的渲染链路固定为：
   - DB record
   - `runtime_core.py` 生成 view-model
-  - `runtime_rendering.py` 加载 `assets/render-templates/*.md.j2`
+  - `runtime_rendering.py` 优先加载工作区 `render-templates/*.md.j2`；若语言上下文尚未确认，则回退到包内 English 基础模板
   - 输出只读 Markdown 视图
 - Stage 2 的语义链路固定为：
+  - `confirm_language_context`
+  - `persist_runtime_template_translation`（仅当工作语言不是 `zh/en`）
   - manuscript analysis
   - `persist_raw_scope_segments`
   - `persist_semantic_source_units`
+- Stage 2 语言上下文确认后，后续数据库文本内容默认统一使用 `working_language`。
 - manuscript analysis 的范围模型固定为：
   - 一个 `main_scope`
   - 一个 `main_scope_locator`
   - 零到多个 `aux_scopes[*]`
 - raw segmentation 统一落在一张表中，但必须保留 main/aux role 信息。
-- Stage 5 / 6 的写作规划与 provenance 主路径固定为：
+- Stage 4 / 5 的写作规划与 provenance 主路径固定为：
   - `semantic_source_units`
   - `section_rewrite_plan_sources`
   - `draft_section_sources`
@@ -119,7 +128,19 @@
   - `persist_target_settings_basics`
   - `persist_content_selection_board`
   - `confirm_content_selection`
+  - `persist_style_profile`
   - `finalize_target_settings`
+- `style_profile` 继续保留独立表与独立视图，但其 gate 归属并入 Stage 3。
+- Stage 4 的计划链路固定为：
+  - `persist_condensation_plan`
+  - `confirm_condensation_plan`
+  - `persist_section_rewrite_plan`
+  - `confirm_section_rewrite_plan`
+- Stage 5 的最终交付链路固定为：
+  - section loop drafting（working language）
+  - `persist_output_target`
+  - `persist_translated_sections`
+  - `render_final_output_bundle`
 - `final-draft.tex` 与 `rewrite-report.md` 也由数据库渲染。
 - 文件从属于数据库，而不是与数据库并列。
 - 若中间工件模板缺失或模板渲染失败，runtime 必须非零退出。

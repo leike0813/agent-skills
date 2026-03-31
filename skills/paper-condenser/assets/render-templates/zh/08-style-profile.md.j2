@@ -1,0 +1,21 @@
+# 风格画像
+
+- 状态：`{{ profile.status }}`
+
+## 原稿风格
+{{ profile.source_style or "（空）" }}
+
+## 需要修正的问题
+{{ profile.problems_to_fix or "（空）" }}
+
+## 目标风格指导
+{{ profile.target_style_guidance or "（空）" }}
+
+## 开放问题
+{% if profile.open_questions %}
+{% for item in profile.open_questions %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- （空）
+{% endif %}

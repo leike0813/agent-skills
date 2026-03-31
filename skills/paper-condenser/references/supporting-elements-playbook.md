@@ -6,7 +6,7 @@
 
 - `persist_intake_and_inventory` 负责 deterministic extraction。
 - inventory 真源在 `supporting_elements_inventory`。
-- 只读视图渲染到 `06-supporting-elements-inventory.md`。
+- 只读视图渲染到 `03-supporting-elements-inventory.md`。
 
 ## Stage 2
 
@@ -15,19 +15,25 @@
 - supporting elements 不能被 paragraph 吞并。
 - `persist_semantic_source_units` 可将 figure / table / citation / bibliography 线索吸收到 semantic unit 中。
 
-## Stage 5
+## Stage 4
 
 - `persist_section_rewrite_plan` 必须显式记录某个目标 section 绑定了哪些图、表、citation 或 bibliography 线索。
+- `persist_section_rewrite_plan` 还必须为每个图表写清使用动作：
+  - `keep`
+  - `simplify`
+  - `omit`
+- 若为 `simplify`，必须说明简化意图。
 - 不得只在整体方案里口头提及 supporting elements。
 
-## Stage 6
+## Stage 5
 
 - section 审阅工件必须展示本节使用到的 supporting elements 溯源。
 - `render_final_output_bundle` 必须遵循已批准的 supporting-elements 方案。
+- `render_final_output_bundle` 只允许装配已批准 section drafts 中已经出现的 supporting elements 引用，不允许在最终渲染时临时增删图表策略。
 - 最终稿实际引用到的图片必须复制到用户输出目录的 `images/` 中，并改写最终 LaTeX 的图像路径。
 
 ## 禁止事项
 
 - 不得把 inventory 留在聊天上下文，不写 DB。
-- 不得在 Stage 6 静默丢弃已批准保留的 supporting elements。
+- 不得在 Stage 5 静默丢弃已批准保留的 supporting elements。
 - 不得让最终稿继续直接引用原稿图片路径。

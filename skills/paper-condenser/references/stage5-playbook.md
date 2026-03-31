@@ -1,79 +1,152 @@
 # Stage 5 Playbook
 
-Stage 5 对应 `stage_5_condensation_plan`。
+Stage 5 对应 `stage_5_final_drafting`。
 
 ## 正式写库动作
 
-1. `persist_condensation_plan`
-2. `persist_section_rewrite_plan`
+1. `prepare_section_drafting`
+2. `persist_section_draft`
+3. `approve_section_draft`
+4. `persist_output_target`
+5. `persist_translated_sections`
+6. `render_final_output_bundle`
 
-## 1. `persist_condensation_plan`
+## 执行顺序
 
-### Payload 要求
+### 1. `prepare_section_drafting`
 
-- `core_message`
-- `priority_map`
-- `target_outline`
-- `length_allocation`
-- `omit_merge_strategy`
-- `figure_table_plan`
-- `reference_plan`
-- `approval_status`
+### Minimal Payload Example
 
-可选：
+No payload; only `--artifact-root`.
 
-- `pending_confirmations`
+### Notes
 
-### 作用
+- 根据 `section_rewrite_plan` 找到下一个未批准 section。
+- 通过 gate 暴露 `active_section_id`。
+- 重渲染 `11-section-drafting-board.md`。
 
-- 固定整体凝缩策略
-- 收敛 supporting elements 保留/删改策略
-- 收敛参考文献迁移策略
+### 2. `persist_section_draft`
 
-## 2. `persist_section_rewrite_plan`
+### Minimal Payload Example
 
-### Payload 要求
+```json
+{
+  "section_id": "sec-introduction",
+  "draft_tex": "\\section{Introduction}\nThis paper addresses ...",
+  "source_refs": [
+    {
+      "source_kind": "semantic_unit",
+      "source_ref": "u01",
+      "usage_note": ""
+    }
+  ]
+}
+```
 
-- `sections`
+### Notes
 
-每个 section 至少包含：
+- 只允许针对 `active_section_id` 写库。
+- `draft_tex` 应始终使用当前 `working_language`。
+- `source_refs` 只允许引用 `semantic_unit:<unit_id>`。
+- 脚本会：
+  - 计算实际字数
+  - 按计划值执行 `±15%` 容差校验
+  - 写入 provenance 与事件日志
+  - 渲染 `section-reviews/<section_order>-<section_id>.md`
 
-- `section_id`
-- `section_title`
-- `planned_count_value`
-- `count_unit`
-- `must_cover`
-- `simplify_first`
-- `must_avoid`
-- `sources`
+### 3. `approve_section_draft`
 
-### 作用
+### Minimal Payload Example
 
-- 将整体方案细化为 section 级转写真源
-- 为每个目标 section 绑定 semantic source units、图表、引用和预计篇幅
-- 作为 Stage 6 唯一允许的写作依据
-- 必须消费 Stage 3 已确认的 `must_keep` / `simplify_first` / `must_avoid`
-- 若某个 section 需要吸收 main 范围之外的背景、综述或方法概述，必须通过带 aux 成员的 semantic unit 间接使用
+```json
+{
+  "section_id": "sec-introduction",
+  "approved": true
+}
+```
 
-### 渲染视图
+### Notes
 
-- `09-section-rewrite-plan.md`
+- 用户必须显式批准或驳回当前 section。
+- 驳回后，gate 退回 `persist_section_draft`。
+- 批准后，gate 才能推进到下一节。
 
-### 来源约束
+### 4. `persist_output_target`
 
-- section rewrite plan 的主路径必须是 `semantic_unit:<unit_id>`
-- 若需要单独引用 supporting elements，可再补 `figure` / `table` / `citation` / `bibliography`
-- 不得直接绑定 raw scope segments
-- 若某个 semantic unit 含 aux 成员，必须写 usage note 说明为何使用 aux
-- 若 Stage 3 已确认存在 `simplify_first` 项，section rewrite plan 至少要在一个 section 中显式消费它
+### Minimal Payload Example
+
+```json
+{
+  "user_confirmed": true,
+  "output_dir": "./journal-paper-output"
+}
+```
+
+### Notes
+
+- 仅在所有 section 均已批准后才允许执行。
+- 若用户未指定目录，默认当前工作目录。
+- 输出目录选择必须写库。
+
+### 5. `persist_translated_sections`
+
+### Minimal Payload Example
+
+```json
+{
+  "sections": [
+    {
+      "section_id": "sec-introduction",
+      "translated_tex": "\\section{Introduction}\nThis paper addresses ...",
+      "source_draft_updated_at": "2026-03-31T09:00:00+00:00"
+    }
+  ]
+}
+```
+
+### Notes
+
+- 仅在所有 section 均已批准，且输出目录已确认后才允许执行。
+- 该动作把 working-language section drafts 翻译成最终 `target_language`。
+- payload 必须覆盖全部已批准 section。
+- `rewrite-report.md` 不在这一步翻译，仍保留为 `working_language`。
+
+### 6. `render_final_output_bundle`
+
+### Minimal Payload Example
+
+No payload; only `--artifact-root`.
+
+### Notes
+
+- 仅在输出目录确认后才允许执行。
+- 仅在 `persist_translated_sections` 完成后才允许执行。
+- 脚本负责：
+  - 装配最终 `final-draft.tex`
+  - 生成最终 `rewrite-report.md`
+  - 复制实际引用图片到 `<output_dir>/images/`
+  - 改写图像路径为 `images/<filename>`
+- 该动作是 assembly-only：
+  - 只允许按 section 顺序装配已翻译的 `translated_sections`
+  - 不允许改写 section 正文
+  - 不允许新增未在 section drafts 中出现的论述
+  - 不允许在最终渲染时顺手润色
+
+## Section 审阅工件
+
+每个 section 的审阅工件必须至少包含：
+
+- 当前 section 转写结果
+- planned vs actual count
+- 使用到的 semantic source units
+- 每个 semantic unit 的 main/aux 构成
+- 通过 semantic source units 间接追溯到的图 / 表 / citation / bibliography 参照
+- 本轮撰写事件记录
 
 ## 完成标准
 
-- condensation plan 已批准
-- section rewrite plan 已落库
-- Stage 6 可以从该计划中逐节推进
-
-## 禁止事项
-
-- 不得只给大纲和粗略字数目标就进入最终撰写
-- 不得让 Stage 6 脱离 `section_rewrite_plan` 自由发挥
+- 所有 section 均已获批准
+- 输出目录已确认
+- 所有已批准 section drafts 都已翻译为最终 `target_language`
+- `final-draft.tex` 与 `rewrite-report.md` 已渲染
+- 若最终稿使用图片，输出目录下的 `images/` 已准备好

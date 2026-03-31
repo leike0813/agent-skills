@@ -11,9 +11,18 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Mapping, cast
 
-from runtime_rendering import render_markdown_views, render_section_review
+from runtime_rendering import (
+    DEFAULT_TEMPLATE_LANGUAGE,
+    SUPPORTED_TEMPLATE_LANGUAGES,
+    TEMPLATE_FILENAMES,
+    materialize_packaged_templates,
+    render_markdown_views,
+    render_section_review,
+    write_runtime_templates,
+    workspace_template_root,
+)
 
 DB_FILENAME = "paper-condenser.db"
 
@@ -22,15 +31,16 @@ WORKFLOW_STAGES = {
     "intake": "stage_1_intake_and_inventory",
     "analysis": "stage_2_manuscript_analysis",
     "targets": "stage_3_target_settings",
-    "style": "stage_4_style_profile",
-    "plan": "stage_5_condensation_plan",
-    "drafting": "stage_6_final_drafting",
-    "completed": "stage_7_completed",
+    "plan": "stage_4_condensation_plan",
+    "drafting": "stage_5_final_drafting",
+    "completed": "stage_6_completed",
 }
 
 ACTIONS = {
     "bootstrap": "bootstrap_runtime_db",
     "intake": "persist_intake_and_inventory",
+    "language_context": "confirm_language_context",
+    "runtime_template_translation": "persist_runtime_template_translation",
     "analysis": "persist_manuscript_analysis",
     "raw_scope_segments": "persist_raw_scope_segments",
     "semantic_source_units": "persist_semantic_source_units",
@@ -40,11 +50,14 @@ ACTIONS = {
     "finalize_target_settings": "finalize_target_settings",
     "style": "persist_style_profile",
     "plan": "persist_condensation_plan",
+    "confirm_plan": "confirm_condensation_plan",
     "section_plan": "persist_section_rewrite_plan",
+    "confirm_section_plan": "confirm_section_rewrite_plan",
     "prepare_draft": "prepare_section_drafting",
     "draft_section": "persist_section_draft",
     "approve_section": "approve_section_draft",
     "output_target": "persist_output_target",
+    "translated_sections": "persist_translated_sections",
     "render_bundle": "render_final_output_bundle",
     "completed": "completed",
 }
@@ -56,18 +69,19 @@ DEPRECATED_ACTIONS = {
 RENDERED_VIEWS = {
     "resume": "01-agent-resume.md",
     "manuscript_profile": "02-manuscript-profile.md",
-    "target_settings": "03-target-settings.md",
-    "style_profile": "04-style-profile.md",
-    "condensation_plan": "05-condensation-plan.md",
-    "supporting_elements": "06-supporting-elements-inventory.md",
-    "scope_segments": "07-scope-segments.md",
-    "semantic_source_units": "08-semantic-source-units.md",
-    "section_rewrite_plan": "09-section-rewrite-plan.md",
-    "section_drafting_board": "10-section-drafting-board.md",
-    "content_selection_board": "11-content-selection-board.md",
+    "supporting_elements": "03-supporting-elements-inventory.md",
+    "scope_segments": "04-scope-segments.md",
+    "semantic_source_units": "05-semantic-source-units.md",
+    "target_settings": "06-target-settings.md",
+    "content_selection_board": "07-content-selection-board.md",
+    "style_profile": "08-style-profile.md",
+    "condensation_plan": "09-condensation-plan.md",
+    "section_rewrite_plan": "10-section-rewrite-plan.md",
+    "section_drafting_board": "11-section-drafting-board.md",
 }
 
 LATEX_TEMPLATE_ROOT = Path(__file__).resolve().parent.parent / "assets" / "latex-templates"
+RUNTIME_DIGEST_PATH = Path(__file__).resolve().parent.parent / "assets" / "runtime" / "skill-runtime-digest.md"
 PREVIEW_CHAR_LIMIT = 500
 CAPTION_PREVIEW_LIMIT = 160
 
@@ -84,7 +98,6 @@ ADDBIBRESOURCE_PATTERN = re.compile(r"\\addbibresource(?:\[[^\]]*\])?\{([^}]*)\}
 BIBITEM_PATTERN = re.compile(r"\\bibitem(?:\[[^\]]*\])?\{([^}]*)\}")
 
 REQUIRED_TARGET_BASICS_KEYS = (
-    "target_language",
     "target_form",
     "target_journal_type",
     "latex_template_id",
@@ -92,6 +105,8 @@ REQUIRED_TARGET_BASICS_KEYS = (
     "figure_table_preference",
     "reference_handling_preference",
 )
+REQUIRED_LANGUAGE_CONTEXT_KEYS = ("working_language", "target_language")
+REQUIRED_RUNTIME_TEMPLATE_TRANSLATION_KEYS = ("templates",)
 REQUIRED_CONTENT_SELECTION_BOARD_KEYS = ("items",)
 REQUIRED_CONTENT_SELECTION_CONFIRM_KEYS = ("items",)
 REQUIRED_TARGET_FINALIZE_KEYS = ("user_confirmed",)
@@ -123,13 +138,15 @@ REQUIRED_PLAN_KEYS = (
     "omit_merge_strategy",
     "figure_table_plan",
     "reference_plan",
-    "approval_status",
 )
 
 REQUIRED_SECTION_PLAN_KEYS = ("sections",)
+REQUIRED_PLAN_CONFIRM_KEYS = ("approved",)
+REQUIRED_SECTION_PLAN_CONFIRM_KEYS = ("approved",)
 REQUIRED_SECTION_DRAFT_KEYS = ("section_id", "draft_tex", "source_refs")
 REQUIRED_SECTION_APPROVAL_KEYS = ("section_id", "approved")
 REQUIRED_OUTPUT_TARGET_KEYS = ("user_confirmed",)
+REQUIRED_TRANSLATED_SECTIONS_KEYS = ("sections",)
 REQUIRED_SEMANTIC_UNIT_KEYS = ("units",)
 
 
@@ -167,6 +184,10 @@ def detect_source_type(source_path: Path) -> str:
     if suffix:
         return f"single_file:{suffix.lstrip('.')}"
     return "single_file:unknown"
+
+
+def load_runtime_digest() -> str:
+    return RUNTIME_DIGEST_PATH.read_text(encoding="utf-8").strip()
 
 
 def resolve_artifact_root(source_path: Path) -> Path:
@@ -346,6 +367,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
             count_unit TEXT NOT NULL,
             tolerance_percent INTEGER NOT NULL,
             must_cover_json TEXT NOT NULL,
+            section_summary TEXT NOT NULL DEFAULT '',
+            section_strategy TEXT NOT NULL DEFAULT '',
+            figure_table_usage_json TEXT NOT NULL DEFAULT '[]',
+            reference_usage_json TEXT NOT NULL DEFAULT '[]',
+            aux_usage_rationale TEXT NOT NULL DEFAULT '',
             must_avoid_json TEXT NOT NULL,
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
@@ -369,6 +395,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
             count_unit TEXT NOT NULL,
             count_check_status TEXT NOT NULL,
             review_status TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (section_id) REFERENCES section_rewrite_plan(section_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS translated_sections (
+            section_id TEXT PRIMARY KEY,
+            translated_tex TEXT NOT NULL,
+            source_draft_updated_at TEXT NOT NULL,
+            status TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (section_id) REFERENCES section_rewrite_plan(section_id) ON DELETE CASCADE
         );
@@ -458,11 +493,46 @@ def init_schema(conn: sqlite3.Connection) -> None:
     if "content_selection_confirmed" not in target_settings_payload:
         target_settings_payload["content_selection_confirmed"] = False
         migrated = True
+    if "working_language" not in target_settings_payload:
+        target_settings_payload["working_language"] = ""
+        migrated = True
+    if "language_context_confirmed" not in target_settings_payload:
+        target_settings_payload["language_context_confirmed"] = False
+        migrated = True
+    if "target_language_source" not in target_settings_payload:
+        target_settings_payload["target_language_source"] = ""
+        migrated = True
+    if "runtime_template_language" not in target_settings_payload:
+        target_settings_payload["runtime_template_language"] = ""
+        migrated = True
+    if "runtime_templates_ready" not in target_settings_payload:
+        target_settings_payload["runtime_templates_ready"] = False
+        migrated = True
     if migrated:
         upsert_payload_table(conn, "target_settings", target_settings_payload)
     section_plan_columns = {
         str(row["name"]) for row in conn.execute("PRAGMA table_info(section_rewrite_plan)").fetchall()
     }
+    if "section_summary" not in section_plan_columns:
+        conn.execute(
+            "ALTER TABLE section_rewrite_plan ADD COLUMN section_summary TEXT NOT NULL DEFAULT ''"
+        )
+    if "section_strategy" not in section_plan_columns:
+        conn.execute(
+            "ALTER TABLE section_rewrite_plan ADD COLUMN section_strategy TEXT NOT NULL DEFAULT ''"
+        )
+    if "figure_table_usage_json" not in section_plan_columns:
+        conn.execute(
+            "ALTER TABLE section_rewrite_plan ADD COLUMN figure_table_usage_json TEXT NOT NULL DEFAULT '[]'"
+        )
+    if "reference_usage_json" not in section_plan_columns:
+        conn.execute(
+            "ALTER TABLE section_rewrite_plan ADD COLUMN reference_usage_json TEXT NOT NULL DEFAULT '[]'"
+        )
+    if "aux_usage_rationale" not in section_plan_columns:
+        conn.execute(
+            "ALTER TABLE section_rewrite_plan ADD COLUMN aux_usage_rationale TEXT NOT NULL DEFAULT ''"
+        )
     if "simplify_first_json" not in section_plan_columns:
         conn.execute(
             "ALTER TABLE section_rewrite_plan ADD COLUMN simplify_first_json TEXT NOT NULL DEFAULT '[]'"
@@ -823,10 +893,12 @@ def replace_section_rewrite_plan(
             """
             INSERT INTO section_rewrite_plan (
                 section_id, section_order, section_title, planned_count_value,
-                count_unit, tolerance_percent, must_cover_json, simplify_first_json,
-                must_avoid_json, status, created_at, updated_at
+                count_unit, tolerance_percent, must_cover_json, section_summary,
+                section_strategy, figure_table_usage_json, reference_usage_json,
+                aux_usage_rationale, simplify_first_json, must_avoid_json, status,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item["section_id"],
@@ -836,6 +908,11 @@ def replace_section_rewrite_plan(
                 item["count_unit"],
                 item["tolerance_percent"],
                 json.dumps(item["must_cover"], ensure_ascii=False),
+                item["section_summary"],
+                item["section_strategy"],
+                json.dumps(item["figure_table_usage"], ensure_ascii=False),
+                json.dumps(item["reference_usage"], ensure_ascii=False),
+                item["aux_usage_rationale"],
                 json.dumps(item["simplify_first"], ensure_ascii=False),
                 json.dumps(item["must_avoid"], ensure_ascii=False),
                 item["status"],
@@ -861,12 +938,25 @@ def replace_section_rewrite_plan(
             )
 
 
+def update_section_rewrite_plan_status(
+    conn: sqlite3.Connection, status: str
+) -> None:
+    conn.execute(
+        """
+        UPDATE section_rewrite_plan
+        SET status = ?, updated_at = ?
+        """,
+        (status, now_iso()),
+    )
+
+
 def load_section_rewrite_plan(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT section_id, section_order, section_title, planned_count_value,
-               count_unit, tolerance_percent, must_cover_json, simplify_first_json,
-               must_avoid_json, status
+               count_unit, tolerance_percent, must_cover_json, section_summary,
+               section_strategy, figure_table_usage_json, reference_usage_json,
+               aux_usage_rationale, simplify_first_json, must_avoid_json, status
         FROM section_rewrite_plan
         ORDER BY section_order
         """
@@ -892,11 +982,20 @@ def load_section_rewrite_plan(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "count_unit": str(row["count_unit"]),
                 "tolerance_percent": int(row["tolerance_percent"]),
                 "must_cover": payload_list(json.loads(str(row["must_cover_json"]))),
+                "section_summary": str(row["section_summary"]),
+                "section_strategy": str(row["section_strategy"]),
+                "figure_table_usage": normalize_figure_table_usage(
+                    json.loads(str(row["figure_table_usage_json"]))
+                ),
+                "reference_usage": payload_list(
+                    json.loads(str(row["reference_usage_json"]))
+                ),
+                "aux_usage_rationale": str(row["aux_usage_rationale"]),
                 "simplify_first": payload_list(
                     json.loads(str(row["simplify_first_json"]))
                 ),
                 "must_avoid": payload_list(json.loads(str(row["must_avoid_json"]))),
-                "status": str(row["status"]),
+                "status": "draft" if str(row["status"]) == "planned" else str(row["status"]),
                 "sources": [
                     {
                         "source_kind": str(source["source_kind"]),
@@ -984,7 +1083,7 @@ def load_draft_sections(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT section_id, draft_tex, actual_count_value, count_unit,
-               count_check_status, review_status
+               count_check_status, review_status, updated_at
         FROM draft_sections
         """
     ).fetchall()
@@ -1016,6 +1115,7 @@ def load_draft_sections(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             "count_unit": str(row["count_unit"]),
             "count_check_status": str(row["count_check_status"]),
             "review_status": str(row["review_status"]),
+            "updated_at": str(row["updated_at"]),
             "sources": [
                 {
                     "source_kind": str(source["source_kind"]),
@@ -1034,6 +1134,46 @@ def load_draft_sections(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             ],
         }
     return result
+
+
+def replace_translated_sections(
+    conn: sqlite3.Connection, sections: list[dict[str, Any]]
+) -> None:
+    conn.execute("DELETE FROM translated_sections")
+    for item in sections:
+        conn.execute(
+            """
+            INSERT INTO translated_sections (
+                section_id, translated_tex, source_draft_updated_at, status, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                item["section_id"],
+                item["translated_tex"],
+                item["source_draft_updated_at"],
+                item["status"],
+                now_iso(),
+            ),
+        )
+
+
+def load_translated_sections(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT section_id, translated_tex, source_draft_updated_at, status
+        FROM translated_sections
+        """
+    ).fetchall()
+    return {
+        str(row["section_id"]): {
+            "section_id": str(row["section_id"]),
+            "translated_tex": str(row["translated_tex"]),
+            "source_draft_updated_at": str(row["source_draft_updated_at"]),
+            "status": str(row["status"]),
+        }
+        for row in rows
+    }
 
 
 def upsert_output_target(
@@ -1084,15 +1224,12 @@ def stage_instruction_refs(workflow_stage: str) -> list[str]:
         WORKFLOW_STAGES["targets"]: [
             "references/stage3-playbook.md",
         ],
-        WORKFLOW_STAGES["style"]: [
-            "references/stage4-playbook.md",
-        ],
         WORKFLOW_STAGES["plan"]: [
-            "references/stage5-playbook.md",
+            "references/stage4-playbook.md",
             "references/supporting-elements-playbook.md",
         ],
         WORKFLOW_STAGES["drafting"]: [
-            "references/stage6-playbook.md",
+            "references/stage5-playbook.md",
             "references/rewrite-report-playbook.md",
             "references/supporting-elements-playbook.md",
         ],
@@ -1101,6 +1238,49 @@ def stage_instruction_refs(workflow_stage: str) -> list[str]:
         ],
     }
     return mapping.get(workflow_stage, [])
+
+
+def normalize_language_code(value: str) -> str:
+    normalized = value.strip().lower().replace("_", "-")
+    aliases = {
+        "zh": "zh",
+        "zh-cn": "zh",
+        "zh-hans": "zh",
+        "chinese": "zh",
+        "中文": "zh",
+        "汉语": "zh",
+        "en": "en",
+        "en-us": "en",
+        "en-gb": "en",
+        "english": "en",
+        "英文": "en",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def suggest_working_language() -> str:
+    env_value = os.environ.get("CODEX_USER_PROMPT_LANGUAGE", "") or os.environ.get("LANG", "")
+    code = normalize_language_code(env_value)
+    if code == "zh":
+        return "Chinese"
+    if code == "en":
+        return "English"
+    return "Chinese"
+
+
+def infer_target_language_from_basics(payload: Mapping[str, Any], existing: str) -> str:
+    text = " ".join(
+        [
+            str(payload.get("target_form", "")),
+            str(payload.get("target_journal_type", "")),
+            str(payload.get("latex_template_id", "")),
+        ]
+    ).lower()
+    if any(token in text for token in ("cn", "chinese", "中文")):
+        return "Chinese"
+    if any(token in text for token in ("en", "english", "sci", "journal article")):
+        return "English"
+    return existing or "English"
 
 
 def line_number(text: str, char_index: int) -> int:
@@ -1639,6 +1819,61 @@ def normalize_section_draft_sources(value: Any) -> list[dict[str, str]]:
     )
 
 
+def normalize_figure_table_usage(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("section plan figure_table_usage must be a list")
+    normalized: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("each figure_table_usage item must be an object")
+        element_kind = str(item.get("element_kind", "")).strip()
+        element_ref = str(item.get("element_ref", "")).strip()
+        action = str(item.get("action", "")).strip()
+        note = str(item.get("note", "")).strip()
+        if not element_kind or not element_ref or not action:
+            raise ValueError(
+                "figure_table_usage items require element_kind, element_ref, and action"
+            )
+        if element_kind not in {"figure", "table"}:
+            raise ValueError(
+                f"figure_table_usage element_kind '{element_kind}' is not allowed"
+            )
+        if action not in {"keep", "simplify", "omit"}:
+            raise ValueError(
+                f"figure_table_usage action '{action}' is not allowed"
+            )
+        if action == "simplify" and not note:
+            raise ValueError(
+                f"figure_table_usage '{element_ref}' with action 'simplify' requires note"
+            )
+        normalized.append(
+            {
+                "element_kind": element_kind,
+                "element_ref": element_ref,
+                "action": action,
+                "note": note,
+            }
+        )
+    return normalized
+
+
+def condensation_plan_has_content(plan: dict[str, Any]) -> bool:
+    return any(
+        str(plan.get(key, "")).strip()
+        for key in (
+            "core_message",
+            "priority_map",
+            "target_outline",
+            "length_allocation",
+            "omit_merge_strategy",
+            "figure_table_plan",
+            "reference_plan",
+        )
+    )
+
+
 def normalize_semantic_unit_elements(value: Any) -> list[dict[str, str]]:
     if value is None:
         return []
@@ -1887,6 +2122,7 @@ def build_render_view_models(snapshot: RuntimeSnapshot) -> dict[str, dict[str, A
     section_rewrite_plan = snapshot.tables["section_rewrite_plan"]
     draft_sections = snapshot.tables["draft_sections"]
     output_target = snapshot.tables["output_target"]
+    translated_sections = snapshot.tables.get("translated_sections", {})
     raw_segments_by_id = {
         item["segment_id"]: item for item in raw_scope_segments if isinstance(item, dict)
     }
@@ -1916,6 +2152,9 @@ def build_render_view_models(snapshot: RuntimeSnapshot) -> dict[str, dict[str, A
                 "db_path": str(snapshot.db_path),
                 "workflow_stage": snapshot.workflow_stage,
                 "next_action": snapshot.next_action,
+                "working_language": str(settings.get("working_language", "")),
+                "target_language": str(settings.get("target_language", "")),
+                "target_language_source": str(settings.get("target_language_source", "")),
             },
             "source": {
                 "source_path": str(source.get("source_path", "")),
@@ -1973,7 +2212,14 @@ def build_render_view_models(snapshot: RuntimeSnapshot) -> dict[str, dict[str, A
                 "content_selection_confirmed": bool(
                     settings.get("content_selection_confirmed", False)
                 ),
+                "working_language": str(settings.get("working_language", "")),
+                "language_context_confirmed": bool(
+                    settings.get("language_context_confirmed", False)
+                ),
                 "target_language": str(settings.get("target_language", "")),
+                "target_language_source": str(
+                    settings.get("target_language_source", "")
+                ),
                 "target_form": str(settings.get("target_form", "")),
                 "target_journal_type": str(settings.get("target_journal_type", "")),
                 "latex_template_id": str(settings.get("latex_template_id", "")),
@@ -1983,6 +2229,12 @@ def build_render_view_models(snapshot: RuntimeSnapshot) -> dict[str, dict[str, A
                 ),
                 "reference_handling_preference": str(
                     settings.get("reference_handling_preference", "")
+                ),
+                "runtime_template_language": str(
+                    settings.get("runtime_template_language", "")
+                ),
+                "runtime_templates_ready": bool(
+                    settings.get("runtime_templates_ready", False)
                 ),
                 "must_keep": payload_list(settings.get("must_keep", [])),
                 "simplify_first": payload_list(settings.get("simplify_first", [])),
@@ -2109,6 +2361,7 @@ def build_render_view_models(snapshot: RuntimeSnapshot) -> dict[str, dict[str, A
                     "section_title": item["section_title"],
                     "planned_count_value": item["planned_count_value"],
                     "count_unit": item["count_unit"],
+                    "section_summary": item["section_summary"],
                     "plan_status": item["status"],
                     "review_status": draft_sections.get(item["section_id"], {}).get(
                         "review_status", "not_started"
@@ -2130,6 +2383,7 @@ def build_render_view_models(snapshot: RuntimeSnapshot) -> dict[str, dict[str, A
                 for item in section_rewrite_plan
             ],
             "output_target": output_target,
+            "translated_sections": translated_sections,
         },
     }
 
@@ -2224,6 +2478,7 @@ def build_snapshot(conn: sqlite3.Connection, artifact_root: Path) -> RuntimeSnap
         "semantic_source_units": load_semantic_source_units(conn),
         "section_rewrite_plan": load_section_rewrite_plan(conn),
         "draft_sections": load_draft_sections(conn),
+        "translated_sections": load_translated_sections(conn),
         "output_target": load_output_target(conn),
     }
 
@@ -2242,6 +2497,7 @@ def build_snapshot(conn: sqlite3.Connection, artifact_root: Path) -> RuntimeSnap
     semantic_source_units = cast(list[dict[str, Any]], tables["semantic_source_units"])
     section_rewrite_plan = cast(list[dict[str, Any]], tables["section_rewrite_plan"])
     draft_sections = cast(dict[str, dict[str, Any]], tables["draft_sections"])
+    translated_sections = cast(dict[str, dict[str, Any]], tables["translated_sections"])
     output_target = cast(dict[str, Any], tables["output_target"])
     current_substep = ""
     active_section_id = ""
@@ -2254,6 +2510,16 @@ def build_snapshot(conn: sqlite3.Connection, artifact_root: Path) -> RuntimeSnap
             blockers.append("Stage 1 intake has not completed yet.")
         if inventory.get("status") != "complete":
             blockers.append("Supporting-elements inventory has not completed yet.")
+    elif not settings.get("language_context_confirmed", False):
+        workflow_stage = WORKFLOW_STAGES["analysis"]
+        next_action = ACTIONS["language_context"]
+        current_substep = ACTIONS["language_context"]
+        blockers.append("Language context is not confirmed yet.")
+    elif not settings.get("runtime_templates_ready", False):
+        workflow_stage = WORKFLOW_STAGES["analysis"]
+        next_action = ACTIONS["runtime_template_translation"]
+        current_substep = ACTIONS["runtime_template_translation"]
+        blockers.append("Working-language runtime templates are not ready yet.")
     elif analysis.get("status") != "analysis_complete" or any(
         item["stage_name"] == WORKFLOW_STAGES["analysis"] for item in pending_confirmations
     ):
@@ -2287,6 +2553,15 @@ def build_snapshot(conn: sqlite3.Connection, artifact_root: Path) -> RuntimeSnap
         next_action = ACTIONS["confirm_content_selection"]
         current_substep = ACTIONS["confirm_content_selection"]
         blockers.append("Content-selection lists are not confirmed yet.")
+    elif style.get("status") != "complete" or any(
+        item["stage_name"] == WORKFLOW_STAGES["targets"] and item["item_key"].startswith("style.")
+        for item in pending_confirmations
+    ):
+        workflow_stage = WORKFLOW_STAGES["targets"]
+        next_action = ACTIONS["style"]
+        current_substep = ACTIONS["style"]
+        if style.get("status") != "complete":
+            blockers.append("Style profile is incomplete.")
     elif settings.get("user_confirmed") is not True or any(
         item["stage_name"] == WORKFLOW_STAGES["targets"] for item in pending_confirmations
     ):
@@ -2294,27 +2569,38 @@ def build_snapshot(conn: sqlite3.Connection, artifact_root: Path) -> RuntimeSnap
         next_action = ACTIONS["finalize_target_settings"]
         current_substep = ACTIONS["finalize_target_settings"]
         blockers.append("Target settings are not fully confirmed yet.")
-    elif style.get("status") != "complete" or any(
-        item["stage_name"] == WORKFLOW_STAGES["style"] for item in pending_confirmations
-    ):
-        workflow_stage = WORKFLOW_STAGES["style"]
-        next_action = ACTIONS["style"]
-        current_substep = ACTIONS["style"]
-        if style.get("status") != "complete":
-            blockers.append("Style profile is incomplete.")
-    elif plan.get("approval_status") != "approved" or any(
-        item["stage_name"] == WORKFLOW_STAGES["plan"] for item in pending_confirmations
-    ):
+    elif not condensation_plan_has_content(plan):
         workflow_stage = WORKFLOW_STAGES["plan"]
         next_action = ACTIONS["plan"]
         current_substep = ACTIONS["plan"]
-        if plan.get("approval_status") != "approved":
-            blockers.append("Condensation plan is not approved yet.")
+        blockers.append("Condensation plan is not drafted yet.")
+    elif str(plan.get("approval_status", "draft")) == "needs_revision":
+        workflow_stage = WORKFLOW_STAGES["plan"]
+        next_action = ACTIONS["plan"]
+        current_substep = ACTIONS["plan"]
+        blockers.append("Condensation plan needs revision before approval.")
+    elif str(plan.get("approval_status", "draft")) != "approved" or any(
+        item["stage_name"] == WORKFLOW_STAGES["plan"] for item in pending_confirmations
+    ):
+        workflow_stage = WORKFLOW_STAGES["plan"]
+        next_action = ACTIONS["confirm_plan"]
+        current_substep = ACTIONS["confirm_plan"]
+        blockers.append("Condensation plan is waiting for explicit user approval.")
     elif not section_rewrite_plan:
         workflow_stage = WORKFLOW_STAGES["plan"]
         next_action = ACTIONS["section_plan"]
         current_substep = ACTIONS["section_plan"]
         blockers.append("Section rewrite plan is not persisted yet.")
+    elif any(str(item.get("status", "draft")) == "needs_revision" for item in section_rewrite_plan):
+        workflow_stage = WORKFLOW_STAGES["plan"]
+        next_action = ACTIONS["section_plan"]
+        current_substep = ACTIONS["section_plan"]
+        blockers.append("Section rewrite plan needs revision before approval.")
+    elif any(str(item.get("status", "draft")) != "approved" for item in section_rewrite_plan):
+        workflow_stage = WORKFLOW_STAGES["plan"]
+        next_action = ACTIONS["confirm_section_plan"]
+        current_substep = ACTIONS["confirm_section_plan"]
+        blockers.append("Section rewrite plan is waiting for explicit user approval.")
     elif final_outputs.get("status") != "complete":
         workflow_stage = WORKFLOW_STAGES["drafting"]
         next_section = select_next_section(section_rewrite_plan, draft_sections)
@@ -2344,6 +2630,15 @@ def build_snapshot(conn: sqlite3.Connection, artifact_root: Path) -> RuntimeSnap
             next_action = ACTIONS["output_target"]
             current_substep = ACTIONS["output_target"]
             blockers.append("Final output target is not confirmed yet.")
+        elif not translated_sections or any(
+            translated_sections.get(item["section_id"], {}).get("status") != "complete"
+            or translated_sections.get(item["section_id"], {}).get("source_draft_updated_at")
+            != draft_sections.get(item["section_id"], {}).get("updated_at")
+            for item in section_rewrite_plan
+        ):
+            next_action = ACTIONS["translated_sections"]
+            current_substep = ACTIONS["translated_sections"]
+            blockers.append("Approved section drafts are not translated into the target language yet.")
         else:
             next_action = ACTIONS["render_bundle"]
             current_substep = ACTIONS["render_bundle"]
@@ -2400,15 +2695,208 @@ def snapshot_to_result(snapshot: RuntimeSnapshot) -> dict[str, Any]:
     return {
         "artifact_root": str(snapshot.artifact_root),
         "db_path": str(snapshot.db_path),
+        "runtime_digest": load_runtime_digest(),
         "workflow_stage": snapshot.workflow_stage,
         "current_substep": snapshot.current_substep,
         "active_section_id": snapshot.active_section_id,
         "next_action": snapshot.next_action,
+        "next_action_payload_example": next_action_payload_example(
+            snapshot.next_action, snapshot.tables
+        ),
         "blockers": snapshot.blockers,
         "pending_confirmations": snapshot.pending_confirmations,
         "instruction_refs": snapshot.instruction_refs,
         "rendered_views": snapshot.rendered_views,
-    }
+}
+
+
+def next_action_payload_example(
+    action: str, tables: Mapping[str, Any] | None = None
+) -> dict[str, Any] | None:
+    tables = tables or {}
+    settings = cast(dict[str, Any], tables.get("target_settings", {}))
+    if action in {
+        ACTIONS["bootstrap"],
+        ACTIONS["intake"],
+        ACTIONS["raw_scope_segments"],
+        ACTIONS["prepare_draft"],
+        ACTIONS["render_bundle"],
+        ACTIONS["completed"],
+    }:
+        return None
+    if action == ACTIONS["language_context"]:
+        return {
+            "working_language": settings.get("working_language") or suggest_working_language(),
+            "target_language": settings.get("target_language") or "English",
+        }
+    if action == ACTIONS["runtime_template_translation"]:
+        return {
+            "templates": {
+                template_name: f"# Translate this template into {settings.get('working_language') or 'the working language'}"
+                for template_name in sorted(TEMPLATE_FILENAMES)
+            }
+        }
+    if action == ACTIONS["analysis"]:
+        return {
+            "main_scope": "Methods and results chapter about tunnel boring data fusion",
+            "main_scope_locator": {
+                "mode": "line_range",
+                "line_start": 120,
+                "line_end": 420,
+            },
+            "aux_scopes": [
+                {
+                    "aux_id": "aux-background",
+                    "label": "General background and related work",
+                    "purpose": "Support introduction and positioning",
+                    "locator": {"mode": "line_range", "line_start": 1, "line_end": 119},
+                }
+            ],
+            "topic": "TBM tunneling state recognition with multimodal data fusion",
+            "main_work": [
+                "Define the journal-facing problem statement",
+                "Summarize the core multimodal method",
+            ],
+            "novelty": [
+                "Joint use of muck morphology and surrounding-rock context",
+            ],
+            "section_outline": [
+                "Background",
+                "Method",
+                "Experiments",
+            ],
+            "removable_candidates": [
+                "Thesis-style tutorial exposition",
+            ],
+            "open_questions": [],
+        }
+    if action == ACTIONS["semantic_source_units"]:
+        return {
+            "units": [
+                {
+                    "unit_id": "u01",
+                    "unit_title": "Research motivation and gap",
+                    "unit_kind": "argument",
+                    "summary": "Why the journal paper is needed and what gap it addresses.",
+                    "member_segment_ids": ["seg-0001", "seg-0002"],
+                    "elements": [],
+                }
+            ]
+        }
+    if action == ACTIONS["target_settings_basics"]:
+        return {
+            "target_form": "journal article",
+            "target_journal_type": "SCI engineering journal",
+            "latex_template_id": "generic-en-journal",
+            "target_body_length": {"value": 7000, "unit": "words"},
+            "figure_table_preference": "Keep only core figures and simplify tables",
+            "reference_handling_preference": "Preserve key citations and keep BibTeX structure",
+        }
+    if action == ACTIONS["content_selection_board"]:
+        return {
+            "items": [
+                {
+                    "item_id": "keep-001",
+                    "bucket": "must_keep",
+                    "title": "Core multimodal method description",
+                    "summary": "Retain the problem formulation and fused-model pipeline.",
+                    "rationale": "This is the paper's core contribution.",
+                    "semantic_unit_ids": ["u01"],
+                }
+            ]
+        }
+    if action == ACTIONS["confirm_content_selection"]:
+        return {
+            "items": [
+                {
+                    "item_id": "keep-001",
+                    "bucket": "must_keep",
+                    "title": "Core multimodal method description",
+                    "summary": "Retain the problem formulation and fused-model pipeline.",
+                    "rationale": "User confirmed this should stay.",
+                    "semantic_unit_ids": ["u01"],
+                }
+            ]
+        }
+    if action == ACTIONS["finalize_target_settings"]:
+        return {"user_confirmed": True}
+    if action == ACTIONS["style"]:
+        return {
+            "source_style": "Technical but thesis-like, with long background passages.",
+            "problems_to_fix": "Reduce tutorial tone and compress repetitive exposition.",
+            "target_style_guidance": "Write in concise journal style with direct problem-method-result flow.",
+            "open_questions": [],
+        }
+    if action == ACTIONS["plan"]:
+        return {
+            "core_message": "A concise multimodal tunneling-state paper centered on the fusion method and its gains.",
+            "priority_map": "Prioritize motivation, method, and key experimental evidence; downplay implementation detail.",
+            "target_outline": "Introduction; Method; Experiments; Conclusion",
+            "length_allocation": "Introduction 900; Method 1800; Experiments 2600; Conclusion 400",
+            "omit_merge_strategy": "Merge redundant thesis-style transitions and remove chapter-summary language.",
+            "figure_table_plan": "Keep the core architecture figure and simplify large result tables.",
+            "reference_plan": "Retain core comparative citations and compress background citation clusters.",
+        }
+    if action == ACTIONS["confirm_plan"]:
+        return {"approved": True}
+    if action == ACTIONS["section_plan"]:
+        return {
+            "sections": [
+                {
+                    "section_id": "sec-introduction",
+                    "section_title": "Introduction",
+                    "planned_count_value": 900,
+                    "count_unit": "words",
+                    "must_cover": ["Research motivation", "Gap statement"],
+                    "simplify_first": ["Extended tutorial background"],
+                    "must_avoid": ["Chapter-summary wording"],
+                    "section_summary": "Introduce the problem, gap, and paper contribution.",
+                    "section_strategy": "Start from the practical problem, compress background, then state the method contribution.",
+                    "figure_table_usage": [],
+                    "reference_usage": ["Use only the most representative related-work citations."],
+                    "sources": [
+                        {
+                            "source_kind": "semantic_unit",
+                            "source_ref": "u01",
+                            "usage_note": "",
+                        }
+                    ],
+                }
+            ]
+        }
+    if action == ACTIONS["confirm_section_plan"]:
+        return {"approved": True}
+    if action == ACTIONS["draft_section"]:
+        return {
+            "section_id": "sec-introduction",
+            "draft_tex": "\\section{Introduction}\nThis paper addresses ...",
+            "source_refs": [
+                {
+                    "source_kind": "semantic_unit",
+                    "source_ref": "u01",
+                    "usage_note": "",
+                }
+            ],
+        }
+    if action == ACTIONS["approve_section"]:
+        return {"section_id": "sec-introduction", "approved": True}
+    if action == ACTIONS["output_target"]:
+        return {"user_confirmed": True, "output_dir": "./journal-paper-output"}
+    if action == ACTIONS["translated_sections"]:
+        section_plan = cast(list[dict[str, Any]], tables.get("section_rewrite_plan", []))
+        draft_sections = cast(dict[str, dict[str, Any]], tables.get("draft_sections", {}))
+        return {
+            "sections": [
+                {
+                    "section_id": item["section_id"],
+                    "translated_tex": f"Translate the approved {settings.get('working_language') or 'working-language'} draft into {settings.get('target_language') or 'the target language'}.",
+                    "source_draft_updated_at": draft_sections.get(item["section_id"], {}).get("updated_at", ""),
+                }
+                for item in section_plan
+                if draft_sections.get(item["section_id"], {}).get("review_status") == "approved"
+            ]
+        }
+    return None
 
 
 def gate_from_source_path(source_path: Path) -> dict[str, Any]:
@@ -2419,8 +2907,12 @@ def gate_from_source_path(source_path: Path) -> dict[str, Any]:
         return {
             "artifact_root": str(artifact_root),
             "db_path": str(db_path),
+            "runtime_digest": load_runtime_digest(),
             "workflow_stage": WORKFLOW_STAGES["bootstrap"],
             "next_action": ACTIONS["bootstrap"],
+            "next_action_payload_example": next_action_payload_example(
+                ACTIONS["bootstrap"]
+            ),
             "blockers": [],
             "pending_confirmations": [],
             "instruction_refs": stage_instruction_refs(WORKFLOW_STAGES["bootstrap"]),
@@ -2445,8 +2937,12 @@ def gate_from_artifact_root(artifact_root: Path) -> dict[str, Any]:
         return {
             "artifact_root": str(resolved_root),
             "db_path": str(db_path),
+            "runtime_digest": load_runtime_digest(),
             "workflow_stage": WORKFLOW_STAGES["bootstrap"],
             "next_action": ACTIONS["bootstrap"],
+            "next_action_payload_example": next_action_payload_example(
+                ACTIONS["bootstrap"]
+            ),
             "blockers": [
                 "Runtime database is missing. Re-enter with --source-path to bootstrap a new workspace."
             ],
@@ -2512,7 +3008,6 @@ def persist_bootstrap_runtime_db(
             upsert_payload_table(conn, table_name, {})
         replace_pending_confirmations(conn, WORKFLOW_STAGES["analysis"], [])
         replace_pending_confirmations(conn, WORKFLOW_STAGES["targets"], [])
-        replace_pending_confirmations(conn, WORKFLOW_STAGES["style"], [])
         replace_pending_confirmations(conn, WORKFLOW_STAGES["plan"], [])
         snapshot = build_snapshot(conn, resolved_root)
         result = snapshot_to_result(snapshot)
@@ -2545,6 +3040,76 @@ def persist_intake_and_inventory(artifact_root: Path) -> dict[str, Any]:
         snapshot = build_snapshot(conn, resolved_root)
         result = snapshot_to_result(snapshot)
         append_action_log(conn, ACTIONS["intake"], {}, result)
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
+def confirm_language_context(
+    artifact_root: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    ensure_required_keys(payload, REQUIRED_LANGUAGE_CONTEXT_KEYS, ACTIONS["language_context"])
+    resolved_root = validate_artifact_root(artifact_root)
+    db_path = resolve_db_path(resolved_root)
+    conn = connect_db(db_path)
+    try:
+        init_schema(conn)
+        require_next_action(resolved_root, ACTIONS["language_context"], conn)
+        settings = load_payload_table(conn, "target_settings")
+        working_language = str(payload["working_language"]).strip()
+        target_language = str(payload["target_language"]).strip()
+        if not working_language or not target_language:
+            raise ValueError("working_language and target_language must not be empty")
+        settings["working_language"] = working_language
+        settings["language_context_confirmed"] = True
+        settings["target_language"] = target_language
+        settings["target_language_source"] = "stage2_confirmation"
+        language_code = normalize_language_code(working_language)
+        settings["runtime_template_language"] = working_language
+        if language_code in SUPPORTED_TEMPLATE_LANGUAGES:
+            materialize_packaged_templates(resolved_root, language_code)
+            settings["runtime_templates_ready"] = True
+        else:
+            materialize_packaged_templates(resolved_root, DEFAULT_TEMPLATE_LANGUAGE)
+            settings["runtime_templates_ready"] = False
+        upsert_payload_table(conn, "target_settings", settings)
+        snapshot = build_snapshot(conn, resolved_root)
+        result = snapshot_to_result(snapshot)
+        append_action_log(conn, ACTIONS["language_context"], payload, result)
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
+def persist_runtime_template_translation(
+    artifact_root: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    ensure_required_keys(
+        payload,
+        REQUIRED_RUNTIME_TEMPLATE_TRANSLATION_KEYS,
+        ACTIONS["runtime_template_translation"],
+    )
+    resolved_root = validate_artifact_root(artifact_root)
+    db_path = resolve_db_path(resolved_root)
+    conn = connect_db(db_path)
+    try:
+        init_schema(conn)
+        require_next_action(resolved_root, ACTIONS["runtime_template_translation"], conn)
+        templates = payload["templates"]
+        if not isinstance(templates, dict):
+            raise ValueError("templates must be an object keyed by template filename")
+        write_runtime_templates(
+            resolved_root,
+            {str(key): str(value) for key, value in templates.items()},
+        )
+        settings = load_payload_table(conn, "target_settings")
+        settings["runtime_templates_ready"] = True
+        upsert_payload_table(conn, "target_settings", settings)
+        snapshot = build_snapshot(conn, resolved_root)
+        result = snapshot_to_result(snapshot)
+        append_action_log(conn, ACTIONS["runtime_template_translation"], payload, result)
         conn.commit()
         return result
     finally:
@@ -2707,8 +3272,17 @@ def persist_target_settings_basics(
         body_length = payload["target_body_length"]
         if not isinstance(body_length, dict):
             raise ValueError("target_body_length must be an object")
+        existing_settings = load_payload_table(conn, "target_settings")
+        inferred_target_language = infer_target_language_from_basics(
+            payload, str(existing_settings.get("target_language", ""))
+        )
         settings_payload = {
-            "target_language": str(payload["target_language"]),
+            "working_language": str(existing_settings.get("working_language", "")),
+            "language_context_confirmed": bool(
+                existing_settings.get("language_context_confirmed", False)
+            ),
+            "target_language": inferred_target_language,
+            "target_language_source": "stage3_form",
             "target_form": str(payload["target_form"]),
             "target_journal_type": str(payload["target_journal_type"]),
             "latex_template_id": template_id,
@@ -2725,6 +3299,12 @@ def persist_target_settings_basics(
             "content_selection_board_ready": False,
             "content_selection_confirmed": False,
             "user_confirmed": False,
+            "runtime_template_language": str(
+                existing_settings.get("runtime_template_language", "")
+            ),
+            "runtime_templates_ready": bool(
+                existing_settings.get("runtime_templates_ready", False)
+            ),
         }
         upsert_payload_table(conn, "target_settings", settings_payload)
         confirmations = normalize_pending_confirmation_items(
@@ -2884,9 +3464,9 @@ def persist_style_profile(
         upsert_payload_table(conn, "style_profile", style_payload)
         confirmations = normalize_pending_confirmation_items(
             payload.get("pending_confirmations", []),
-            WORKFLOW_STAGES["style"],
+            WORKFLOW_STAGES["targets"],
         )
-        replace_pending_confirmations(conn, WORKFLOW_STAGES["style"], confirmations)
+        replace_pending_confirmations(conn, WORKFLOW_STAGES["targets"], confirmations)
         snapshot = build_snapshot(conn, resolved_root)
         result = snapshot_to_result(snapshot)
         append_action_log(conn, ACTIONS["style"], payload, result)
@@ -2914,7 +3494,7 @@ def persist_condensation_plan(
             "omit_merge_strategy": str(payload["omit_merge_strategy"]),
             "figure_table_plan": str(payload["figure_table_plan"]),
             "reference_plan": str(payload["reference_plan"]),
-            "approval_status": str(payload["approval_status"]),
+            "approval_status": "draft",
         }
         upsert_payload_table(conn, "condensation_plan", plan_payload)
         confirmations = normalize_pending_confirmation_items(
@@ -2925,6 +3505,33 @@ def persist_condensation_plan(
         snapshot = build_snapshot(conn, resolved_root)
         result = snapshot_to_result(snapshot)
         append_action_log(conn, ACTIONS["plan"], payload, result)
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
+def confirm_condensation_plan(
+    artifact_root: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    ensure_required_keys(payload, REQUIRED_PLAN_CONFIRM_KEYS, ACTIONS["confirm_plan"])
+    resolved_root = validate_artifact_root(artifact_root)
+    db_path = resolve_db_path(resolved_root)
+    conn = connect_db(db_path)
+    try:
+        init_schema(conn)
+        require_next_action(resolved_root, ACTIONS["confirm_plan"], conn)
+        plan_payload = load_payload_table(conn, "condensation_plan")
+        if not condensation_plan_has_content(plan_payload):
+            raise ValueError("Condensation plan must exist before confirmation")
+        plan_payload["approval_status"] = (
+            "approved" if bool(payload["approved"]) else "needs_revision"
+        )
+        upsert_payload_table(conn, "condensation_plan", plan_payload)
+        replace_pending_confirmations(conn, WORKFLOW_STAGES["plan"], [])
+        snapshot = build_snapshot(conn, resolved_root)
+        result = snapshot_to_result(snapshot)
+        append_action_log(conn, ACTIONS["confirm_plan"], payload, result)
         conn.commit()
         return result
     finally:
@@ -2974,6 +3581,29 @@ def persist_section_rewrite_plan(
                     raise ValueError(
                         f"section rewrite plan '{section_id}' must explain why aux-backed semantic unit '{source['source_ref']}' is used"
                     )
+            section_summary = str(item.get("section_summary", "")).strip()
+            section_strategy = str(item.get("section_strategy", "")).strip()
+            figure_table_usage = normalize_figure_table_usage(
+                item.get("figure_table_usage", [])
+            )
+            reference_usage = payload_list(item.get("reference_usage", []))
+            aux_usage_rationale = str(item.get("aux_usage_rationale", "")).strip()
+            if not section_summary:
+                raise ValueError(
+                    f"section rewrite plan '{section_id}' requires section_summary"
+                )
+            if not section_strategy:
+                raise ValueError(
+                    f"section rewrite plan '{section_id}' requires section_strategy"
+                )
+            if any(
+                source["source_kind"] == "semantic_unit"
+                and semantic_unit_uses_aux(source["source_ref"], semantic_units, raw_segments)
+                for source in sources
+            ) and not aux_usage_rationale:
+                raise ValueError(
+                    f"section rewrite plan '{section_id}' requires aux_usage_rationale when aux-backed semantic units are used"
+                )
             normalized_sections.append(
                 {
                     "section_id": section_id,
@@ -2983,9 +3613,14 @@ def persist_section_rewrite_plan(
                     "count_unit": count_unit,
                     "tolerance_percent": int(item.get("tolerance_percent", 15)),
                     "must_cover": payload_list(item.get("must_cover", [])),
+                    "section_summary": section_summary,
+                    "section_strategy": section_strategy,
+                    "figure_table_usage": figure_table_usage,
+                    "reference_usage": reference_usage,
+                    "aux_usage_rationale": aux_usage_rationale,
                     "simplify_first": payload_list(item.get("simplify_first", [])),
                     "must_avoid": payload_list(item.get("must_avoid", [])),
-                    "status": "planned",
+                    "status": "draft",
                     "sources": sources,
                 }
             )
@@ -2999,6 +3634,34 @@ def persist_section_rewrite_plan(
         snapshot = build_snapshot(conn, resolved_root)
         result = snapshot_to_result(snapshot)
         append_action_log(conn, ACTIONS["section_plan"], payload, result)
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
+def confirm_section_rewrite_plan(
+    artifact_root: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    ensure_required_keys(
+        payload, REQUIRED_SECTION_PLAN_CONFIRM_KEYS, ACTIONS["confirm_section_plan"]
+    )
+    resolved_root = validate_artifact_root(artifact_root)
+    db_path = resolve_db_path(resolved_root)
+    conn = connect_db(db_path)
+    try:
+        init_schema(conn)
+        require_next_action(resolved_root, ACTIONS["confirm_section_plan"], conn)
+        plan_sections = load_section_rewrite_plan(conn)
+        if not plan_sections:
+            raise ValueError("Section rewrite plan must exist before confirmation")
+        update_section_rewrite_plan_status(
+            conn, "approved" if bool(payload["approved"]) else "needs_revision"
+        )
+        replace_pending_confirmations(conn, WORKFLOW_STAGES["plan"], [])
+        snapshot = build_snapshot(conn, resolved_root)
+        result = snapshot_to_result(snapshot)
+        append_action_log(conn, ACTIONS["confirm_section_plan"], payload, result)
         conn.commit()
         return result
     finally:
@@ -3193,6 +3856,69 @@ def persist_output_target(
         conn.close()
 
 
+def persist_translated_sections(
+    artifact_root: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    ensure_required_keys(
+        payload, REQUIRED_TRANSLATED_SECTIONS_KEYS, ACTIONS["translated_sections"]
+    )
+    resolved_root = validate_artifact_root(artifact_root)
+    db_path = resolve_db_path(resolved_root)
+    conn = connect_db(db_path)
+    try:
+        init_schema(conn)
+        require_next_action(resolved_root, ACTIONS["translated_sections"], conn)
+        sections_payload = payload["sections"]
+        if not isinstance(sections_payload, list) or not sections_payload:
+            raise ValueError("persist_translated_sections requires a non-empty sections list")
+        draft_sections = load_draft_sections(conn)
+        plan_sections = {item["section_id"]: item for item in load_section_rewrite_plan(conn)}
+        translated_items: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for item in sections_payload:
+            if not isinstance(item, dict):
+                raise ValueError("each translated section item must be an object")
+            section_id = str(item.get("section_id", "")).strip()
+            translated_tex = str(item.get("translated_tex", ""))
+            if not section_id or not translated_tex.strip():
+                raise ValueError("translated sections require section_id and translated_tex")
+            if section_id in seen_ids:
+                raise ValueError(f"duplicated translated section_id: {section_id}")
+            seen_ids.add(section_id)
+            draft = draft_sections.get(section_id)
+            if draft is None or draft.get("review_status") != "approved":
+                raise ValueError(
+                    f"translated section '{section_id}' must come from an approved section draft"
+                )
+            if section_id not in plan_sections:
+                raise ValueError(f"unknown section_id: {section_id}")
+            translated_items.append(
+                {
+                    "section_id": section_id,
+                    "translated_tex": translated_tex,
+                    "source_draft_updated_at": str(draft["updated_at"]),
+                    "status": "complete",
+                }
+            )
+        missing_ids = {
+            section_id
+            for section_id, draft in draft_sections.items()
+            if draft.get("review_status") == "approved"
+        }.difference(seen_ids)
+        if missing_ids:
+            raise ValueError(
+                "missing translated sections for: " + ", ".join(sorted(missing_ids))
+            )
+        replace_translated_sections(conn, translated_items)
+        snapshot = build_snapshot(conn, resolved_root)
+        result = snapshot_to_result(snapshot)
+        append_action_log(conn, ACTIONS["translated_sections"], payload, result)
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
 def render_final_output_bundle(artifact_root: Path) -> dict[str, Any]:
     resolved_root = validate_artifact_root(artifact_root)
     db_path = resolve_db_path(resolved_root)
@@ -3211,7 +3937,12 @@ def render_final_output_bundle(artifact_root: Path) -> dict[str, Any]:
         if output_target.get("user_confirmed") is not True:
             raise ValueError("Final output target is not confirmed")
         plan_sections = load_section_rewrite_plan(conn)
+        if any(str(item.get("status", "draft")) != "approved" for item in plan_sections):
+            raise ValueError(
+                "Final bundle rendering requires every section rewrite plan item to be approved"
+            )
         draft_sections = load_draft_sections(conn)
+        translated_sections = load_translated_sections(conn)
         raw_segments = load_raw_scope_segments(conn)
         semantic_units = load_semantic_source_units(conn)
         raw_segments_by_id = {item["segment_id"]: item for item in raw_segments}
@@ -3219,15 +3950,22 @@ def render_final_output_bundle(artifact_root: Path) -> dict[str, Any]:
         approved_sections: list[dict[str, Any]] = []
         for item in plan_sections:
             draft = draft_sections.get(item["section_id"])
+            translated = translated_sections.get(item["section_id"])
             if draft is None or draft.get("review_status") != "approved":
                 raise ValueError("All sections must be approved before final rendering")
-            approved_sections.append({**item, **draft})
+            if translated is None or translated.get("status") != "complete":
+                raise ValueError(
+                    "All approved sections must be translated before final rendering"
+                )
+            approved_sections.append({**item, **draft, **translated})
         inventory = load_payload_table(conn, "supporting_elements_inventory")
         used_image_paths: list[str] = []
         for section in approved_sections:
             used_image_paths.extend(
                 match.group(1).strip()
-                for match in INCLUDEGRAPHICS_PATTERN.finditer(str(section["draft_tex"]))
+                for match in INCLUDEGRAPHICS_PATTERN.finditer(
+                    str(section["translated_tex"])
+                )
                 if match.group(1).strip()
             )
         source_assets = {
@@ -3258,7 +3996,7 @@ def render_final_output_bundle(artifact_root: Path) -> dict[str, Any]:
 
         section_blocks: list[str] = []
         for item in approved_sections:
-            draft_tex = str(item["draft_tex"])
+            draft_tex = str(item["translated_tex"])
             for original, rewritten in image_rewrites.items():
                 draft_tex = draft_tex.replace(f"{{{original}}}", f"{{{rewritten}}}")
             section_blocks.append(draft_tex.strip())
@@ -3362,6 +4100,10 @@ def perform_action(
         raise ValueError(f"{action} requires --artifact-root")
     if action == ACTIONS["intake"]:
         return persist_intake_and_inventory(artifact_root)
+    if action == ACTIONS["language_context"]:
+        return confirm_language_context(artifact_root, payload)
+    if action == ACTIONS["runtime_template_translation"]:
+        return persist_runtime_template_translation(artifact_root, payload)
     if action == ACTIONS["analysis"]:
         return persist_manuscript_analysis(artifact_root, payload)
     if action == ACTIONS["raw_scope_segments"]:
@@ -3380,8 +4122,12 @@ def perform_action(
         return persist_style_profile(artifact_root, payload)
     if action == ACTIONS["plan"]:
         return persist_condensation_plan(artifact_root, payload)
+    if action == ACTIONS["confirm_plan"]:
+        return confirm_condensation_plan(artifact_root, payload)
     if action == ACTIONS["section_plan"]:
         return persist_section_rewrite_plan(artifact_root, payload)
+    if action == ACTIONS["confirm_section_plan"]:
+        return confirm_section_rewrite_plan(artifact_root, payload)
     if action == ACTIONS["prepare_draft"]:
         return prepare_section_drafting(artifact_root)
     if action == ACTIONS["draft_section"]:
@@ -3390,6 +4136,8 @@ def perform_action(
         return approve_section_draft(artifact_root, payload)
     if action == ACTIONS["output_target"]:
         return persist_output_target(artifact_root, payload)
+    if action == ACTIONS["translated_sections"]:
+        return persist_translated_sections(artifact_root, payload)
     if action == ACTIONS["render_bundle"]:
         return render_final_output_bundle(artifact_root)
     if action in DEPRECATED_ACTIONS:
