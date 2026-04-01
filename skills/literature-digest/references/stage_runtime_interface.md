@@ -32,6 +32,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
 
 ### 主路径 subcommand
 
+- `confirm_runtime_paths`
 - `bootstrap_runtime_db`
 - `normalize_source`
 - `persist_outline_and_scopes`
@@ -52,7 +53,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
   - `normalize_source` 只能读 `source_path`
   - `prepare_references_workset` 只能读前序已确定的 `references_scope`
   - `prepare_citation_workset` 只能读前序已确定的 `citation_scope`
-  - `render_and_validate --mode render` 只能读 DB 内容，不能显式指定 `source_path`；正式输出目录来自 DB 中的 `output_dir`
+  - `render_and_validate --mode render` 只能读 DB 内容，不能显式指定 `source_path`；正式输出目录与结果镜像文件路径都来自 DB
 
 ### 辅助工具 subcommand
 
@@ -61,6 +62,46 @@ python scripts/stage_runtime.py <subcommand> [args...]
 - `render_and_validate --mode check`
 
 这些工具不属于 gate 主路径，不应出现在 gate 的 `next_action` 中。
+
+## `confirm_runtime_paths`
+
+### 命令
+
+```bash
+python scripts/stage_runtime.py confirm_runtime_paths \
+  --working-dir "/abs/path/run-root" \
+  [--output-dir "/abs/path/artifacts"] \
+  [--db-path "/abs/path/run-root/.literature_digest_tmp/literature_digest.db"]
+```
+
+### 参数
+
+- `--working-dir`
+  - 必填。必须是 agent 在调用任何 skill 脚本之前，先在当前 shell 通过 `cwd()` / `pwd` 取到的目录。
+- `--output-dir`
+  - 可选。最终公开产物输出目录；缺省时等于 `working_dir`。
+- `--db-path`
+  - 可选。显式 DB 路径兼容入口；若缺省，脚本按 `<working_dir>/.literature_digest_tmp/literature_digest.db` 推导。
+
+### 最小合法示例
+
+```bash
+pwd
+python scripts/stage_runtime.py confirm_runtime_paths --working-dir "/abs/path/run-root"
+```
+
+### 成功输出
+
+```json
+{
+  "working_dir": "/abs/path/run-root",
+  "tmp_dir": "/abs/path/run-root/.literature_digest_tmp",
+  "db_path": "/abs/path/run-root/.literature_digest_tmp/literature_digest.db",
+  "result_json_path": "/abs/path/run-root/literature-digest.result.json",
+  "output_dir": "/abs/path/run-root",
+  "error": null
+}
+```
 
 ## `bootstrap_runtime_db`
 
@@ -71,7 +112,6 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
   [--db-path PATH] \
   --source-path PATH \
   [--language LANG] \
-  [--output-dir DIR] \
   [--input-hash HASH] \
   [--generated-at ISO8601] \
   [--model MODEL]
@@ -85,8 +125,6 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
   - 可选。输出语言；缺省时脚本应回退默认值。
 - `--input-hash`
   - 可选。若不提供，由脚本自行计算。
-- `--output-dir`
-  - 可选。正式公开产物目录；若不提供，脚本把当前工作目录写入 DB。
 - `--generated-at`
   - 可选。若不提供，由脚本生成 UTC 时间。
 - `--model`
@@ -97,8 +135,7 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
 ```bash
 python scripts/stage_runtime.py bootstrap_runtime_db \
   --source-path "/abs/path/paper.md" \
-  --language "zh-CN" \
-  --output-dir "/abs/path/artifacts"
+  --language "zh-CN"
 ```
 
 ### 典型非法示例
@@ -114,7 +151,9 @@ python scripts/stage_runtime.py bootstrap_runtime_db
 ```json
 {
   "db_path": "/abs/path/.literature_digest_tmp/literature_digest.db",
+  "working_dir": "/abs/path/run-root",
   "output_dir": "/abs/path/artifacts",
+  "source_path": "/abs/path/paper.md",
   "error": null
 }
 ```
@@ -1035,7 +1074,9 @@ python scripts/stage_runtime.py render_and_validate [--db-path PATH] --mode rend
 - 不接受外部业务 payload
 - 正式发布只从 DB 派生最终成品
 - 正式 render 的写盘目录只读取 `runtime_inputs.output_dir`
-- 若库中缺失 `runtime_inputs.output_dir`，回退到当前工作目录
+- `literature-digest.result.json` 只写到 `runtime_inputs.result_json_path`
+- 最终 stdout JSON 中所有文件路径字段都输出为绝对路径
+- 若旧库缺失这些目录键，兼容模式下才回退到当前工作目录
 - `citation_analysis.md` / `citation_analysis.json.report_md` 会共同包含由 renderer 生成的“关键文献”与“时间线分析”小节
 - numeric 型引用保留原始 `[n]`
 - author-year 型引用在最终渲染时按首次出现顺序合成 `[AY-k]`
@@ -1059,7 +1100,7 @@ python scripts/stage_runtime.py render_and_validate --mode render --source-path 
 python scripts/stage_runtime.py render_and_validate --mode render --out-dir /abs/path/artifacts
 ```
 
-原因：正式发布路径不再接受输出目录覆盖；该目录必须在 `bootstrap_runtime_db` 中先写入 DB。
+原因：正式发布路径不再接受输出目录覆盖；该目录必须在 `confirm_runtime_paths` 中先写入 DB。
 
 #### 成功输出
 
@@ -1081,7 +1122,7 @@ python scripts/stage_runtime.py render_and_validate --mode render --out-dir /abs
 
 最终 stdout JSON 的权威示例以本页代码块与 `SKILL.md` 的“核心执行指令”部分为准。
 
-render 还会把同一个 JSON 对象镜像写入当前工作目录下固定文件 `./literature-digest.result.json`。
+render 还会把同一个 JSON 对象镜像写入 DB 中 `runtime_inputs.result_json_path` 指向的固定文件。
 
 #### 失败输出示例
 

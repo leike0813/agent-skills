@@ -6,7 +6,7 @@
 
 `gate_runtime.py` 是唯一合法的状态机门禁入口。它负责：
 
-- 读取 `<cwd>/.literature_digest_tmp/literature_digest.db`
+- 在已知 DB 路径时读取对应 SQLite；若 DB 尚未创建，则返回 `next_action=confirm_runtime_paths`
 - 读取 `workflow_state`
 - 检查当前阶段前置条件是否满足
 - 给出唯一 `next_action`
@@ -43,7 +43,7 @@ python scripts/gate_runtime.py [--db-path PATH]
 - `0`
   - gate 可继续执行。
   - 包括两种场景：
-    - DB 不存在，此时 `next_action=bootstrap_runtime_db`
+    - DB 不存在，此时 `next_action=confirm_runtime_paths`
     - 当前阶段 `stage_gate=ready`
 - `2`
   - gate 判定当前状态被阻塞，必须先修复。
@@ -126,6 +126,7 @@ stdout 只输出一个 JSON 对象，字段固定为：
 
 当前 gate 可能返回的动作包括：
 
+- `confirm_runtime_paths`
 - `bootstrap_runtime_db`
 - `normalize_source`
 - `persist_outline_and_scopes`
@@ -184,10 +185,11 @@ stdout 只输出一个 JSON 对象，字段固定为：
 
 特殊约束：
 
-- 当 `next_action = bootstrap_runtime_db` 时，`execution_note` 会提示当前步先确定最终输出目录并写入 DB
+- 当 `next_action = confirm_runtime_paths` 时，`execution_note` 会明确提示先在 shell 里执行 `cwd()` / `pwd`，不要先 `cd`，也不要先运行其它脚本
+- 当 `next_action = bootstrap_runtime_db` 时，`execution_note` 会提示目录已经由 `confirm_runtime_paths` 固化，本步不再决定任何目录
 - 当 `next_action = render_and_validate` 时，`execution_note` 会提示当前已经进入最终发布前一步
 - 并提示最终 assistant 输出应直接采用 render 脚本 stdout 返回的 JSON
-- 并说明 render 会读取 DB 中的 `output_dir`，同时把同一个 JSON 镜像写到 `./literature-digest.result.json`
+- 并说明 render 会读取 DB 中的 `output_dir` 与 `result_json_path`
 - 这条约束只放在 stage 6 的 `execution_note` 中，不作为更高层的全局提示重复出现
 
 返回规律：
@@ -295,14 +297,14 @@ gate 至少检查这些关键前置：
 ```json
 {
   "current_stage": "stage_0_bootstrap",
-  "current_substep": "bootstrap_runtime_db",
+  "current_substep": "confirm_runtime_paths",
   "stage_gate": "blocked",
-  "next_action": "bootstrap_runtime_db",
+  "next_action": "confirm_runtime_paths",
   "core_instruction": "## 核心执行指令\n...",
   "command_example": {
-    "command": "python scripts/stage_runtime.py bootstrap_runtime_db --db-path \"/abs/db.sqlite\" --source-path \"<SOURCE_PATH>\" --language \"zh-CN\" --output-dir \"<OUTPUT_DIR>\"",
+    "command": "pwd\npython scripts/stage_runtime.py confirm_runtime_paths --working-dir \"<PWD_FROM_SHELL>\" [--output-dir \"<OUTPUT_DIR>\"]",
     "payload_example": null,
-    "notes": "This step reads prompt inputs, not a payload file."
+    "notes": "Before any skill script, first capture cwd from the current shell and pass it into confirm_runtime_paths."
   },
   "sql_examples": []
 }

@@ -33,7 +33,7 @@ REQUIRED_STAGE5_RECEIPTS = (
 STAGE_RULES: dict[str, dict[str, Any]] = {
     "stage_0_bootstrap": {
         "required_reads": [],
-        "required_writes": ["workflow_state", "runtime_inputs"],
+        "required_writes": ["workflow_state", "runtime_inputs", "action_receipts"],
     },
     "stage_1_normalize_source": {
         "required_reads": ["runtime_inputs.source_path", "runtime_inputs.language", "runtime_inputs.generated_at", "runtime_inputs.input_hash"],
@@ -314,7 +314,7 @@ def _default_instruction_refs(stage: str) -> list[dict[str, str]]:
 
 def _instruction_refs(stage: str, next_action: str) -> list[dict[str, str]]:
     refs = _default_instruction_refs(stage)
-    if next_action in {"bootstrap_runtime_db", "normalize_source"}:
+    if next_action in {"confirm_runtime_paths", "bootstrap_runtime_db", "normalize_source"}:
         refs[0]["section"] = "Bootstrap and source normalization"
     elif next_action == "persist_outline_and_scopes":
         refs[0]["section"] = "Outline and scope extraction"
@@ -365,14 +365,24 @@ def _command_example(next_action: str, db_path: Path) -> dict[str, Any] | None:
     db_arg = f'--db-path "{db_path}"'
     payload_arg = '--payload-file "<PAYLOAD_FILE>"'
 
+    if next_action == "confirm_runtime_paths":
+        return {
+            "command": (
+                "pwd\n"
+                "python scripts/stage_runtime.py confirm_runtime_paths "
+                '--working-dir "<PWD_FROM_SHELL>" [--output-dir "<OUTPUT_DIR>"]'
+            ),
+            "payload_example": None,
+            "notes": "Before calling any skill script, first capture the current working directory from the shell. Do not cd elsewhere first. Use that exact cwd as --working-dir, then rerun gate with --db-path \"<PWD_FROM_SHELL>/.literature_digest_tmp/literature_digest.db\".",
+        }
     if next_action == "bootstrap_runtime_db":
         return {
             "command": (
                 "python scripts/stage_runtime.py bootstrap_runtime_db "
-                f'{db_arg} --source-path "<SOURCE_PATH>" --language "zh-CN" --output-dir "<OUTPUT_DIR>"'
+                f'{db_arg} --source-path "<SOURCE_PATH>" --language "zh-CN"'
             ),
             "payload_example": None,
-            "notes": "This step reads prompt inputs, not a payload file. Replace the placeholder values with the real source_path, language, and output_dir for this run.",
+            "notes": "This step reads prompt inputs, not a payload file. Replace the placeholder values with the real source_path and language for this run. Directory paths were already fixed by confirm_runtime_paths.",
         }
     if next_action == "normalize_source":
         return {
@@ -534,8 +544,10 @@ def _command_example(next_action: str, db_path: Path) -> dict[str, Any] | None:
 
 
 def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> str:
+    if next_action == "confirm_runtime_paths":
+        return "Before calling any skill script, first run `cwd()` / `pwd` in the current shell and capture that working directory. Do not `cd` first, and do not run gate_runtime.py or bootstrap_runtime_db first. Then call `confirm_runtime_paths` with that exact cwd and rerun gate using the confirmed db_path."
     if next_action == "bootstrap_runtime_db":
-        return "Initialize or resume the runtime DB first, decide the final output directory in this step, write it to DB, then rerun gate before doing anything else."
+        return "Bootstrap runtime inputs now. Do not decide directories here; working_dir, tmp_dir, db_path, result_json_path, and output_dir must already have been fixed by confirm_runtime_paths."
     if next_action == "normalize_source":
         return "Run source normalization now. Do not respecify source_path or language; this step must read the bootstrap state from DB."
     if next_action == "persist_outline_and_scopes":
@@ -557,7 +569,7 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
     if next_action == "persist_citation_summary":
         return "Write the global citation summary now. Keep it narrative and based on research threads, argument shape, and key references."
     if next_action == "render_and_validate":
-        return "You are at the final publish step. Run `python scripts/stage_runtime.py render_and_validate --mode render` next. Render will use the DB-stored output_dir, mirror the same stdout JSON into `./literature-digest.result.json`, and you should directly use that stdout JSON as the final assistant output."
+        return "You are at the final publish step. Run `python scripts/stage_runtime.py render_and_validate --mode render` next. Render will use the DB-stored output_dir and result_json_path, emit absolute artifact paths, mirror the same stdout JSON into the DB-stored literature-digest.result.json path, and you should directly use that stdout JSON as the final assistant output."
     if next_action == "repair_workflow_state":
         return "Repair workflow_state first. Do not continue the main path until gate returns a non-repair next_action."
     if next_action == "repair_db_state":
@@ -585,6 +597,13 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
         row = connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
         return 0 if row is None else int(row["count"])
 
+    if stage == "stage_0_bootstrap":
+        if next_action == "bootstrap_runtime_db":
+            for key in ["working_dir", "tmp_dir", "db_path", "result_json_path", "output_dir"]:
+                if not inputs.get(key):
+                    missing.append(f"runtime_inputs.{key}")
+            if "confirm_runtime_paths" not in receipts:
+                missing.append("action_receipts.confirm_runtime_paths")
     if stage == "stage_1_normalize_source":
         if not inputs.get("source_path"):
             missing.append("runtime_inputs.source_path")
@@ -701,10 +720,10 @@ def main() -> int:
         return _emit(
             _payload(
                 current_stage="stage_0_bootstrap",
-                current_substep="bootstrap_runtime_db",
+                current_substep="confirm_runtime_paths",
                 stage_gate="blocked",
-                next_action="bootstrap_runtime_db",
-                status_summary="runtime database missing",
+                next_action="confirm_runtime_paths",
+                status_summary="runtime database missing; capture cwd first, then confirm runtime paths",
                 rules=STAGE_RULES["stage_0_bootstrap"],
                 db_path=db_path,
             )

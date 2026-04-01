@@ -308,11 +308,11 @@ def _seed_runtime_run(connection: sqlite3.Connection) -> None:
 def _seed_workflow_state(connection: sqlite3.Connection) -> None:
     set_workflow_state(
         connection,
-        current_stage="stage_1_normalize_source",
-        current_substep="normalize_source",
+        current_stage="stage_0_bootstrap",
+        current_substep="confirm_runtime_paths",
         stage_gate="ready",
-        next_action="normalize_source",
-        status_summary="runtime database initialized",
+        next_action="confirm_runtime_paths",
+        status_summary="runtime database initialized; confirm runtime paths",
         active_batch_kind=None,
         active_batch_index=None,
         last_error_code=None,
@@ -1487,7 +1487,7 @@ def register_artifact(
             source_table = excluded.source_table,
             updated_at = excluded.updated_at
         """,
-        (artifact_key, str(path), 1 if is_required else 0, media_type, source_table, now),
+        (artifact_key, str(path.expanduser().resolve()), 1 if is_required else 0, media_type, source_table, now),
     )
     touch_runtime(connection)
 
@@ -1512,9 +1512,9 @@ def build_public_output_payload(connection: sqlite3.Connection) -> dict[str, Any
     inputs = fetch_runtime_inputs(connection)
     artifacts = fetch_artifact_registry(connection)
     payload: dict[str, Any] = {
-        "digest_path": artifacts.get("digest_path", {}).get("path", ""),
-        "references_path": artifacts.get("references_path", {}).get("path", ""),
-        "citation_analysis_path": artifacts.get("citation_analysis_path", {}).get("path", ""),
+        "digest_path": str(Path(artifacts.get("digest_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("digest_path", {}).get("path", "") else "",
+        "references_path": str(Path(artifacts.get("references_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("references_path", {}).get("path", "") else "",
+        "citation_analysis_path": str(Path(artifacts.get("citation_analysis_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("citation_analysis_path", {}).get("path", "") else "",
         "provenance": {
             "generated_at": inputs.get("generated_at", ""),
             "input_hash": inputs.get("input_hash", ""),
@@ -1524,7 +1524,7 @@ def build_public_output_payload(connection: sqlite3.Connection) -> dict[str, Any
         "error": None,
     }
     if "citation_analysis_report_path" in artifacts:
-        payload["citation_analysis_report_path"] = artifacts["citation_analysis_report_path"]["path"]
+        payload["citation_analysis_report_path"] = str(Path(artifacts["citation_analysis_report_path"]["path"]).expanduser().resolve())
     latest_error = fetch_latest_error(connection)
     if latest_error is not None:
         payload["error"] = {"code": latest_error["code"], "message": latest_error["message"]}

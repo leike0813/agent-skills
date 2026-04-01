@@ -91,7 +91,9 @@ compatibility: Requires local filesystem read access to source_path; no network 
 
 ## SQLite SSOT
 
-- 运行时数据库固定为 `<cwd>/.literature_digest_tmp/literature_digest.db`
+- 在调用任何 skill 脚本之前，先在当前 shell 执行一次 `cwd()` / `pwd`，取得当前工作目录；不要先 `cd` 到别处
+- 新 run 的第一步必须是 `confirm_runtime_paths`，用刚取到的 cwd 固化本次执行的 `working_dir`、`tmp_dir`、`db_path`、`result_json_path`、`output_dir`
+- 运行时数据库以 `confirm_runtime_paths` 写入 DB 的 `runtime_inputs.db_path` 为唯一真源；兼容旧库时才回退到 `<cwd>/.literature_digest_tmp/literature_digest.db`
 - 所有过程数据先写 SQLite
 - 不保留中间 JSON/MD 文件作为过程真源
 - 最终产物只能从 SQLite 中读取并渲染
@@ -110,7 +112,8 @@ compatibility: Requires local filesystem read access to source_path; no network 
 - `stage_7_completed`
 
 执行纪律：
-- 首次进入必须先运行 `scripts/gate_runtime.py`
+- 首次进入时先在 shell 执行 `cwd()` / `pwd`，再调用 `scripts/stage_runtime.py confirm_runtime_paths`
+- `confirm_runtime_paths` 成功后，再运行 `scripts/gate_runtime.py --db-path "<WORKING_DIR>/.literature_digest_tmp/literature_digest.db"`
 - 每次正式写库后都必须重新运行 `scripts/gate_runtime.py`
 - 只能执行 gate 返回的 `next_action`
 - 若 gate 返回 blocker 或 repair 路径，必须先修复 DB 状态再继续
@@ -148,10 +151,26 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 中文名：输出语言
   - 定义：控制 digest 与 citation 分析语言；缺省回退 `zh-CN`。
   - 适用动作：`bootstrap_runtime_db`
+- `working_dir`
+  - 中文名：工作目录
+  - 定义：agent 在调用任何 skill 脚本之前，由当前 shell 显式执行 `cwd()` / `pwd` 得到并传入 `confirm_runtime_paths` 的目录。
+  - 适用动作：`confirm_runtime_paths`
+- `tmp_dir`
+  - 中文名：临时目录
+  - 定义：本次 run 的临时副产物目录；由 `confirm_runtime_paths` 固化，默认是 `<working_dir>/.literature_digest_tmp`。
+  - 适用动作：`confirm_runtime_paths`
+- `db_path`
+  - 中文名：运行时数据库路径
+  - 定义：本次 run 的 SQLite 路径；由 `confirm_runtime_paths` 固化，后续 gate 与 stage 脚本都优先读取它。
+  - 适用动作：`confirm_runtime_paths`
+- `result_json_path`
+  - 中文名：最终结果镜像 JSON 路径
+  - 定义：render 阶段同步写出的 `literature-digest.result.json` 绝对路径；由 `confirm_runtime_paths` 固化。
+  - 适用动作：`confirm_runtime_paths`
 - `output_dir`
   - 中文名：产物输出目录
-  - 定义：step 1 确定并写入 DB 的最终公开产物目录；stage 6 只读取它，不再临时覆盖。
-  - 适用动作：`bootstrap_runtime_db`
+  - 定义：目录确认步骤写入 DB 的最终公开产物目录；stage 6 只读取它，不再临时覆盖。
+  - 适用动作：`confirm_runtime_paths`
 - `outline_nodes`
   - 中文名：大纲节点
   - 定义：按原文顺序组织的章节骨架，用来支撑后续 digest 与 scope 决策。
@@ -261,25 +280,49 @@ compatibility: Requires local filesystem read access to source_path; no network 
 
 启动时只读本文件。不要一开始读取整个 `references/` 目录；只有在 gate 返回 `instruction_refs` 后，才按当前阶段按需读取对应附录文档。并且每一步都要同时遵守 gate 返回的 `core_instruction` 与 `execution_note`。不得在开始阶段一次性读取全部 step 文档。
 
-### 1. `bootstrap_runtime_db`
+### 1. `confirm_runtime_paths`
 
 - 何时执行：
-  - 首次进入 skill，或 gate 明确返回 `next_action=bootstrap_runtime_db`
+  - 新 run 的第一步，且必须在调用任何其他 skill 脚本之前执行
+- 调用命令：
+```bash
+pwd
+python scripts/stage_runtime.py confirm_runtime_paths --working-dir "<PWD_FROM_SHELL>" [--output-dir "/abs/path/artifacts"]
+```
+- 必须提供的参数 / payload：
+  - CLI 参数：`--working-dir`
+  - CLI 参数：`--output-dir`（可省略；缺省时等于 `working_dir`）
+- 各 payload 字段含义：
+  - `working_dir`：当前 shell 显式取到的工作目录，不允许先 `cd` 再取
+  - `tmp_dir`：由脚本固化的临时目录
+  - `db_path`：由脚本固化的 SQLite 绝对路径
+  - `result_json_path`：render 同步镜像结果 JSON 的绝对路径
+  - `output_dir`：最终 `digest.md`、`references.json`、`citation_analysis.json`、`citation_analysis.md` 的输出目录
+- 最小合法示例：
+```bash
+pwd
+python scripts/stage_runtime.py confirm_runtime_paths --working-dir "/tmp/run-root"
+```
+- 完成后应该看到的 gate 结果：
+  - 再运行一次 `python scripts/gate_runtime.py --db-path "/tmp/run-root/.literature_digest_tmp/literature_digest.db"`
+  - `next_action` 应推进为 `bootstrap_runtime_db`
+
+### 2. `bootstrap_runtime_db`
+
+- 何时执行：
+  - `confirm_runtime_paths` 成功后，或 gate 明确返回 `next_action=bootstrap_runtime_db`
 - 调用命令：
 ```bash
 python scripts/stage_runtime.py bootstrap_runtime_db \
   --source-path "/abs/path/paper.md" \
-  --language "zh-CN" \
-  --output-dir "/abs/path/artifacts"
+  --language "zh-CN"
 ```
 - 必须提供的参数 / payload：
   - CLI 参数：`--source-path`
   - CLI 参数：`--language`（可省略，脚本会回退默认值）
-  - CLI 参数：`--output-dir`（可省略；缺省时脚本把当前工作目录写入 DB）
 - 各 payload 字段含义：
   - `source_path`：唯一内容来源文件路径
   - `language`：后续 digest 与 citation 分析语言
-  - `output_dir`：最终 `digest.md`、`references.json`、`citation_analysis.json`、`citation_analysis.md` 的输出目录
 - 最小合法示例：
 ```bash
 python scripts/stage_runtime.py bootstrap_runtime_db --source-path "/tmp/paper.md" --language "zh-CN"
@@ -288,7 +331,7 @@ python scripts/stage_runtime.py bootstrap_runtime_db --source-path "/tmp/paper.m
   - 再运行一次 `python scripts/gate_runtime.py`
   - `next_action` 应推进为 `normalize_source`
 
-### 2. `normalize_source`
+### 3. `normalize_source`
 
 - 何时执行：
   - `bootstrap_runtime_db` 成功后，且 gate 返回 `normalize_source`
@@ -308,7 +351,7 @@ python scripts/stage_runtime.py normalize_source
 - 完成后应该看到的 gate 结果：
   - 再运行 gate 后，`next_action` 应推进为 `persist_outline_and_scopes`
 
-### 3. `persist_outline_and_scopes`
+### 4. `persist_outline_and_scopes`
 
 - 何时执行：
   - `normalize_source` 成功后，且 gate 返回 `persist_outline_and_scopes`
@@ -375,7 +418,7 @@ python scripts/stage_runtime.py persist_outline_and_scopes --payload-file /tmp/o
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_digest`
 
-### 4. `persist_digest`
+### 5. `persist_digest`
 
 - 何时执行：
   - `persist_outline_and_scopes` 成功后，且 gate 返回 `persist_digest`
@@ -416,7 +459,7 @@ python scripts/stage_runtime.py persist_digest --payload-file /tmp/digest_payloa
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `prepare_references_workset`
 
-### 5. `prepare_references_workset`
+### 6. `prepare_references_workset`
 
 - 何时执行：
   - `persist_digest` 成功后，且 gate 返回 `prepare_references_workset`
@@ -445,7 +488,7 @@ python scripts/stage_runtime.py prepare_references_workset --out /tmp/references
   - 若 `requires_split_review=false`：`next_action` 应推进为 `persist_references`
   - 若 `requires_split_review=true`：`next_action` 应推进为 `persist_reference_entry_splits`
 
-### 6. `persist_reference_entry_splits`
+### 7. `persist_reference_entry_splits`
 
 - 何时执行：
   - 只有当 `prepare_references_workset` 返回 `requires_split_review=true`，且 gate 返回 `persist_reference_entry_splits`
@@ -477,7 +520,7 @@ python scripts/stage_runtime.py persist_reference_entry_splits --payload-file /t
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_references`
 
-### 7. `persist_references`
+### 8. `persist_references`
 
 - 何时执行：
   - `prepare_references_workset` 成功且不需要 split review，或 `persist_reference_entry_splits` 成功后，且 gate 返回 `persist_references`
@@ -516,7 +559,7 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - 非法：`["Al-Rfou", "R.", "Choe", "D.", "Constant", "N.", "Guo", "M.", "Jones", "L."]`
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `prepare_citation_workset`
-### 8. `prepare_citation_workset`
+### 9. `prepare_citation_workset`
 
 - 何时执行：
   - `persist_references` 成功后，且 gate 返回 `prepare_citation_workset`
@@ -541,7 +584,7 @@ python scripts/stage_runtime.py prepare_citation_workset --out /tmp/workset.json
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_semantics`
 
-### 9. `persist_citation_semantics`
+### 10. `persist_citation_semantics`
 
 - 何时执行：
   - `prepare_citation_workset` 成功后，且 gate 返回 `persist_citation_semantics`
@@ -580,7 +623,7 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_timeline`
 
-### 10. `persist_citation_timeline`
+### 11. `persist_citation_timeline`
 
 - 何时执行：
   - `persist_citation_semantics` 成功后，且 gate 返回 `persist_citation_timeline`
@@ -616,7 +659,7 @@ python scripts/stage_runtime.py persist_citation_timeline --payload-file /tmp/ci
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_summary`
 
-### 11. `persist_citation_summary`
+### 12. `persist_citation_summary`
 
 - 何时执行：
   - `persist_citation_timeline` 成功后，且 gate 返回 `persist_citation_summary`
@@ -653,7 +696,7 @@ python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/cit
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `render_and_validate`
 
-### 12. `render_and_validate --mode render`
+### 13. `render_and_validate --mode render`
 
 - 何时执行：
   - `persist_citation_summary` 成功后，且 gate 返回 `render_and_validate`
@@ -668,7 +711,7 @@ python scripts/stage_runtime.py render_and_validate --mode render
   - `references_path`：最终 references 文件路径
   - `citation_analysis_path`：最终 citation analysis JSON 路径
   - `citation_analysis_report_path`：可选 Markdown 报告路径
-  - `literature-digest.result.json`：render 脚本把最终 stdout JSON 同步镜像到当前工作目录的固定结果文件
+  - `literature-digest.result.json`：render 脚本把最终 stdout JSON 同步镜像到 DB 中 `result_json_path` 指定的固定结果文件
 - 最小合法示例：
 ```bash
 python scripts/stage_runtime.py render_and_validate --mode render
@@ -690,7 +733,7 @@ python scripts/stage_runtime.py render_and_validate --mode render
 }
 ```
 - 同步写出的固定结果文件：
-  - 当前工作目录下固定写出 `./literature-digest.result.json`
+  - 固定写到 DB 中的 `result_json_path`
   - 文件内容与上面的 stdout JSON 完全一致
 - 失败态 stdout JSON 示例：
 ```json
@@ -711,8 +754,9 @@ python scripts/stage_runtime.py render_and_validate --mode render
 }
 ```
 - 输出路径规则：
-  - render 只读取 DB 中的 `output_dir`
-  - 若库中缺失 `output_dir`，脚本回退到当前工作目录
+  - render 只读取 DB 中的 `output_dir` 和 `result_json_path`
+  - render stdout JSON 中所有路径字段都输出为绝对路径
+  - 若旧库缺失这些目录键，脚本只在兼容模式下回退到当前工作目录
   - render 阶段不再接受目录覆盖参数
 - 完成后应该看到的 gate 结果：
   - `current_stage` 进入 `stage_7_completed`

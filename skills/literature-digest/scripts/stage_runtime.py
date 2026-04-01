@@ -143,6 +143,20 @@ TJ_ARRAY_RE = re.compile(r"\[(.*?)\]\s*TJ", re.DOTALL)
 TJ_SINGLE_RE = re.compile(r"(\((?:\\.|[^\\)])*\))\s*Tj")
 
 ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
+    "confirm_runtime_paths": [
+        "bootstrap_runtime_db",
+        "normalize_source",
+        "persist_outline_and_scopes",
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "persist_references",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
     "bootstrap_runtime_db": [
         "normalize_source",
         "persist_outline_and_scopes",
@@ -269,6 +283,15 @@ class DispatchPaths:
 
 
 @dataclass
+class RuntimePaths:
+    working_dir: Path
+    tmp_dir: Path
+    db_path: Path
+    result_json_path: Path
+    output_dir: Path
+
+
+@dataclass
 class Scope:
     section_title: str
     line_start: int
@@ -298,14 +321,80 @@ def _write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _resolve_cli_path(path_value: str) -> Path | None:
+    if not path_value.strip():
+        return None
+    return Path(path_value).expanduser().resolve()
+
+
 def _normalized_output_dir(path_value: str) -> Path:
     if path_value:
         return Path(path_value).expanduser().resolve()
     return Path.cwd().resolve()
 
 
-def _write_render_result_json(payload: dict[str, Any]) -> None:
-    _write_json(Path.cwd() / RESULT_JSON_FILENAME, payload)
+def _runtime_paths_from_values(
+    *,
+    working_dir_value: str = "",
+    tmp_dir_value: str = "",
+    db_path_value: str = "",
+    result_json_path_value: str = "",
+    output_dir_value: str = "",
+    fallback_db_path: Path | None = None,
+) -> RuntimePaths:
+    fallback_working_dir = Path.cwd().resolve()
+    working_dir = _resolve_cli_path(working_dir_value) or fallback_working_dir
+    tmp_dir = _resolve_cli_path(tmp_dir_value) or (working_dir / TMP_DIRNAME).resolve()
+    db_path = _resolve_cli_path(db_path_value) or (fallback_db_path.resolve() if fallback_db_path is not None else default_db_path().resolve())
+    result_json_path = _resolve_cli_path(result_json_path_value) or (working_dir / RESULT_JSON_FILENAME).resolve()
+    output_dir = _resolve_cli_path(output_dir_value) or working_dir
+    return RuntimePaths(
+        working_dir=working_dir,
+        tmp_dir=tmp_dir,
+        db_path=db_path,
+        result_json_path=result_json_path,
+        output_dir=output_dir,
+    )
+
+
+def _runtime_paths_from_inputs(inputs: dict[str, str], *, fallback_db_path: Path | None = None) -> RuntimePaths:
+    return _runtime_paths_from_values(
+        working_dir_value=inputs.get("working_dir", ""),
+        tmp_dir_value=inputs.get("tmp_dir", ""),
+        db_path_value=inputs.get("db_path", ""),
+        result_json_path_value=inputs.get("result_json_path", ""),
+        output_dir_value=inputs.get("output_dir", ""),
+        fallback_db_path=fallback_db_path,
+    )
+
+
+def _compat_runtime_paths_from_db_path(db_path: Path) -> RuntimePaths:
+    normalized_db_path = db_path.expanduser().resolve()
+    tmp_dir = normalized_db_path.parent
+    working_dir = tmp_dir.parent if tmp_dir.name == TMP_DIRNAME else tmp_dir
+    return _runtime_paths_from_values(
+        working_dir_value=str(working_dir),
+        tmp_dir_value=str(tmp_dir),
+        db_path_value=str(normalized_db_path),
+        result_json_path_value=str((working_dir / RESULT_JSON_FILENAME).resolve()),
+        output_dir_value=str(working_dir),
+        fallback_db_path=normalized_db_path,
+    )
+
+
+def _resolve_result_json_path(db_path: Path | None = None) -> Path:
+    if db_path is not None and db_path.exists():
+        try:
+            with connect_db(db_path) as connection:
+                inputs = fetch_runtime_inputs(connection)
+            return _runtime_paths_from_inputs(inputs, fallback_db_path=db_path).result_json_path
+        except Exception:  # noqa: BLE001
+            pass
+    return (Path.cwd().resolve() / RESULT_JSON_FILENAME).resolve()
+
+
+def _write_render_result_json(payload: dict[str, Any], *, result_json_path: Path | None = None) -> None:
+    _write_json((result_json_path or (Path.cwd().resolve() / RESULT_JSON_FILENAME)).resolve(), payload)
 
 
 def _record_action_receipt(
@@ -365,8 +454,8 @@ def _read_json_payload(path_value: str) -> dict[str, Any]:
     return json.loads(raw)
 
 
-def _default_dispatch_paths() -> DispatchPaths:
-    tmp_dir = Path.cwd() / TMP_DIRNAME
+def _default_dispatch_paths(runtime_paths: RuntimePaths | None = None) -> DispatchPaths:
+    tmp_dir = runtime_paths.tmp_dir if runtime_paths is not None else (Path.cwd().resolve() / TMP_DIRNAME)
     return DispatchPaths(
         source_md_path=tmp_dir / SOURCE_MD_FILENAME,
         source_meta_path=tmp_dir / SOURCE_META_FILENAME,
@@ -2760,26 +2849,90 @@ def _set_success_state(connection, *, stage: str, substep: str, next_action: str
     )
 
 
+def _handle_confirm_runtime_paths(args: argparse.Namespace) -> int:
+    working_dir = Path(args.working_dir).expanduser().resolve()
+    db_path = _resolve_cli_path(args.db_path) or (working_dir / TMP_DIRNAME / "literature_digest.db").resolve()
+    output_dir = _resolve_cli_path(args.output_dir) or working_dir
+    runtime_paths = _runtime_paths_from_values(
+        working_dir_value=str(working_dir),
+        tmp_dir_value=str(db_path.parent),
+        db_path_value=str(db_path),
+        result_json_path_value=str((working_dir / RESULT_JSON_FILENAME).resolve()),
+        output_dir_value=str(output_dir),
+        fallback_db_path=db_path,
+    )
+    initialize_database(runtime_paths.db_path)
+    with connect_db(runtime_paths.db_path) as connection:
+        set_runtime_input(connection, "working_dir", str(runtime_paths.working_dir))
+        set_runtime_input(connection, "tmp_dir", str(runtime_paths.tmp_dir))
+        set_runtime_input(connection, "db_path", str(runtime_paths.db_path))
+        set_runtime_input(connection, "result_json_path", str(runtime_paths.result_json_path))
+        set_runtime_input(connection, "output_dir", str(runtime_paths.output_dir))
+        _set_success_state(
+            connection,
+            stage="stage_0_bootstrap",
+            substep="bootstrap_runtime_db",
+            next_action="bootstrap_runtime_db",
+            status="runtime paths confirmed",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="confirm_runtime_paths",
+            stage="stage_0_bootstrap",
+            metadata={
+                "working_dir": str(runtime_paths.working_dir),
+                "tmp_dir": str(runtime_paths.tmp_dir),
+                "db_path": str(runtime_paths.db_path),
+                "result_json_path": str(runtime_paths.result_json_path),
+                "output_dir": str(runtime_paths.output_dir),
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "working_dir": str(runtime_paths.working_dir),
+                "tmp_dir": str(runtime_paths.tmp_dir),
+                "db_path": str(runtime_paths.db_path),
+                "result_json_path": str(runtime_paths.result_json_path),
+                "output_dir": str(runtime_paths.output_dir),
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     initialize_database(db_path)
-    output_dir = _normalized_output_dir(args.output_dir)
     with connect_db(db_path) as connection:
-        if args.source_path:
-            set_runtime_input(connection, "source_path", args.source_path)
+        inputs = fetch_runtime_inputs(connection)
+        if has_action_receipt(connection, "confirm_runtime_paths"):
+            runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        else:
+            runtime_paths = _compat_runtime_paths_from_db_path(db_path)
+            set_runtime_input(connection, "working_dir", str(runtime_paths.working_dir))
+            set_runtime_input(connection, "tmp_dir", str(runtime_paths.tmp_dir))
+            set_runtime_input(connection, "db_path", str(runtime_paths.db_path))
+            set_runtime_input(connection, "result_json_path", str(runtime_paths.result_json_path))
+            set_runtime_input(connection, "output_dir", str(runtime_paths.output_dir))
+        source_path = Path(args.source_path).expanduser().resolve() if args.source_path else None
+        if source_path is not None:
+            set_runtime_input(connection, "source_path", str(source_path))
         if args.language:
             set_runtime_input(connection, "language", args.language)
         if args.input_hash:
             set_runtime_input(connection, "input_hash", args.input_hash)
-        elif args.source_path and Path(args.source_path).exists():
-            set_runtime_input(connection, "input_hash", sha256_file(Path(args.source_path)))
+        elif source_path is not None and source_path.exists():
+            set_runtime_input(connection, "input_hash", sha256_file(source_path))
         if args.generated_at:
             set_runtime_input(connection, "generated_at", args.generated_at)
         else:
             set_runtime_input(connection, "generated_at", utc_now_iso())
         if args.model:
             set_runtime_input(connection, "model", args.model)
-        set_runtime_input(connection, "output_dir", str(output_dir))
         _set_success_state(
             connection,
             stage="stage_1_normalize_source",
@@ -2789,21 +2942,33 @@ def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
         )
         _record_action_receipt(connection, action_name="bootstrap_runtime_db", stage="stage_0_bootstrap")
         connection.commit()
-    print(json.dumps({"db_path": str(db_path), "output_dir": str(output_dir), "error": None}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "db_path": str(db_path),
+                "working_dir": str(runtime_paths.working_dir),
+                "output_dir": str(runtime_paths.output_dir),
+                "source_path": str(source_path) if source_path is not None else "",
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
 def _handle_normalize_source(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     initialize_database(db_path)
-    defaults = _default_dispatch_paths()
-    output_paths = DispatchPaths(
-        source_md_path=Path(args.out_md) if args.out_md else defaults.source_md_path,
-        source_meta_path=Path(args.out_meta) if args.out_meta else defaults.source_meta_path,
-    )
 
     with connect_db(db_path) as connection:
         inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        defaults = _default_dispatch_paths(runtime_paths)
+        output_paths = DispatchPaths(
+            source_md_path=Path(args.out_md).expanduser().resolve() if args.out_md else defaults.source_md_path,
+            source_meta_path=Path(args.out_meta).expanduser().resolve() if args.out_meta else defaults.source_meta_path,
+        )
         source_path_value = inputs.get("source_path", "")
         language = inputs.get("language", "zh-CN")
         model = inputs.get("model", "")
@@ -2955,7 +3120,7 @@ def _dispatch_source(
 
 
 def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
     outline_nodes, outline_error = _validate_outline_nodes_payload(payload.get("outline_nodes", []))
     references_scope, references_scope_error = _validate_scope_payload(payload.get("references_scope"), "references_scope")
@@ -3011,7 +3176,7 @@ def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
 
 
 def _handle_persist_digest(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
     digest_slots, section_summaries, error = _validate_digest_payload(payload)
     with connect_db(db_path) as connection:
@@ -3053,12 +3218,14 @@ def _handle_persist_digest(args: argparse.Namespace) -> int:
 
 
 def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
-    out_path = Path(args.out_path) if args.out_path else Path.cwd() / TMP_DIRNAME / REFERENCES_EXPORT_FILENAME
-    review_path = out_path.with_name(
-        REFERENCES_REVIEW_EXPORT_FILENAME if out_path.name == REFERENCES_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}"
-    )
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        out_path = Path(args.out_path).expanduser().resolve() if args.out_path else (runtime_paths.tmp_dir / REFERENCES_EXPORT_FILENAME)
+        review_path = out_path.with_name(
+            REFERENCES_REVIEW_EXPORT_FILENAME if out_path.name == REFERENCES_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}"
+        )
         source_doc = fetch_source_document(connection, "normalized_source")
         scope_row = fetch_section_scope(connection, "references_scope")
         if source_doc is None:
@@ -3165,14 +3332,16 @@ def _canonical_reference_scope_text(lines: list[str], scope: Scope) -> str:
 
 
 def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
-    out_path = Path(args.out_path) if args.out_path else Path.cwd() / TMP_DIRNAME / REFERENCES_EXPORT_FILENAME
-    review_path = out_path.with_name(
-        REFERENCES_REVIEW_EXPORT_FILENAME if out_path.name == REFERENCES_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}"
-    )
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
     blocks_payload = payload.get("blocks", [])
     with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        out_path = Path(args.out_path).expanduser().resolve() if args.out_path else (runtime_paths.tmp_dir / REFERENCES_EXPORT_FILENAME)
+        review_path = out_path.with_name(
+            REFERENCES_REVIEW_EXPORT_FILENAME if out_path.name == REFERENCES_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}"
+        )
         source_doc = fetch_source_document(connection, "normalized_source")
         scope_row = fetch_section_scope(connection, "references_scope")
         if source_doc is None or scope_row is None:
@@ -3389,7 +3558,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
 
 
 def _handle_persist_references(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
     items = payload.get("items", [])
     with connect_db(db_path) as connection:
@@ -3556,13 +3725,14 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
 
 
 def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
-    out_path = Path(args.out_path) if args.out_path else Path.cwd() / TMP_DIRNAME / CITATION_EXPORT_FILENAME
-    review_path = out_path.with_name(CITATION_REVIEW_EXPORT_FILENAME if out_path.name == CITATION_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}")
 
     with connect_db(db_path) as connection:
         inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        out_path = Path(args.out_path).expanduser().resolve() if args.out_path else (runtime_paths.tmp_dir / CITATION_EXPORT_FILENAME)
+        review_path = out_path.with_name(CITATION_REVIEW_EXPORT_FILENAME if out_path.name == CITATION_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}")
         source_doc = fetch_source_document(connection, "normalized_source")
         scope_row = fetch_section_scope(connection, "citation_scope")
         reference_items = fetch_reference_items(connection)
@@ -3754,7 +3924,7 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
 
 
 def _handle_export_citation_workset(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     with connect_db(db_path) as connection:
         scope_row = fetch_section_scope(connection, "citation_scope")
         if scope_row is None:
@@ -3808,7 +3978,7 @@ def _handle_export_citation_workset(args: argparse.Namespace) -> int:
 
 
 def _handle_persist_citation_semantics(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
 
     with connect_db(db_path) as connection:
@@ -3849,7 +4019,7 @@ def _handle_persist_citation_semantics(args: argparse.Namespace) -> int:
 
 
 def _handle_persist_citation_timeline(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
 
     with connect_db(db_path) as connection:
@@ -3877,7 +4047,7 @@ def _handle_persist_citation_timeline(args: argparse.Namespace) -> int:
 
 
 def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
     summary = payload.get("summary")
     basis = payload.get("basis")
@@ -3934,11 +4104,11 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
         for warning in _collect_render_semantic_warnings(connection):
             add_runtime_warning_once(connection, warning)
         inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
         source_path = inputs.get("source_path", "")
         if not source_path:
             raise RuntimeError("runtime_inputs.source_path missing")
-        output_dir_value = inputs.get("output_dir", "").strip()
-        output_root = _normalized_output_dir(output_dir_value)
+        output_root = runtime_paths.output_dir.resolve()
 
         digest_context = build_digest_render_context(connection)
         references_context = build_references_render_context(connection)
@@ -3950,10 +4120,10 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
         citation_context = build_citation_render_context(connection, report_md)
         citation_analysis_json = _render_json("citation_analysis.json.j2", citation_context, "citation_analysis.schema.json")
 
-        digest_path = output_root / DIGEST_FILENAME
-        references_path = output_root / REFERENCES_FILENAME
-        citation_analysis_path = output_root / CITATION_ANALYSIS_FILENAME
-        citation_report_path = output_root / CITATION_ANALYSIS_REPORT_FILENAME
+        digest_path = (output_root / DIGEST_FILENAME).resolve()
+        references_path = (output_root / REFERENCES_FILENAME).resolve()
+        citation_analysis_path = (output_root / CITATION_ANALYSIS_FILENAME).resolve()
+        citation_report_path = (output_root / CITATION_ANALYSIS_REPORT_FILENAME).resolve()
 
         _write_text(digest_path, digest_md)
         _write_text(references_path, references_json)
@@ -3971,7 +4141,8 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
 
 def _handle_render_and_validate(args: argparse.Namespace) -> int:
     mode = args.mode
-    db_path = Path(args.db_path) if args.db_path else default_db_path()
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    result_json_path = _resolve_result_json_path(db_path if mode == "render" else (db_path if args.db_path else None))
 
     if mode == "render":
         if args.source_path or args.preprocess_artifact or args.in_path or args.out_dir:
@@ -3986,7 +4157,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
                     "message": "render mode does not accept explicit source/preprocess/stdin/output-dir inputs; render output location is DB-authoritative",
                 },
             }
-            _write_render_result_json(payload)
+            _write_render_result_json(payload, result_json_path=result_json_path)
             print(json.dumps(payload, ensure_ascii=False))
             return 2
         with connect_db(db_path) as connection:
@@ -4003,7 +4174,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
                     "message": f"render mode failed before validation: {prereq_error}",
                 },
             }
-            _write_render_result_json(payload)
+            _write_render_result_json(payload, result_json_path=result_json_path)
             print(json.dumps(payload, ensure_ascii=False))
             return 2
         try:
@@ -4021,21 +4192,21 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
                     "message": f"render mode failed before validation: {exc}",
                 },
             }
-            _write_render_result_json(payload)
+            _write_render_result_json(payload, result_json_path=result_json_path)
             print(json.dumps(payload, ensure_ascii=False))
             return 2
         with connect_db(db_path) as connection:
             if errors:
                 set_runtime_error(connection, "citation_merge_failed", "; ".join(errors), "stage_6_render_and_validate")
                 connection.commit()
-                _write_render_result_json(payload)
+                _write_render_result_json(payload, result_json_path=result_json_path)
                 print(json.dumps(payload, ensure_ascii=False))
                 return 2
             _set_success_state(connection, stage="stage_7_completed", substep="render_and_validate", next_action="render_and_validate", status="artifacts rendered and validated")
             _record_action_receipt(connection, action_name="render_and_validate", stage="stage_6_render_and_validate")
             connection.commit()
             payload = build_public_output_payload(connection)
-        _write_render_result_json(payload)
+        _write_render_result_json(payload, result_json_path=result_json_path)
         print(json.dumps(payload, ensure_ascii=False))
         return 0 if payload.get("error") is None else 2
 
@@ -4075,6 +4246,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified stage runtime for literature-digest.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    confirm = subparsers.add_parser("confirm_runtime_paths")
+    confirm.add_argument("--working-dir", required=True)
+    confirm.add_argument("--output-dir", default="")
+    confirm.add_argument("--db-path", default="")
+    confirm.set_defaults(handler=_handle_confirm_runtime_paths)
+
     bootstrap = subparsers.add_parser("bootstrap_runtime_db")
     bootstrap.add_argument("--db-path", default="")
     bootstrap.add_argument("--source-path", default="")
@@ -4082,7 +4259,6 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--input-hash", default="")
     bootstrap.add_argument("--generated-at", default="")
     bootstrap.add_argument("--model", default="")
-    bootstrap.add_argument("--output-dir", default="")
     bootstrap.set_defaults(handler=_handle_bootstrap_runtime_db)
 
     normalize = subparsers.add_parser("normalize_source")
