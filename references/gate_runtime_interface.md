@@ -10,7 +10,7 @@
 - 读取 `workflow_state`
 - 检查当前阶段前置条件是否满足
 - 给出唯一 `next_action`
-- 返回当前动作应读取的文档与 SQL 示例
+- 返回当前动作应读取的文档，以及主路径脚本调用示例或 repair SQL 示例
 
 `gate_runtime.py` **不执行阶段动作**；阶段动作只能通过 `scripts/stage_runtime.py <next_action>` 执行。
 
@@ -98,12 +98,21 @@ stdout 只输出一个 JSON 对象，字段固定为：
   - 用途：
     - 收口当前一步最重要的即时约束
     - 与 `instruction_refs`、`core_instruction` 配合使用；`core_instruction` 给固定主指令，`execution_note` 给短提示，`instruction_refs` 给详细附录
+- `command_example: object|null`
+  - 当前动作的最小脚本调用示例。
+  - 每项结构：
+    - `command: string`
+    - `payload_example: object|null`
+    - `notes: string`
+  - 非 repair 阶段返回最小 `scripts/stage_runtime.py <next_action>` 调用方式。
+  - repair 阶段固定返回 `null`。
 - `sql_examples: object[]`
-  - 当前动作对应的最小 SQL 示例列表。
+  - repair 阶段对应的最小 SQL 示例列表。
   - 每项结构：
     - `purpose: string`
     - `sql: string`
     - `notes: string`
+  - 非 repair 阶段固定返回空数组 `[]`。
 - `resume_packet: object`
   - 恢复执行所需的最小上下文。
   - 包含：
@@ -202,15 +211,23 @@ stdout 只输出一个 JSON 对象，字段固定为：
   - repair 阶段额外补 `references/failure_recovery.md`
   - references 阶段会额外补 `references/bibliography_formats.md`
 
-## `sql_examples` 约束
+## `command_example` 约束
 
-`sql_examples` 只提供**当前 `next_action` 的最小 SQL 示例**，不提供全量 SQL 手册。
+`command_example` 是正常主路径当前 `next_action` 的最小脚本调用示例。
 
 使用方式：
 
-- 先看 `purpose`
-- 再决定是否直接使用 `sql`
-- 结合 `notes` 理解写入意图
+- 先看 `command`
+- 若该动作需要 payload，再看 `payload_example`
+- 最后看 `notes`
+
+- 正常主路径只参考 `command_example`
+- payload 类动作默认通过 `--payload-file <PATH>` 调用
+- `payload_example` 只展示最小合法 JSON，不替代阶段业务文档
+
+## `sql_examples` 约束
+
+`sql_examples` 只在 repair 阶段提供最小 SQL 示例，不提供全量 SQL 手册。
 
 如果当前动作是 repair，`sql_examples` 默认偏向：
 
@@ -281,7 +298,13 @@ gate 至少检查这些关键前置：
   "current_substep": "bootstrap_runtime_db",
   "stage_gate": "blocked",
   "next_action": "bootstrap_runtime_db",
-  "core_instruction": "## 核心执行指令\n..."
+  "core_instruction": "## 核心执行指令\n...",
+  "command_example": {
+    "command": "python scripts/stage_runtime.py bootstrap_runtime_db --db-path \"/abs/db.sqlite\" --source-path \"<SOURCE_PATH>\" --language \"zh-CN\" --output-dir \"<OUTPUT_DIR>\"",
+    "payload_example": null,
+    "notes": "This step reads prompt inputs, not a payload file."
+  },
+  "sql_examples": []
 }
 ```
 
@@ -294,7 +317,13 @@ gate 至少检查这些关键前置：
   "stage_gate": "ready",
   "next_action": "prepare_references_workset",
   "core_instruction": "## 核心执行指令\n...",
-  "execution_note": "Prepare the references workset from the stored references_scope first; let the script build entries, batches, and parse candidates."
+  "execution_note": "Prepare the references workset from the stored references_scope first; let the script build entries, batches, and parse candidates.",
+  "command_example": {
+    "command": "python scripts/stage_runtime.py prepare_references_workset --db-path \"/abs/db.sqlite\"",
+    "payload_example": null,
+    "notes": "This step reads references_scope from DB and prepares entries automatically."
+  },
+  "sql_examples": []
 }
 ```
 
@@ -305,6 +334,14 @@ gate 至少检查这些关键前置：
   "current_stage": "stage_6_render_and_validate",
   "stage_gate": "blocked",
   "next_action": "repair_db_state",
-  "status_summary": "missing prerequisites: digest_slots"
+  "status_summary": "missing prerequisites: digest_slots",
+  "command_example": null,
+  "sql_examples": [
+    {
+      "purpose": "inspect the missing prerequisite area",
+      "sql": "SELECT key, value FROM runtime_inputs UNION ALL SELECT doc_key AS key, substr(content, 1, 80) AS value FROM source_documents;",
+      "notes": "Adjust the query to the missing prerequisite named in status_summary."
+    }
+  ]
 }
 ```
