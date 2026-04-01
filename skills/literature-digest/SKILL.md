@@ -114,7 +114,8 @@ compatibility: Requires local filesystem read access to source_path; no network 
 - 每次正式写库后都必须重新运行 `scripts/gate_runtime.py`
 - 只能执行 gate 返回的 `next_action`
 - 若 gate 返回 blocker 或 repair 路径，必须先修复 DB 状态再继续
-- gate 输出中的 `instruction_refs`、`core_instruction`、`execution_note` 和 `sql_examples` 是当前动作的显式参考，不得跳过
+- 正常主路径下，gate 输出中的 `instruction_refs`、`core_instruction`、`execution_note` 和 `command_example` 是当前动作的显式参考，不得跳过
+- 只有当 gate 进入 repair 路径时，才额外参考 `sql_examples`
 
 ## LLM 与脚本职责边界
 
@@ -735,7 +736,7 @@ python scripts/stage_runtime.py render_and_validate --mode render
 执行当前阶段动作时，只按 gate 返回的 `instruction_refs` 读取以下运行时文档。它们是增强质量的附录，不是启动必读材料：
 
 - [gate_runtime_interface.md](references/gate_runtime_interface.md)
-  - `gate_runtime.py` 的 CLI、stdout payload、`next_action`、`instruction_refs`、`sql_examples` 与 exit code
+  - `gate_runtime.py` 的 CLI、stdout payload、`next_action`、`instruction_refs`、`command_example`、`sql_examples` 与 exit code
 - [stage_runtime_interface.md](references/stage_runtime_interface.md)
   - `stage_runtime.py` 的 subcommand、参数、payload 输入方式、字段说明、合法/非法示例、stdout 形状与副作用
 - [step_01_bootstrap_and_source.md](references/step_01_bootstrap_and_source.md)

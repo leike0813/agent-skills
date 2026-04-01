@@ -345,6 +345,8 @@ def _instruction_refs(stage: str, next_action: str) -> list[dict[str, str]]:
 
 
 def _sql_examples(stage: str, next_action: str) -> list[dict[str, str]]:
+    if not next_action.startswith("repair_"):
+        return []
     if next_action in ACTION_SQL_EXAMPLES:
         return ACTION_SQL_EXAMPLES[next_action]
     return [
@@ -354,6 +356,181 @@ def _sql_examples(stage: str, next_action: str) -> list[dict[str, str]]:
             "notes": "Fallback SQL example when no action-specific mapping exists.",
         }
     ]
+
+
+def _command_example(next_action: str, db_path: Path) -> dict[str, Any] | None:
+    if next_action.startswith("repair_"):
+        return None
+
+    db_arg = f'--db-path "{db_path}"'
+    payload_arg = '--payload-file "<PAYLOAD_FILE>"'
+
+    if next_action == "bootstrap_runtime_db":
+        return {
+            "command": (
+                "python scripts/stage_runtime.py bootstrap_runtime_db "
+                f'{db_arg} --source-path "<SOURCE_PATH>" --language "zh-CN" --output-dir "<OUTPUT_DIR>"'
+            ),
+            "payload_example": None,
+            "notes": "This step reads prompt inputs, not a payload file. Replace the placeholder values with the real source_path, language, and output_dir for this run.",
+        }
+    if next_action == "normalize_source":
+        return {
+            "command": f"python scripts/stage_runtime.py normalize_source {db_arg}",
+            "payload_example": None,
+            "notes": "This step reads source_path and language from DB and does not require a payload file.",
+        }
+    if next_action == "persist_outline_and_scopes":
+        return {
+            "command": f"python scripts/stage_runtime.py persist_outline_and_scopes {db_arg} {payload_arg}",
+            "payload_example": {
+                "outline_nodes": [
+                    {
+                        "node_id": "sec-1",
+                        "heading_level": 1,
+                        "title": "Introduction",
+                        "line_start": 1,
+                        "line_end": 40,
+                        "parent_node_id": None,
+                    }
+                ],
+                "references_scope": {
+                    "section_title": "References",
+                    "line_start": 200,
+                    "line_end": 260,
+                    "metadata": {},
+                },
+                "citation_scope": {
+                    "section_title": "Introduction",
+                    "line_start": 1,
+                    "line_end": 80,
+                    "metadata": {},
+                },
+            },
+            "notes": "Write this JSON to a payload file first, then pass it through --payload-file.",
+        }
+    if next_action == "persist_digest":
+        return {
+            "command": f"python scripts/stage_runtime.py persist_digest {db_arg} {payload_arg}",
+            "payload_example": {
+                "digest_slots": {
+                    "tldr": {"paragraphs": ["A concise digest paragraph."]},
+                    "research_question_and_contributions": {
+                        "research_question": "What problem does the paper solve?",
+                        "contributions": ["Contribution 1"],
+                    },
+                    "method_highlights": {"items": ["Method highlight"]},
+                    "key_results": {"items": ["Key result"]},
+                    "limitations_and_reproducibility": {"items": ["Limitation or reproducibility note"]},
+                },
+                "section_summaries": [
+                    {"source_heading": "Introduction", "items": ["Section summary item"]}
+                ],
+            },
+            "notes": "Write structured digest_slots and section_summaries only; the script renders final Markdown later.",
+        }
+    if next_action == "prepare_references_workset":
+        return {
+            "command": f"python scripts/stage_runtime.py prepare_references_workset {db_arg}",
+            "payload_example": None,
+            "notes": "This step reads references_scope from DB and prepares entries, candidates, and batches automatically.",
+        }
+    if next_action == "persist_reference_entry_splits":
+        return {
+            "command": f"python scripts/stage_runtime.py persist_reference_entry_splits {db_arg} {payload_arg}",
+            "payload_example": {
+                "blocks": [
+                    {
+                        "block_index": 0,
+                        "resolution": "split",
+                        "entries": [
+                            "Author, A. 2020. First reference entry.",
+                            "Author, B. 2021. Second reference entry.",
+                        ],
+                    }
+                ]
+            },
+            "notes": "Review only suspect block boundaries here. Keep original text and order; do not extract author/title/year in this step.",
+        }
+    if next_action == "persist_references":
+        return {
+            "command": f"python scripts/stage_runtime.py persist_references {db_arg} {payload_arg}",
+            "payload_example": {
+                "items": [
+                    {
+                        "entry_index": 0,
+                        "selected_pattern": "authors_colon_title_in_year",
+                        "author": ["Author, A."],
+                        "title": "Reference title",
+                        "year": 2020,
+                        "raw": "Author, A. 2020. Reference title.",
+                        "confidence": 0.9,
+                    }
+                ]
+            },
+            "notes": "Select one prepared pattern per entry and refine the final structured reference items.",
+        }
+    if next_action == "prepare_citation_workset":
+        return {
+            "command": f"python scripts/stage_runtime.py prepare_citation_workset {db_arg}",
+            "payload_example": None,
+            "notes": "This step reads citation_scope and reference_items from DB and prepares mentions/workset items automatically.",
+        }
+    if next_action == "persist_citation_semantics":
+        return {
+            "command": f"python scripts/stage_runtime.py persist_citation_semantics {db_arg} {payload_arg}",
+            "payload_example": {
+                "items": [
+                    {
+                        "ref_index": 0,
+                        "function": "background",
+                        "topic": "Transformer architecture",
+                        "usage": "The paper cites this work to establish the core model background.",
+                        "keywords": ["transformer", "architecture"],
+                        "summary": "The source paper uses this citation to ground its main architectural assumptions.",
+                        "is_key_reference": True,
+                        "confidence": 0.9,
+                    }
+                ]
+            },
+            "notes": "Summaries must explain how the source paper uses each citation, not just what the cited work is.",
+        }
+    if next_action == "persist_citation_timeline":
+        return {
+            "command": f"python scripts/stage_runtime.py persist_citation_timeline {db_arg} {payload_arg}",
+            "payload_example": {
+                "timeline": {
+                    "early": {"summary": "Early line of work.", "ref_indexes": [0]},
+                    "mid": {"summary": "Middle-period line of work.", "ref_indexes": []},
+                    "recent": {"summary": "Recent line of work.", "ref_indexes": []},
+                }
+            },
+            "notes": "Cover each citation item with a stable year exactly once across early/mid/recent buckets.",
+        }
+    if next_action == "persist_citation_summary":
+        return {
+            "command": f"python scripts/stage_runtime.py persist_citation_summary {db_arg} {payload_arg}",
+            "payload_example": {
+                "summary": "The source paper organizes prior work into a clear research narrative.",
+                "basis": {
+                    "research_threads": ["Thread 1", "Thread 2"],
+                    "argument_shape": ["Move 1", "Move 2"],
+                    "key_ref_indexes": [0],
+                },
+            },
+            "notes": "Write a narrative global summary grounded in persisted citation_items and citation_timeline.",
+        }
+    if next_action == "render_and_validate":
+        return {
+            "command": f"python scripts/stage_runtime.py render_and_validate {db_arg} --mode render",
+            "payload_example": None,
+            "notes": "This step reads only DB state and writes final public artifacts plus literature-digest.result.json.",
+        }
+    return {
+        "command": f"python scripts/stage_runtime.py {next_action} {db_arg}",
+        "payload_example": None,
+        "notes": "Use the current next_action exactly as returned by gate.",
+    }
 
 
 def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> str:
@@ -502,6 +679,7 @@ def _payload(
         "instruction_refs": _instruction_refs(current_stage, next_action),
         "core_instruction": _core_instruction(),
         "execution_note": _execution_note(current_stage, next_action, stage_gate),
+        "command_example": _command_example(next_action, db_path),
         "sql_examples": _sql_examples(current_stage, next_action),
         "resume_packet": {
             "db_path": str(db_path),
