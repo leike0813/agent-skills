@@ -1,0 +1,56 @@
+{#-
+Runtime source template: English.
+- Copy this verbatim into `<tmp_dir>/templates/citation_analysis.runtime.md.j2` for en-* targets.
+-#}
+## Citation Signals In Review Scope
+
+### Summary
+{{ summary }}
+
+{% if key_references %}
+### Key References
+{% for item in key_references %}
+- {{ item.citation_label }} {{ item.author_year_label }}{% if item.title %}: {{ item.title }}{% endif %}{% if item.function_label %} ({{ item.function_label }}){% endif %}
+{% endfor %}
+{% endif %}
+
+### Scope
+- Section: {{ scope.section_title }}
+- Lines: {{ scope.line_start }}-{{ scope.line_end }}
+
+### By Function
+{% if grouped_items %}
+{% for group in grouped_items %}
+#### {{ group.function_label }}
+{% for item in group["items"] %}
+- {{ item.citation_label }} {{ item.author_year_label }}
+  - Title: {{ item.title or "[missing]" }}
+  - Keywords: {{ item.keywords | join(", ") if item.keywords else "[none]" }}
+  - Summary: {{ item.summary }}
+{% endfor %}
+
+{% endfor %}
+{% else %}
+- No stable mapped citations in this scope.
+{% endif %}
+
+### Timeline Analysis
+{% for bucket_name, bucket_label in [("early", "Early"), ("mid", "Mid"), ("recent", "Recent")] %}
+#### {{ bucket_label }}
+{{ timeline[bucket_name]["summary"] }}
+{% if timeline[bucket_name]["items"] %}
+{% for item in timeline[bucket_name]["items"] %}
+- {{ item.citation_label }} {{ item.author_year_label }}{% if item.title %}: {{ item.title }}{% endif %}
+{% endfor %}
+{% else %}
+- No representative references in this bucket.
+{% endif %}
+
+{% endfor %}
+
+{% if unmapped_mentions %}
+### Unmapped Mentions
+{% for mention in unmapped_mentions %}
+- {{ mention.marker }}{% if mention.reason %} ({{ mention.reason }}){% endif %}{% if mention.snippet %}: {{ mention.snippet }}{% endif %}
+{% endfor %}
+{% endif %}

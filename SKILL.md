@@ -19,7 +19,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
 5. 所有语义判断结果都必须先整理为结构化 payload，再通过 `scripts/stage_runtime.py <next_action>` 写入 SQLite。
 6. 一旦某项决策已经在前序阶段写入 DB，后续阶段只能从 DB 读取，不能重新指定。
 7. 不要直接写 SQLite 表来伪造阶段完成；阶段推进必须由对应脚本动作成功写库。
-8. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 渲染生成。
+8. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 与已固化的运行时模板渲染生成。
 9. **最终 assistant 输出必须是一个 JSON 对象，并且必须满足 stdout schema。**
 
 成功态 stdout JSON 示例：
@@ -63,7 +63,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
 ## 输入输出硬契约
 
 - 输入只读取 prompt payload 中的 `source_path` 与 `language`
-- `source_path` 是唯一内容来源；输入可为 Markdown、PDF 或无扩展名文件
+- `source_path` 是唯一内容来源；输入可为 Markdown、PDF、单文件 `.tex`、LaTeX 工程目录或无扩展名文件
 - stdout 必须包含：
   - `digest_path`
   - `references_path`
@@ -149,7 +149,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 适用动作：`bootstrap_runtime_db`
 - `language`
   - 中文名：输出语言
-  - 定义：控制 digest 与 citation 分析语言；缺省回退 `zh-CN`。
+  - 定义：控制 digest 与 citation 分析语言；若用户显式指定则直接使用，否则先从 prompt 主要语言推断，仅在无法稳定判断时回退 `zh-CN`。
   - 适用动作：`bootstrap_runtime_db`
 - `working_dir`
   - 中文名：工作目录
@@ -171,6 +171,14 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 中文名：产物输出目录
   - 定义：目录确认步骤写入 DB 的最终公开产物目录；stage 6 只读取它，不再临时覆盖。
   - 适用动作：`confirm_runtime_paths`
+- `digest_template_path`
+  - 中文名：digest 运行时模板路径
+  - 定义：`persist_render_templates` 写入 `<tmp_dir>/templates/` 后登记到 DB 的 digest Markdown 模板绝对路径；render 只读取它。
+  - 适用动作：`persist_render_templates`
+- `citation_analysis_template_path`
+  - 中文名：引文报告运行时模板路径
+  - 定义：`persist_render_templates` 写入 `<tmp_dir>/templates/` 后登记到 DB 的 citation Markdown 模板绝对路径；render 只读取它。
+  - 适用动作：`persist_render_templates`
 - `outline_nodes`
   - 中文名：大纲节点
   - 定义：按原文顺序组织的章节骨架，用来支撑后续 digest 与 scope 决策。
@@ -319,19 +327,48 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
 ```
 - 必须提供的参数 / payload：
   - CLI 参数：`--source-path`
-  - CLI 参数：`--language`（可省略，脚本会回退默认值）
+  - CLI 参数：`--language`
 - 各 payload 字段含义：
   - `source_path`：唯一内容来源文件路径
-  - `language`：后续 digest 与 citation 分析语言
+  - `language`：后续 digest 与 citation 分析语言；先用用户显式指定值，否则由 agent 从 prompt 主要语言推断，仅在无法稳定判断时回退 `zh-CN`
 - 最小合法示例：
 ```bash
-python scripts/stage_runtime.py bootstrap_runtime_db --source-path "/tmp/paper.md" --language "zh-CN"
+python scripts/stage_runtime.py bootstrap_runtime_db --source-path "/tmp/paper.md" --language "<TARGET_LANGUAGE_FROM_PROMPT>"
 ```
 - 完成后应该看到的 gate 结果：
   - 再运行一次 `python scripts/gate_runtime.py`
-  - `next_action` 应推进为 `normalize_source`
+  - `next_action` 应推进为 `persist_render_templates`
 
-### 3. `normalize_source`
+### 3. `persist_render_templates`
+
+- 何时执行：
+  - `bootstrap_runtime_db` 成功后，且 gate 返回 `persist_render_templates`
+- 调用命令：
+```bash
+python scripts/stage_runtime.py persist_render_templates --payload-file /tmp/render_templates.json
+```
+- 必须提供的参数 / payload：
+  - `target_language`
+  - `digest_template`
+  - `citation_analysis_template`
+- 各 payload 字段含义：
+  - `target_language`：本次 run 最终要渲染的目标语言；必须与 bootstrap 已写入的 `language` 一致
+  - `digest_template`：本次 run 专用的 digest Markdown 运行时模板
+  - `citation_analysis_template`：本次 run 专用的 citation Markdown 运行时模板
+  - `en-*` / `zh-*`：直接复制仓库内对应 source template
+  - 其它语言：先基于仓库 source template 翻译，再写入这两个字段
+- 最小合法示例：
+```json
+{
+  "target_language": "fr-FR",
+  "digest_template": "## TL;DR\n{% for paragraph in digest_slots.tldr.paragraphs %}\n{{ paragraph }}\n{% endfor %}\n",
+  "citation_analysis_template": "## Signaux de citation dans la section de revue\n\n### Résumé\n{{ summary }}\n"
+}
+```
+- 完成后应该看到的 gate 结果：
+  - 再运行 gate 后，`next_action` 应推进为 `normalize_source`
+
+### 4. `normalize_source`
 
 - 何时执行：
   - `bootstrap_runtime_db` 成功后，且 gate 返回 `normalize_source`
@@ -344,6 +381,9 @@ python scripts/stage_runtime.py normalize_source [--out-md "/abs/path/source.md"
 - 各参数含义：
   - `--out-md`：可选物化标准化文本
   - `--out-meta`：可选物化标准化元数据
+  - 单文件 `.tex`：原文直接包进 ` ```tex ` fence写入 `source.md`
+  - LaTeX 工程目录：自动检测主入口、展平 `\input` / `\include`，再整体包进 ` ```tex ` fence
+  - 若检测到 `.bib`：把 `.bib` 原文追加到 `source.md` 尾部的 ` ```bibtex ` fence，并明确标记该段直接复制自 `.bib`
 - 最小合法示例：
 ```bash
 python scripts/stage_runtime.py normalize_source
@@ -351,7 +391,7 @@ python scripts/stage_runtime.py normalize_source
 - 完成后应该看到的 gate 结果：
   - 再运行 gate 后，`next_action` 应推进为 `persist_outline_and_scopes`
 
-### 4. `persist_outline_and_scopes`
+### 5. `persist_outline_and_scopes`
 
 - 何时执行：
   - `normalize_source` 成功后，且 gate 返回 `persist_outline_and_scopes`
@@ -418,7 +458,7 @@ python scripts/stage_runtime.py persist_outline_and_scopes --payload-file /tmp/o
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_digest`
 
-### 5. `persist_digest`
+### 6. `persist_digest`
 
 - 何时执行：
   - `persist_outline_and_scopes` 成功后，且 gate 返回 `persist_digest`
@@ -459,7 +499,7 @@ python scripts/stage_runtime.py persist_digest --payload-file /tmp/digest_payloa
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `prepare_references_workset`
 
-### 6. `prepare_references_workset`
+### 7. `prepare_references_workset`
 
 - 何时执行：
   - `persist_digest` 成功后，且 gate 返回 `prepare_references_workset`
@@ -471,6 +511,8 @@ python scripts/stage_runtime.py prepare_references_workset --out /tmp/references
   - 无业务 payload；本步只读标准化文本与 `references_scope`
 - 各输出字段含义：
   - 本步默认按行切分；若单行里明显存在第二条文献起点，脚本会在该行内部继续 split；若像跨行续写，只会标记为 suspect block，不会自动合并
+  - 若 scope 中出现 `\bibitem{...}`：脚本会按 `\bibitem` 起点切条
+  - 若 scope 落在 ` ```bibtex ` fence：脚本会按顶层 `@type{key,` 起点切条，并优先从 bib 字段直读 `author/title/year/container`
   - `workset_path`：完整 references workset 导出路径；每个条目带 `patterns[]`
   - `review_path`：轻量审阅视图路径；包含 block 级审阅信息与条目级候选摘要
   - `stored_reference_entries`：本次切分出的 raw 条目数量
@@ -488,7 +530,7 @@ python scripts/stage_runtime.py prepare_references_workset --out /tmp/references
   - 若 `requires_split_review=false`：`next_action` 应推进为 `persist_references`
   - 若 `requires_split_review=true`：`next_action` 应推进为 `persist_reference_entry_splits`
 
-### 7. `persist_reference_entry_splits`
+### 8. `persist_reference_entry_splits`
 
 - 何时执行：
   - 只有当 `prepare_references_workset` 返回 `requires_split_review=true`，且 gate 返回 `persist_reference_entry_splits`
@@ -520,7 +562,7 @@ python scripts/stage_runtime.py persist_reference_entry_splits --payload-file /t
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_references`
 
-### 8. `persist_references`
+### 9. `persist_references`
 
 - 何时执行：
   - `prepare_references_workset` 成功且不需要 split review，或 `persist_reference_entry_splits` 成功后，且 gate 返回 `persist_references`
@@ -559,7 +601,7 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - 非法：`["Al-Rfou", "R.", "Choe", "D.", "Constant", "N.", "Guo", "M.", "Jones", "L."]`
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `prepare_citation_workset`
-### 9. `prepare_citation_workset`
+### 10. `prepare_citation_workset`
 
 - 何时执行：
   - `persist_references` 成功后，且 gate 返回 `prepare_citation_workset`
@@ -573,6 +615,8 @@ python scripts/stage_runtime.py prepare_citation_workset [--out /tmp/workset.jso
   - `scope`：本次实际使用的 citation 范围
   - `scope_source`：范围来源
   - `scope_decision`：范围选择与 fallback 说明
+  - 对 LaTeX 输入，脚本额外识别 `\cite{...}`、`\citep{...}`、`\citet{...}` 与多 key 形式
+  - 若 `reference_items` 元数据中存在 `citekey` 或 `bibitem_key`，映射优先按这些 key 进行
   - `resolved_items`：已成功聚合的 workset 数量
   - `unresolved_mentions`：无法稳定映射的 mention 数量
   - `filtered_false_positive_mentions`：被去噪规则过滤掉的图片链接、URL、资源路径或日期型假阳性数量
@@ -584,7 +628,7 @@ python scripts/stage_runtime.py prepare_citation_workset --out /tmp/workset.json
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_semantics`
 
-### 10. `persist_citation_semantics`
+### 11. `persist_citation_semantics`
 
 - 何时执行：
   - `prepare_citation_workset` 成功后，且 gate 返回 `persist_citation_semantics`
@@ -623,7 +667,7 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_timeline`
 
-### 11. `persist_citation_timeline`
+### 12. `persist_citation_timeline`
 
 - 何时执行：
   - `persist_citation_semantics` 成功后，且 gate 返回 `persist_citation_timeline`
@@ -659,7 +703,7 @@ python scripts/stage_runtime.py persist_citation_timeline --payload-file /tmp/ci
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_summary`
 
-### 12. `persist_citation_summary`
+### 13. `persist_citation_summary`
 
 - 何时执行：
   - `persist_citation_timeline` 成功后，且 gate 返回 `persist_citation_summary`
@@ -696,7 +740,7 @@ python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/cit
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `render_and_validate`
 
-### 13. `render_and_validate --mode render`
+### 14. `render_and_validate --mode render`
 
 - 何时执行：
   - `persist_citation_summary` 成功后，且 gate 返回 `render_and_validate`

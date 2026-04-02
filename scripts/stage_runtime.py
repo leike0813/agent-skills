@@ -77,12 +77,21 @@ from runtime_db import (  # noqa: E402
 TMP_DIRNAME = ".literature_digest_tmp"
 SOURCE_MD_FILENAME = "source.md"
 SOURCE_META_FILENAME = "source_meta.json"
+RUNTIME_TEMPLATES_DIRNAME = "templates"
+RUNTIME_DIGEST_TEMPLATE_FILENAME = "digest.runtime.md.j2"
+RUNTIME_CITATION_TEMPLATE_FILENAME = "citation_analysis.runtime.md.j2"
 CITATION_EXPORT_FILENAME = "citation_workset_export.json"
 CITATION_REVIEW_EXPORT_FILENAME = "citation_workset_review.json"
 REFERENCES_EXPORT_FILENAME = "references_workset_export.json"
 REFERENCES_REVIEW_EXPORT_FILENAME = "references_workset_review.json"
 RESULT_JSON_FILENAME = "literature-digest.result.json"
 PDF_SIGNATURE = b"%PDF-"
+LATEX_INCLUDE_RE = re.compile(r"\\(?:input|include)\{([^}]+)\}")
+LATEX_BIBLIOGRAPHY_RE = re.compile(r"\\bibliography\{([^}]+)\}")
+LATEX_ADDBIBRESOURCE_RE = re.compile(r"\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\}")
+LATEX_BIBITEM_RE = re.compile(r"\\bibitem\{([^}]+)\}")
+LATEX_CITE_RE = re.compile(r"\\cite(?:p|t|author|year)?(?:\[[^\]]*\]){0,2}\{([^}]+)\}")
+BIBTEX_ENTRY_START_RE = re.compile(r"(?m)^\s*@([A-Za-z]+)\s*\{\s*([^,\s]+)\s*,")
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 BRACKET_NUMERIC_RE = re.compile(r"\[([^\[\]\n]{1,160})\]")
@@ -145,6 +154,7 @@ TJ_SINGLE_RE = re.compile(r"(\((?:\\.|[^\\)])*\))\s*Tj")
 ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
     "confirm_runtime_paths": [
         "bootstrap_runtime_db",
+        "persist_render_templates",
         "normalize_source",
         "persist_outline_and_scopes",
         "persist_digest",
@@ -158,6 +168,20 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "render_and_validate",
     ],
     "bootstrap_runtime_db": [
+        "persist_render_templates",
+        "normalize_source",
+        "persist_outline_and_scopes",
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "persist_references",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_render_templates": [
         "normalize_source",
         "persist_outline_and_scopes",
         "persist_digest",
@@ -259,6 +283,7 @@ STAGE_ERROR_CODES = {
     "citation_report_failed",
     "citation_merge_failed",
     "normalize_source_failed",
+    "render_templates_failed",
 }
 ALLOWED_CITATION_FUNCTIONS = {
     "background",
@@ -292,6 +317,12 @@ class RuntimePaths:
 
 
 @dataclass
+class RuntimeTemplatePaths:
+    digest_template_path: Path
+    citation_analysis_template_path: Path
+
+
+@dataclass
 class Scope:
     section_title: str
     line_start: int
@@ -308,6 +339,22 @@ def sha256_file(path: Path) -> str:
     with path.open("rb") as file:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             sha.update(chunk)
+    return f"sha256:{sha.hexdigest()}"
+
+
+def sha256_path(path: Path) -> str:
+    resolved = path.expanduser().resolve()
+    if resolved.is_file():
+        return sha256_file(resolved)
+
+    sha = hashlib.sha256()
+    for child in sorted(p for p in resolved.rglob("*") if p.is_file()):
+        relative = child.relative_to(resolved).as_posix().encode("utf-8")
+        sha.update(relative)
+        sha.update(b"\0")
+        with child.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                sha.update(chunk)
     return f"sha256:{sha.hexdigest()}"
 
 
@@ -462,7 +509,55 @@ def _default_dispatch_paths(runtime_paths: RuntimePaths | None = None) -> Dispat
     )
 
 
+def _runtime_templates_dir(runtime_paths: RuntimePaths) -> Path:
+    return (runtime_paths.tmp_dir / RUNTIME_TEMPLATES_DIRNAME).resolve()
+
+
+def _repo_digest_template_path(language: str) -> Path:
+    if language.lower().startswith("en"):
+        return (TEMPLATES_DIR / "digest.en-US.md.j2").resolve()
+    return (TEMPLATES_DIR / "digest.zh-CN.md.j2").resolve()
+
+
+def _repo_citation_template_path(language: str) -> Path:
+    if language.lower().startswith("en"):
+        return (TEMPLATES_DIR / "citation_analysis.en-US.md.j2").resolve()
+    return (TEMPLATES_DIR / "citation_analysis.zh-CN.md.j2").resolve()
+
+
+def _runtime_template_paths_from_inputs(
+    inputs: dict[str, str],
+    *,
+    runtime_paths: RuntimePaths,
+    allow_repo_fallback: bool,
+) -> RuntimeTemplatePaths:
+    digest_template_path = _resolve_cli_path(inputs.get("digest_template_path", ""))
+    citation_template_path = _resolve_cli_path(inputs.get("citation_analysis_template_path", ""))
+    if digest_template_path is not None and citation_template_path is not None:
+        return RuntimeTemplatePaths(
+            digest_template_path=digest_template_path.resolve(),
+            citation_analysis_template_path=citation_template_path.resolve(),
+        )
+    if allow_repo_fallback:
+        language = inputs.get("language", "") or "zh-CN"
+        return RuntimeTemplatePaths(
+            digest_template_path=_repo_digest_template_path(language),
+            citation_analysis_template_path=_repo_citation_template_path(language),
+        )
+    templates_dir = _runtime_templates_dir(runtime_paths)
+    return RuntimeTemplatePaths(
+        digest_template_path=(templates_dir / RUNTIME_DIGEST_TEMPLATE_FILENAME).resolve(),
+        citation_analysis_template_path=(templates_dir / RUNTIME_CITATION_TEMPLATE_FILENAME).resolve(),
+    )
+
+
 def _detect_source_type(source_path: Path) -> tuple[str | None, str | None, str | None]:
+    if source_path.is_dir():
+        tex_candidates = sorted(source_path.rglob("*.tex"))
+        if tex_candidates:
+            return "latex_project", "latex_project_directory", None
+        return None, None, "input directory does not contain any .tex files"
+
     try:
         head = source_path.read_bytes()[:8]
     except Exception as exc:  # noqa: BLE001
@@ -472,21 +567,27 @@ def _detect_source_type(source_path: Path) -> tuple[str | None, str | None, str 
         return "pdf", "pdf_signature", None
 
     try:
-        source_path.read_text(encoding="utf-8")
+        text = source_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return None, None, "input is neither PDF signature nor UTF-8 text"
     except Exception as exc:  # noqa: BLE001
         return None, None, f"read source as utf-8 failed: {exc}"
 
+    if source_path.suffix.lower() == ".tex" or "\\documentclass" in text or "\\begin{document}" in text:
+        return "latex_tex", "latex_text_markers", None
     return "markdown", "utf8_text", None
 
 
 def _extension_warning(source_path: Path, source_type: str) -> list[str]:
+    if source_path.is_dir():
+        return []
     suffix = source_path.suffix.lower()
     if not suffix:
         return []
     if source_type == "pdf" and suffix != ".pdf":
         return [f"source_path extension '{suffix}' ignored; content detected as PDF"]
+    if source_type == "latex_tex" and suffix != ".tex":
+        return [f"source_path extension '{suffix}' ignored; content detected as LaTeX"]
     if source_type == "markdown" and suffix not in (".md", ".markdown", ".txt"):
         return [f"source_path extension '{suffix}' ignored; content detected as UTF-8 text"]
     return []
@@ -527,6 +628,187 @@ def _quality_markers(markdown_text: str) -> dict[str, Any]:
 
 def _convert_markdown_source(source_path: Path) -> str:
     return source_path.read_text(encoding="utf-8")
+
+
+def _detect_main_tex_path(project_dir: Path) -> Path | None:
+    candidates = sorted(path for path in project_dir.rglob("*.tex") if path.is_file())
+    if not candidates:
+        return None
+
+    scored: list[tuple[int, Path]] = []
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        score = 0
+        if "\\documentclass" in text:
+            score += 10
+        if "\\begin{document}" in text:
+            score += 10
+        stem = path.stem.lower()
+        if stem in {"main", "paper", "manuscript"}:
+            score += 4
+        if "main" in path.name.lower():
+            score += 2
+        scored.append((score, path))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], len(item[1].parts), str(item[1])))
+    return scored[0][1]
+
+
+def _resolve_latex_include(base_dir: Path, target: str) -> Path:
+    candidate = target.strip()
+    if not candidate:
+        return (base_dir / "__missing__.tex").resolve()
+    raw_path = (base_dir / candidate).expanduser()
+    if raw_path.suffix:
+        return raw_path.resolve()
+    return raw_path.with_suffix(".tex").resolve()
+
+
+def _flatten_latex_text(
+    text: str,
+    *,
+    base_dir: Path,
+    project_root: Path,
+    visited: set[Path],
+    included_tex_files: list[str],
+) -> str:
+    def replace_include(match: re.Match[str]) -> str:
+        include_target = match.group(1).strip()
+        include_path = _resolve_latex_include(base_dir, include_target)
+        try:
+            relative_label = include_path.relative_to(project_root).as_posix()
+        except ValueError:
+            relative_label = include_path.name
+        if not include_path.exists():
+            return f"\n% >>> MISSING INCLUDE: {relative_label}\n"
+        if include_path in visited:
+            return f"\n% >>> SKIPPED CYCLIC INCLUDE: {relative_label}\n"
+        visited.add(include_path)
+        included_tex_files.append(str(include_path))
+        nested_text = include_path.read_text(encoding="utf-8")
+        flattened_nested = _flatten_latex_text(
+            nested_text,
+            base_dir=include_path.parent,
+            project_root=project_root,
+            visited=visited,
+            included_tex_files=included_tex_files,
+        )
+        return (
+            f"\n% >>> BEGIN INCLUDED FILE: {relative_label}\n"
+            f"{flattened_nested.rstrip()}\n"
+            f"% <<< END INCLUDED FILE: {relative_label}\n"
+        )
+
+    return LATEX_INCLUDE_RE.sub(replace_include, text)
+
+
+def _resolve_bib_files(tex_text: str, *, base_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for match in LATEX_BIBLIOGRAPHY_RE.finditer(tex_text):
+        for item in match.group(1).split(","):
+            candidate = item.strip()
+            if not candidate:
+                continue
+            path = (base_dir / candidate).expanduser()
+            resolved = (path if path.suffix else path.with_suffix(".bib")).resolve()
+            if resolved.exists() and resolved not in seen:
+                seen.add(resolved)
+                paths.append(resolved)
+    for match in LATEX_ADDBIBRESOURCE_RE.finditer(tex_text):
+        candidate = match.group(1).strip()
+        if not candidate:
+            continue
+        path = (base_dir / candidate).expanduser()
+        resolved = (path if path.suffix else path.with_suffix(".bib")).resolve()
+        if resolved.exists() and resolved not in seen:
+            seen.add(resolved)
+            paths.append(resolved)
+    return paths
+
+
+def _render_fenced_latex_source(
+    *,
+    tex_text: str,
+    tex_label: str,
+    bib_blocks: list[tuple[str, str]],
+) -> str:
+    parts = [
+        f"<!-- normalized_source copied directly from LaTeX source: {tex_label} -->",
+        "```tex",
+        tex_text.rstrip(),
+        "```",
+    ]
+    if bib_blocks:
+        parts.extend(
+            [
+                "",
+                "<!-- The following bibliography block(s) were copied directly from .bib files, not expanded from LaTeX \\bibitem. -->",
+            ]
+        )
+        for bib_label, bib_text in bib_blocks:
+            parts.extend(
+                [
+                    "",
+                    f"<!-- bibliography source: {bib_label} -->",
+                    "```bibtex",
+                    bib_text.rstrip(),
+                    "```",
+                ]
+            )
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _normalize_latex_source(source_path: Path) -> tuple[str, dict[str, Any]]:
+    if source_path.is_dir():
+        main_tex_path = _detect_main_tex_path(source_path)
+        if main_tex_path is None:
+            raise RuntimeError("unable to detect main LaTeX entry file in project directory")
+        raw_text = main_tex_path.read_text(encoding="utf-8")
+        included_tex_files: list[str] = []
+        flattened = _flatten_latex_text(
+            raw_text,
+            base_dir=main_tex_path.parent,
+            project_root=source_path.resolve(),
+            visited={main_tex_path.resolve()},
+            included_tex_files=included_tex_files,
+        )
+        bib_paths = _resolve_bib_files(flattened, base_dir=main_tex_path.parent)
+        bib_blocks = [(str(path), path.read_text(encoding="utf-8")) for path in bib_paths]
+        markdown = _render_fenced_latex_source(
+            tex_text=flattened,
+            tex_label=str(main_tex_path),
+            bib_blocks=bib_blocks,
+        )
+        return markdown, {
+            "source_type": "latex_project",
+            "detection_method": "latex_project_directory",
+            "conversion_backend": "fenced_raw_latex",
+            "main_tex_path": str(main_tex_path),
+            "included_tex_files": included_tex_files,
+            "bib_files": [str(path) for path in bib_paths],
+        }
+
+    tex_text = source_path.read_text(encoding="utf-8")
+    bib_paths = _resolve_bib_files(tex_text, base_dir=source_path.parent)
+    bib_blocks = [(str(path), path.read_text(encoding="utf-8")) for path in bib_paths]
+    markdown = _render_fenced_latex_source(
+        tex_text=tex_text,
+        tex_label=str(source_path),
+        bib_blocks=bib_blocks,
+    )
+    return markdown, {
+        "source_type": "latex_tex",
+        "detection_method": "latex_text_markers",
+        "conversion_backend": "fenced_raw_latex",
+        "main_tex_path": str(source_path),
+        "included_tex_files": [],
+        "bib_files": [str(path) for path in bib_paths],
+    }
 
 
 def _convert_pdf_with_pymupdf4llm(source_path: Path) -> str:
@@ -940,8 +1222,11 @@ def _count_false_positive_noise(line: str) -> int:
 def _is_false_positive_mention(mention: dict[str, Any]) -> bool:
     marker = str(mention.get("marker", "")).strip()
     snippet = str(mention.get("snippet", "")).strip()
+    style = str(mention.get("style", "")).lower()
     if not marker and not snippet:
         return True
+    if style == "latex-cite":
+        return False
     if DATE_LIKE_RE.search(marker) or DATE_LIKE_RE.search(snippet):
         return True
     if RESOURCE_SUFFIX_RE.search(marker) or RESOURCE_SUFFIX_RE.search(snippet):
@@ -950,7 +1235,7 @@ def _is_false_positive_mention(mention: dict[str, Any]) -> bool:
         return True
     if MARKDOWN_IMAGE_RE.search(snippet):
         return True
-    if str(mention.get("style", "")).lower() == "author-year":
+    if style == "author-year":
         surname_hint = str(mention.get("surname_hint", "")).strip()
         if not surname_hint:
             return True
@@ -1079,7 +1364,138 @@ def _normalize_reference_entry_text(raw: str) -> str:
     return re.sub(r"\s+", " ", raw.strip())
 
 
+def _extract_scope_lines(lines: list[str], scope: Scope) -> list[tuple[int, str]]:
+    scoped_lines, scoped_line_start = _scope_lines_without_heading(lines, scope)
+    return list(enumerate(scoped_lines, start=scoped_line_start))
+
+
+def _split_bibitem_entries(lines: list[str], scope: Scope) -> list[dict[str, Any]] | None:
+    scoped_lines = _extract_scope_lines(lines, scope)
+    if not any(LATEX_BIBITEM_RE.search(line) for _, line in scoped_lines):
+        return None
+
+    blocks: list[dict[str, Any]] = []
+    current_lines: list[str] = []
+    current_key: str | None = None
+    line_start = 0
+    block_index = 0
+
+    def flush(line_end: int) -> None:
+        nonlocal current_lines, current_key, line_start, block_index
+        if not current_lines:
+            return
+        source_text = _normalize_reference_entry_text(" ".join(part.strip() for part in current_lines if part.strip()))
+        if source_text:
+            blocks.append(
+                {
+                    "block_index": block_index,
+                    "source_text": source_text,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "proposed_entries": [source_text],
+                    "metadata": {"bibitem_key": current_key, "source_format": "latex_bibitem"},
+                }
+            )
+            block_index += 1
+        current_lines = []
+        current_key = None
+        line_start = 0
+
+    for line_no, line in scoped_lines:
+        match = LATEX_BIBITEM_RE.search(line)
+        if match is not None:
+            flush(line_no - 1)
+            line_start = line_no
+            current_key = match.group(1).strip()
+            current_lines = [line]
+        elif current_lines:
+            current_lines.append(line)
+    flush(scoped_lines[-1][0] if scoped_lines else 0)
+    return blocks
+
+
+def _split_bibtex_entries(lines: list[str], scope: Scope) -> list[dict[str, Any]] | None:
+    scoped_lines = _extract_scope_lines(lines, scope)
+    if not any(BIBTEX_ENTRY_START_RE.match(line) for _, line in scoped_lines) and not any(line.strip() == "```bibtex" for _, line in scoped_lines):
+        return None
+
+    blocks: list[dict[str, Any]] = []
+    in_bibtex_fence = False
+    current_lines: list[str] = []
+    current_key = ""
+    current_type = ""
+    line_start = 0
+    brace_balance = 0
+    block_index = 0
+
+    def flush(line_end: int) -> None:
+        nonlocal current_lines, current_key, current_type, line_start, brace_balance, block_index
+        if not current_lines:
+            return
+        raw = "\n".join(current_lines).strip()
+        if raw:
+            source_text = raw
+            blocks.append(
+                {
+                    "block_index": block_index,
+                    "source_text": source_text,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "proposed_entries": [source_text],
+                    "metadata": {
+                        "citekey": current_key,
+                        "bibtex_entry_type": current_type,
+                        "source_format": "bibtex",
+                    },
+                }
+            )
+            block_index += 1
+        current_lines = []
+        current_key = ""
+        current_type = ""
+        line_start = 0
+        brace_balance = 0
+
+    for line_no, line in scoped_lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if stripped == "```bibtex":
+                in_bibtex_fence = True
+            elif in_bibtex_fence:
+                flush(line_no - 1)
+                in_bibtex_fence = False
+            continue
+        if not in_bibtex_fence and not BIBTEX_ENTRY_START_RE.match(stripped):
+            continue
+        start_match = BIBTEX_ENTRY_START_RE.match(line)
+        if start_match is not None:
+            flush(line_no - 1)
+            line_start = line_no
+            current_type = start_match.group(1).strip()
+            current_key = start_match.group(2).strip()
+            current_lines = [line]
+            brace_balance = line.count("{") - line.count("}")
+            if brace_balance <= 0:
+                flush(line_no)
+            continue
+        if current_lines:
+            current_lines.append(line)
+            brace_balance += line.count("{") - line.count("}")
+            if brace_balance <= 0:
+                flush(line_no)
+
+    flush(scoped_lines[-1][0] if scoped_lines else 0)
+    return blocks or None
+
+
 def _split_reference_blocks(lines: list[str], scope: Scope) -> list[dict[str, Any]]:
+    bibtex_blocks = _split_bibtex_entries(lines, scope)
+    if bibtex_blocks is not None:
+        return bibtex_blocks
+    bibitem_blocks = _split_bibitem_entries(lines, scope)
+    if bibitem_blocks is not None:
+        return bibitem_blocks
+
     scoped_lines, scoped_line_start = _scope_lines_without_heading(lines, scope)
     blocks: list[dict[str, Any]] = []
     for block_index, (offset, line) in enumerate(enumerate(scoped_lines, start=scoped_line_start)):
@@ -1096,6 +1512,7 @@ def _split_reference_blocks(lines: list[str], scope: Scope) -> list[dict[str, An
                 "line_start": offset,
                 "line_end": offset,
                 "proposed_entries": _split_inline_reference_chunk(source_text),
+                "metadata": {"source_format": "plain_text"},
             }
         )
     return blocks
@@ -1121,6 +1538,7 @@ def _build_reference_entries_from_blocks(blocks: list[dict[str, Any]]) -> list[d
                         "block_index": int(block["block_index"]),
                         "normalized_entry_text": normalized_text,
                         "detected_ref_number": detected_ref_number,
+                        **dict(block.get("metadata", {})),
                     },
                 }
             )
@@ -1318,12 +1736,111 @@ def _candidate_fallback_raw_split(entry_index: int, text: str, terminal_year: in
     )
 
 
+def _parse_bibtex_fields(raw: str) -> tuple[str | None, str | None, dict[str, str]]:
+    entry_match = re.search(r"@([A-Za-z]+)\s*\{\s*([^,\s]+)\s*,", raw, re.DOTALL)
+    if entry_match is None:
+        return None, None, {}
+    entry_type = entry_match.group(1).strip()
+    citekey = entry_match.group(2).strip()
+    body_start = entry_match.end()
+    body = raw[body_start:].strip()
+    if body.endswith("}"):
+        body = body[:-1]
+
+    fields: dict[str, str] = {}
+    current: list[str] = []
+    depth = 0
+    in_quote = False
+    for char in body:
+        if char == '"' and depth == 0:
+            in_quote = not in_quote
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0 and not in_quote:
+            segment = "".join(current).strip()
+            if "=" in segment:
+                key, value = segment.split("=", 1)
+                fields[key.strip().lower()] = value.strip()
+            current = []
+            continue
+        current.append(char)
+    tail = "".join(current).strip()
+    if "=" in tail:
+        key, value = tail.split("=", 1)
+        fields[key.strip().lower()] = value.strip()
+
+    normalized_fields: dict[str, str] = {}
+    for key, value in fields.items():
+        stripped = value.strip().rstrip(",")
+        if stripped.startswith("{") and stripped.endswith("}"):
+            stripped = stripped[1:-1]
+        if stripped.startswith('"') and stripped.endswith('"'):
+            stripped = stripped[1:-1]
+        normalized_fields[key] = re.sub(r"\s+", " ", stripped.replace("\n", " ")).strip()
+    return entry_type, citekey, normalized_fields
+
+
+def _candidate_bibtex_entry_fields(entry_index: int, raw: str) -> dict[str, Any] | None:
+    entry_type, citekey, fields = _parse_bibtex_fields(raw)
+    if not fields:
+        return None
+    author_text = fields.get("author", "")
+    title_candidate = fields.get("title", "")
+    container_candidate = (
+        fields.get("journal")
+        or fields.get("booktitle")
+        or fields.get("publisher")
+        or fields.get("school")
+        or fields.get("institution")
+        or ""
+    )
+    year_match = YEAR_RE.search(fields.get("year", ""))
+    year_candidate = int(year_match.group(1)) if year_match is not None else None
+    candidate = _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="bibtex_entry_fields",
+        author_text=author_text,
+        title_candidate=title_candidate,
+        container_candidate=container_candidate,
+        year_candidate=year_candidate,
+        confidence=0.96 if title_candidate and author_text else 0.82,
+        split_basis="parsed direct bibtex fields",
+    )
+    candidate["metadata"].update(
+        {
+            "citekey": citekey,
+            "entry_type": entry_type,
+            "parsed_fields": fields,
+        }
+    )
+    return candidate
+
+
+def _extract_bibitem_key(raw: str) -> str | None:
+    match = LATEX_BIBITEM_RE.search(raw)
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
 def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]]:
     raw = str(entry.get("raw", ""))
+    metadata = dict(entry.get("metadata", {}))
+    source_format = str(metadata.get("source_format", ""))
     text, _ = _strip_reference_number_prefix(raw)
+    bibitem_key = _extract_bibitem_key(text)
+    if bibitem_key is not None:
+        text = LATEX_BIBITEM_RE.sub("", text, count=1).strip()
     text = _normalize_reference_entry_text(text)
     entry_index = int(entry["entry_index"])
     terminal_year = _extract_terminal_publication_year(raw)
+    if source_format == "bibtex":
+        candidate = _candidate_bibtex_entry_fields(entry_index, raw)
+        if candidate is not None:
+            candidate["candidate_index"] = 0
+            return [candidate]
     candidate_builders = [
         _candidate_authors_period_title_period_venue_year,
         _candidate_authors_colon_title_in_year,
@@ -1345,6 +1862,8 @@ def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]
         if key in seen:
             continue
         seen.add(key)
+        if bibitem_key is not None:
+            candidate.setdefault("metadata", {})["bibitem_key"] = bibitem_key
         candidate["candidate_index"] = len(candidates)
         candidates.append(candidate)
     fallback = _candidate_fallback_raw_split(entry_index, text, terminal_year)
@@ -1355,6 +1874,8 @@ def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]
         fallback.get("year_candidate"),
     )
     if fallback_key not in seen:
+        if bibitem_key is not None:
+            fallback.setdefault("metadata", {})["bibitem_key"] = bibitem_key
         fallback["candidate_index"] = len(candidates)
         candidates.append(fallback)
     return candidates
@@ -1405,8 +1926,11 @@ def _detect_reference_block_suspicions(
         reasons: list[str] = []
         suspicion_kind: str | None = None
         member_block_indexes = [block_index]
+        source_format = str(dict(block.get("metadata", {})).get("source_format", "plain_text"))
 
-        if len(proposed_entries) > 1:
+        if source_format in {"bibtex", "latex_bibitem"}:
+            reasons = []
+        elif len(proposed_entries) > 1:
             reasons.append("single line contains multiple strong reference starts")
             suspicion_kind = "grouped_entries_in_single_line"
         elif not _ends_with_reference_tail(source_text):
@@ -1797,6 +2321,27 @@ def _extract_author_year_mentions(line: str, line_no: int, mention_seed: int) ->
     return mentions, current
 
 
+def _extract_latex_cite_mentions(line: str, line_no: int, mention_seed: int) -> tuple[list[dict[str, Any]], int]:
+    mentions: list[dict[str, Any]] = []
+    current = mention_seed
+    for match in LATEX_CITE_RE.finditer(line):
+        cite_group = match.group(1)
+        for citekey in [item.strip() for item in cite_group.split(",") if item.strip()]:
+            mentions.append(
+                {
+                    "mention_id": f"m{current:05d}",
+                    "marker": f"\\cite{{{citekey}}}",
+                    "style": "latex-cite",
+                    "line_start": line_no,
+                    "line_end": line_no,
+                    "snippet": line.strip(),
+                    "citekey_hint": citekey,
+                }
+            )
+            current += 1
+    return mentions, current
+
+
 def _extract_mentions(lines: list[str], scope: Scope) -> tuple[list[dict[str, Any]], int]:
     mentions: list[dict[str, Any]] = []
     filtered_count = 0
@@ -1807,7 +2352,8 @@ def _extract_mentions(lines: list[str], scope: Scope) -> tuple[list[dict[str, An
         line = _sanitize_citation_line(original_line)
         numeric_mentions, counter = _extract_numeric_mentions(line, line_no, counter)
         author_year_mentions, counter = _extract_author_year_mentions(line, line_no, counter)
-        for mention in [*numeric_mentions, *author_year_mentions]:
+        latex_mentions, counter = _extract_latex_cite_mentions(line, line_no, counter)
+        for mention in [*numeric_mentions, *author_year_mentions, *latex_mentions]:
             mention["snippet"] = original_line.strip()
             if _is_false_positive_mention(mention):
                 filtered_count += 1
@@ -1825,6 +2371,7 @@ def _build_citation_workset(
     reference_index: list[dict[str, Any]] = []
     by_ref_number: dict[int, dict[str, Any]] = {}
     by_author_year: list[dict[str, Any]] = []
+    by_citekey: dict[str, dict[str, Any]] = {}
     for item in reference_items:
         ref_number = item.get("detected_ref_number")
         if ref_number is None:
@@ -1839,12 +2386,35 @@ def _build_citation_workset(
             "author": item.get("author", []),
             "year": item.get("year"),
         }
+        metadata_value = item.get("metadata")
+        if isinstance(metadata_value, dict):
+            metadata = dict(metadata_value)
+        else:
+            metadata = {
+                key: value
+                for key, value in item.items()
+                if key not in {"ref_index", "ref_number", "title", "author", "year", "raw", "confidence"}
+            }
+        pattern_candidate = dict(metadata.get("pattern_candidate", {}))
+        pattern_metadata = dict(pattern_candidate.get("metadata", {})) if isinstance(pattern_candidate.get("metadata"), dict) else {}
+        citekey_aliases: set[str] = set()
+        for value in (
+            metadata.get("citekey"),
+            metadata.get("bibitem_key"),
+            pattern_metadata.get("citekey"),
+            pattern_metadata.get("bibitem_key"),
+        ):
+            if isinstance(value, str) and value.strip():
+                citekey_aliases.add(value.strip())
+        entry["citekey_aliases"] = sorted(citekey_aliases)
         reference_index.append(entry)
         if isinstance(ref_number, int):
             by_ref_number[ref_number] = entry
         authors = entry.get("author", [])
         if isinstance(authors, list) and authors and entry.get("year") is not None:
             by_author_year.append({**entry, "surname_aliases": sorted(_first_author_aliases(authors))})
+        for alias in entry["citekey_aliases"]:
+            by_citekey[alias] = entry
 
     grouped: dict[int, dict[str, Any]] = {}
     mention_links: list[dict[str, Any]] = []
@@ -1853,7 +2423,12 @@ def _build_citation_workset(
         candidate_reference: dict[str, Any] | None = None
         resolution_method = "unresolved"
         resolution_confidence = 0.0
-        if mention.get("ref_number_hint") in by_ref_number:
+        citekey_hint = str(mention.get("citekey_hint", "")).strip()
+        if citekey_hint and citekey_hint in by_citekey:
+            candidate_reference = by_citekey[citekey_hint]
+            resolution_method = "citekey_hint"
+            resolution_confidence = 1.0
+        elif mention.get("ref_number_hint") in by_ref_number:
             candidate_reference = by_ref_number[int(mention["ref_number_hint"])]
             resolution_method = "ref_number_hint"
             resolution_confidence = 1.0
@@ -1877,6 +2452,7 @@ def _build_citation_workset(
                     "resolution_confidence": resolution_confidence,
                     "evidence": {
                         "marker": mention.get("marker"),
+                        "citekey_hint": mention.get("citekey_hint"),
                         "ref_number_hint": mention.get("ref_number_hint"),
                         "year_hint": mention.get("year_hint"),
                         "surname_hint": mention.get("surname_hint"),
@@ -1895,6 +2471,7 @@ def _build_citation_workset(
                 "resolution_confidence": resolution_confidence,
                 "evidence": {
                     "marker": mention.get("marker"),
+                    "citekey_hint": mention.get("citekey_hint"),
                     "ref_number_hint": mention.get("ref_number_hint"),
                     "year_hint": mention.get("year_hint"),
                     "surname_hint": mention.get("surname_hint"),
@@ -1979,9 +2556,9 @@ def _schema(schema_name: str) -> dict[str, Any]:
     return json.loads((RENDER_SCHEMAS_DIR / schema_name).read_text(encoding="utf-8"))
 
 
-def _template_env() -> Environment:
+def _template_env(template_root: Path | None = None) -> Environment:
     env = Environment(
-        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        loader=FileSystemLoader(str((template_root or TEMPLATES_DIR).resolve())),
         autoescape=False,
         trim_blocks=False,
         lstrip_blocks=False,
@@ -1992,8 +2569,8 @@ def _template_env() -> Environment:
     return env
 
 
-def _render_template(template_name: str, context: dict[str, Any]) -> str:
-    return _template_env().get_template(template_name).render(**context)
+def _render_template(template_name: str, context: dict[str, Any], *, template_root: Path | None = None) -> str:
+    return _template_env(template_root).get_template(template_name).render(**context)
 
 
 def _validate_context(context: dict[str, Any], schema_name: str) -> None:
@@ -2007,20 +2584,21 @@ def _render_json(template_name: str, context: dict[str, Any], schema_name: str) 
     return rendered + ("" if rendered.endswith("\n") else "\n")
 
 
-def _render_markdown(template_name: str, context: dict[str, Any], schema_name: str, *, ensure_trailing_newline: bool) -> str:
+def _render_markdown(
+    template_name: str,
+    context: dict[str, Any],
+    schema_name: str,
+    *,
+    ensure_trailing_newline: bool,
+    template_root: Path | None = None,
+) -> str:
     _validate_context(context, schema_name)
-    rendered = _render_template(template_name, context)
+    rendered = _render_template(template_name, context, template_root=template_root)
     if ensure_trailing_newline:
         rendered = rendered.rstrip("\n")
         if rendered:
             rendered += "\n"
     return rendered
-
-
-def _digest_template_name(language: str) -> str:
-    if language.lower().startswith("en"):
-        return "digest.en-US.md.j2"
-    return "digest.zh-CN.md.j2"
 
 
 def _resolve_output_root(explicit_out_dir: Path | None, source_path: Path | None) -> Path:
@@ -2739,7 +3317,7 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
     generated_at = provenance_obj.get("generated_at", utc_now_iso())
     input_hash = provenance_obj.get("input_hash", "")
     if source_path is not None and source_path.exists() and (not isinstance(input_hash, str) or not input_hash.startswith("sha256:")):
-        input_hash = sha256_file(source_path)
+        input_hash = sha256_path(source_path)
 
     out: dict[str, Any] = {
         "digest_path": str(digest_path),
@@ -2849,6 +3427,23 @@ def _set_success_state(connection, *, stage: str, substep: str, next_action: str
     )
 
 
+def _validate_render_templates_payload(payload: dict[str, Any]) -> tuple[dict[str, str] | None, str | None]:
+    target_language = payload.get("target_language")
+    digest_template = payload.get("digest_template")
+    citation_template = payload.get("citation_analysis_template")
+    if not isinstance(target_language, str) or not target_language.strip():
+        return None, "target_language must be non-empty string"
+    if not isinstance(digest_template, str) or not digest_template.strip():
+        return None, "digest_template must be non-empty string"
+    if not isinstance(citation_template, str) or not citation_template.strip():
+        return None, "citation_analysis_template must be non-empty string"
+    return {
+        "target_language": target_language.strip(),
+        "digest_template": digest_template,
+        "citation_analysis_template": citation_template,
+    }, None
+
+
 def _handle_confirm_runtime_paths(args: argparse.Namespace) -> int:
     working_dir = Path(args.working_dir).expanduser().resolve()
     db_path = _resolve_cli_path(args.db_path) or (working_dir / TMP_DIRNAME / "literature_digest.db").resolve()
@@ -2926,7 +3521,7 @@ def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
         if args.input_hash:
             set_runtime_input(connection, "input_hash", args.input_hash)
         elif source_path is not None and source_path.exists():
-            set_runtime_input(connection, "input_hash", sha256_file(source_path))
+            set_runtime_input(connection, "input_hash", sha256_path(source_path))
         if args.generated_at:
             set_runtime_input(connection, "generated_at", args.generated_at)
         else:
@@ -2936,8 +3531,8 @@ def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
         _set_success_state(
             connection,
             stage="stage_1_normalize_source",
-            substep="normalize_source",
-            next_action="normalize_source",
+            substep="persist_render_templates",
+            next_action="persist_render_templates",
             status="runtime database bootstrapped",
         )
         _record_action_receipt(connection, action_name="bootstrap_runtime_db", stage="stage_0_bootstrap")
@@ -2949,6 +3544,67 @@ def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
                 "working_dir": str(runtime_paths.working_dir),
                 "output_dir": str(runtime_paths.output_dir),
                 "source_path": str(source_path) if source_path is not None else "",
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_persist_render_templates(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    normalized_payload, error = _validate_render_templates_payload(payload)
+    with connect_db(db_path) as connection:
+        if error is not None or normalized_payload is None:
+            set_runtime_error(connection, "render_templates_failed", error or "invalid render template payload", "stage_1_normalize_source")
+            connection.commit()
+            print(json.dumps({"error": {"code": "render_templates_failed", "message": error or "invalid render template payload"}}, ensure_ascii=False))
+            return 2
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        templates_dir = _runtime_templates_dir(runtime_paths)
+        digest_template_path = (templates_dir / RUNTIME_DIGEST_TEMPLATE_FILENAME).resolve()
+        citation_template_path = (templates_dir / RUNTIME_CITATION_TEMPLATE_FILENAME).resolve()
+        stored_language = str(inputs.get("language", "")).strip()
+        target_language = normalized_payload["target_language"]
+        if stored_language and stored_language != target_language:
+            message = f"target_language {target_language!r} does not match runtime_inputs.language {stored_language!r}"
+            set_runtime_error(connection, "render_templates_failed", message, "stage_1_normalize_source")
+            connection.commit()
+            print(json.dumps({"error": {"code": "render_templates_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        if not stored_language:
+            set_runtime_input(connection, "language", target_language)
+        _write_text(digest_template_path, normalized_payload["digest_template"])
+        _write_text(citation_template_path, normalized_payload["citation_analysis_template"])
+        set_runtime_input(connection, "digest_template_path", str(digest_template_path))
+        set_runtime_input(connection, "citation_analysis_template_path", str(citation_template_path))
+        _set_success_state(
+            connection,
+            stage="stage_1_normalize_source",
+            substep="normalize_source",
+            next_action="normalize_source",
+            status="runtime render templates persisted",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="persist_render_templates",
+            stage="stage_1_normalize_source",
+            metadata={
+                "target_language": target_language,
+                "digest_template_path": str(digest_template_path),
+                "citation_analysis_template_path": str(citation_template_path),
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "target_language": target_language,
+                "digest_template_path": str(digest_template_path),
+                "citation_analysis_template_path": str(citation_template_path),
                 "error": None,
             },
             ensure_ascii=False,
@@ -3017,6 +3673,9 @@ def _dispatch_source(
         "detection_method": "",
         "conversion_backend": "",
         "fallback_reason": "",
+        "main_tex_path": "",
+        "included_tex_files": [],
+        "bib_files": [],
         "quality": {"char_count": 0, "non_empty_lines": 0, "heading_lines": 0, "references_keyword_hits": 0},
         "error": None,
     }
@@ -3060,6 +3719,9 @@ def _dispatch_source(
         if source_type == "markdown":
             markdown = _convert_markdown_source(source_path)
             meta["conversion_backend"] = "direct_copy"
+        elif source_type in {"latex_tex", "latex_project"}:
+            markdown, latex_meta = _normalize_latex_source(source_path)
+            meta.update(latex_meta)
         else:
             warnings.append("source input detected as PDF")
             markdown = ""
@@ -3101,7 +3763,7 @@ def _dispatch_source(
         if not inputs.get("generated_at"):
             set_runtime_input(connection, "generated_at", meta["generated_at"])
         if not inputs.get("input_hash"):
-            set_runtime_input(connection, "input_hash", sha256_file(source_path))
+            set_runtime_input(connection, "input_hash", sha256_path(source_path))
         if not inputs.get("language"):
             set_runtime_input(connection, "language", language or "zh-CN")
         if model and not inputs.get("model"):
@@ -3677,6 +4339,11 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
             metadata["entry_index"] = entry_index
             metadata["selected_pattern"] = selected_pattern
             metadata["pattern_candidate"] = candidate_obj
+            candidate_metadata = dict(candidate_obj.get("metadata", {}))
+            if isinstance(candidate_metadata.get("citekey"), str) and candidate_metadata["citekey"].strip():
+                metadata.setdefault("citekey", candidate_metadata["citekey"].strip())
+            if isinstance(candidate_metadata.get("bibitem_key"), str) and candidate_metadata["bibitem_key"].strip():
+                metadata.setdefault("bibitem_key", candidate_metadata["bibitem_key"].strip())
             numbering = dict(entry_metadata.get(entry_index, {}).get("numbering", {}))
             if numbering:
                 metadata["numbering"] = numbering
@@ -4088,6 +4755,27 @@ def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no
     missing_receipts = _missing_required_receipts(connection, REQUIRED_STAGE5_RECEIPTS)
     if missing_receipts:
         return f"missing action receipts before render: {missing_receipts}"
+    inputs = fetch_runtime_inputs(connection)
+    if has_action_receipt(connection, "bootstrap_runtime_db") and not has_action_receipt(connection, "persist_render_templates"):
+        return "persist_render_templates receipt missing before render"
+    require_runtime_templates = has_action_receipt(connection, "persist_render_templates")
+    if require_runtime_templates:
+        missing_template_keys = [
+            key
+            for key in ("digest_template_path", "citation_analysis_template_path")
+            if not inputs.get(key)
+        ]
+        if missing_template_keys:
+            return f"runtime template paths missing before render: {missing_template_keys}"
+        runtime_paths = _runtime_paths_from_inputs(inputs)
+        template_paths = _runtime_template_paths_from_inputs(
+            inputs,
+            runtime_paths=runtime_paths,
+            allow_repo_fallback=False,
+        )
+        for template_path in (template_paths.digest_template_path, template_paths.citation_analysis_template_path):
+            if not template_path.exists():
+                return f"runtime template missing before render: {template_path}"
     if not fetch_citation_workset_items(connection):
         return "citation_workset_items missing before render"
     if not fetch_citation_items(connection):
@@ -4105,6 +4793,11 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
             add_runtime_warning_once(connection, warning)
         inputs = fetch_runtime_inputs(connection)
         runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        runtime_template_paths = _runtime_template_paths_from_inputs(
+            inputs,
+            runtime_paths=runtime_paths,
+            allow_repo_fallback=not has_action_receipt(connection, "persist_render_templates"),
+        )
         source_path = inputs.get("source_path", "")
         if not source_path:
             raise RuntimeError("runtime_inputs.source_path missing")
@@ -4114,9 +4807,21 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
         references_context = build_references_render_context(connection)
         citation_report_context = build_citation_report_render_context(connection)
 
-        digest_md = _render_markdown(_digest_template_name(str(digest_context["language"])), digest_context, "digest.schema.json", ensure_trailing_newline=True)
+        digest_md = _render_markdown(
+            runtime_template_paths.digest_template_path.name,
+            digest_context,
+            "digest.schema.json",
+            ensure_trailing_newline=True,
+            template_root=runtime_template_paths.digest_template_path.parent,
+        )
         references_json = _render_json("references.json.j2", references_context, "references.schema.json")
-        report_md = _render_markdown("citation_analysis.md.j2", citation_report_context, "citation_analysis_report.schema.json", ensure_trailing_newline=False)
+        report_md = _render_markdown(
+            runtime_template_paths.citation_analysis_template_path.name,
+            citation_report_context,
+            "citation_analysis_report.schema.json",
+            ensure_trailing_newline=False,
+            template_root=runtime_template_paths.citation_analysis_template_path.parent,
+        )
         citation_context = build_citation_render_context(connection, report_md)
         citation_analysis_json = _render_json("citation_analysis.json.j2", citation_context, "citation_analysis.schema.json")
 
@@ -4260,6 +4965,11 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--generated-at", default="")
     bootstrap.add_argument("--model", default="")
     bootstrap.set_defaults(handler=_handle_bootstrap_runtime_db)
+
+    render_templates = subparsers.add_parser("persist_render_templates")
+    render_templates.add_argument("--db-path", default="")
+    render_templates.add_argument("--payload-file", default="")
+    render_templates.set_defaults(handler=_handle_persist_render_templates)
 
     normalize = subparsers.add_parser("normalize_source")
     normalize.add_argument("--db-path", default="")

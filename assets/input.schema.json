@@ -5,9 +5,10 @@
       "type": "string",
       "extensions": [
         ".md",
-        ".pdf"
+        ".pdf",
+        ".tex"
       ],
-      "description": "Path to the source file to digest; format is detected from file content"
+      "description": "Path to the source file or LaTeX project directory to digest; format is detected from file content or directory structure"
     }
   },
   "required": ["source_path"]

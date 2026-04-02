@@ -141,10 +141,16 @@
   - 过滤资源路径
   - 过滤 `.jpg` / `.png` / `.pdf` 等尾缀
   - 过滤日期型字符串
+- 额外支持 LaTeX citation commands：
+  - `\cite{...}`
+  - `\citep{...}`
+  - `\citet{...}`
+  - 多 key 形式 `\cite{a,b,c}`
 - 被过滤的假阳性必须计入 `citation_false_positive_filtered` warning 与 workset 统计。
 
 3) **映射阶段（规则优先）**
 - 运行时输入只允许使用：`reference_items` + 已持久化的 mention 数据 + `citation_scope` + mention 所在 snippet。
+- 对 LaTeX 输入，若 mention 带 `citekey_hint`，则优先按 `citekey` / `bibitem_key` 映射到 `reference_items`。
 - numeric 先按 `ref_number -> ref_index`；author-year 先按 `year + first-author surname`。
 - 若多候选冲突或证据不足，不可硬猜，直接进入 `unmapped_mentions`。
 - 如需辅助 join，可使用 `export_citation_workset` 只读导出候选，不得把它当作新的真源。
