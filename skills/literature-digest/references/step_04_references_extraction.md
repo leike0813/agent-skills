@@ -233,6 +233,20 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 
 其中 `requires_split_review=true` 表示当前 workset 仍存在边界存疑的 block，此时不得直接进入 `persist_references`。
 
+### LaTeX bibliography 入口
+
+当 references scope 来自 LaTeX fenced source 时，脚本增加两类 deterministic splitting：
+
+- `\bibitem{...}` splitting
+  - 若 scope 内包含 `\bibitem{...}`，脚本按 `\bibitem` 起点切条
+  - `bibitem_key` 会写入 entry / candidate metadata，供后续 citation 映射使用
+- `bibtex` splitting
+  - 若 scope 落在 ` ```bibtex ` fence 内，脚本按顶层 `@type{key,` 起点切条
+  - `citekey` 与 `entry_type` 会写入 metadata
+  - 同时补一条 deterministic candidate，直接从 bib 字段读取 `author/title/year/container`
+
+这意味着 `.bib` 条目不再走普通 line-first bibliography splitting，也不要求 LLM 自己从整块 `.bib` 里找边界。
+
 ### author-year 段落式 references 额外规则
 
 对 author-year bibliography，脚本不能只依赖空行切分。若 references 中出现“多条 `Author. Title. Venue, Year.` 连续排在一个段落或少数段落中”的情况，脚本必须：

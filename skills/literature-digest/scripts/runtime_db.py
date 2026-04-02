@@ -1291,7 +1291,7 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
 
     return {
         "meta": {
-            "language": fetch_runtime_inputs(connection).get("language", "zh-CN"),
+            "language": fetch_runtime_inputs(connection).get("language") or "zh-CN",
             "scope": {
                 "section_title": scope["section_title"],
                 "line_start": scope["line_start"],
@@ -1321,7 +1321,7 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
 def build_digest_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
     inputs = fetch_runtime_inputs(connection)
     return {
-        "language": inputs.get("language", "zh-CN"),
+        "language": inputs.get("language") or "zh-CN",
         "digest_slots": fetch_digest_slots(connection),
         "section_summaries": fetch_digest_section_summaries(connection),
     }

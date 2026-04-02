@@ -128,6 +128,7 @@ stdout 只输出一个 JSON 对象，字段固定为：
 
 - `confirm_runtime_paths`
 - `bootstrap_runtime_db`
+- `persist_render_templates`
 - `normalize_source`
 - `persist_outline_and_scopes`
 - `persist_digest`
@@ -187,6 +188,8 @@ stdout 只输出一个 JSON 对象，字段固定为：
 
 - 当 `next_action = confirm_runtime_paths` 时，`execution_note` 会明确提示先在 shell 里执行 `cwd()` / `pwd`，不要先 `cd`，也不要先运行其它脚本
 - 当 `next_action = bootstrap_runtime_db` 时，`execution_note` 会提示目录已经由 `confirm_runtime_paths` 固化，本步不再决定任何目录
+- 并提示 `language` 必须先用用户显式指定值，否则从 prompt 主要语言推断，仅在无法稳定判断时回退 `zh-CN`
+- 当 `next_action = persist_render_templates` 时，`execution_note` 会提示先把本次 run 要使用的 digest / citation 运行时模板写入 `<tmp_dir>/templates/`
 - 当 `next_action = render_and_validate` 时，`execution_note` 会提示当前已经进入最终发布前一步
 - 并提示最终 assistant 输出应直接采用 render 脚本 stdout 返回的 JSON
 - 并说明 render 会读取 DB 中的 `output_dir` 与 `result_json_path`
@@ -226,6 +229,11 @@ stdout 只输出一个 JSON 对象，字段固定为：
 - 正常主路径只参考 `command_example`
 - payload 类动作默认通过 `--payload-file <PATH>` 调用
 - `payload_example` 只展示最小合法 JSON，不替代阶段业务文档
+- 当 `next_action = persist_render_templates` 时，`payload_example` 会直接展示：
+  - `target_language`
+  - `digest_template`
+  - `citation_analysis_template`
+  的最小合法结构
 
 ## `sql_examples` 约束
 
@@ -241,7 +249,16 @@ stdout 只输出一个 JSON 对象，字段固定为：
 gate 至少检查这些关键前置：
 
 - `stage_1_normalize_source`
-  - `runtime_inputs.source_path`
+  - 当 `next_action = persist_render_templates` 时：
+    - `runtime_inputs.source_path`
+    - `runtime_inputs.language`
+    - `action_receipts.bootstrap_runtime_db`
+  - 当 `next_action = normalize_source` 时：
+    - `runtime_inputs.source_path`
+    - `runtime_inputs.language`
+    - `runtime_inputs.digest_template_path`
+    - `runtime_inputs.citation_analysis_template_path`
+    - `action_receipts.persist_render_templates`
 - `stage_2_outline_and_scopes`
   - `source_documents.normalized_source`
 - `stage_3_digest`

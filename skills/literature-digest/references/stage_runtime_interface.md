@@ -6,7 +6,7 @@
 
 `stage_runtime.py` 是唯一阶段动作入口。它负责：
 
-- 输入协议探测与标准化
+- 输入协议探测与标准化（Markdown / PDF / 单文件 `.tex` / LaTeX 工程目录）
 - SQLite 持久化
 - citation workset 准备
 - 主路径动作收据（action receipts）写入
@@ -34,6 +34,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
 
 - `confirm_runtime_paths`
 - `bootstrap_runtime_db`
+- `persist_render_templates`
 - `normalize_source`
 - `persist_outline_and_scopes`
 - `persist_digest`
@@ -54,6 +55,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
   - `prepare_references_workset` 只能读前序已确定的 `references_scope`
   - `prepare_citation_workset` 只能读前序已确定的 `citation_scope`
   - `render_and_validate --mode render` 只能读 DB 内容，不能显式指定 `source_path`；正式输出目录与结果镜像文件路径都来自 DB
+  - LaTeX 输入下，references/citation 也只能沿现有 stage 4/5 主路径消费 fenced raw source，不新增旁路
 
 ### 辅助工具 subcommand
 
@@ -120,9 +122,9 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
 ### 参数
 
 - `--source-path`
-  - 必填。唯一内容来源文件路径。
+  - 必填。唯一内容来源文件路径；也可以是 LaTeX 工程目录。
 - `--language`
-  - 可选。输出语言；缺省时脚本应回退默认值。
+  - 必填于新主路径。先用用户显式指定值，否则由 agent 从 prompt 主要语言推断；仅在无法稳定判断时回退 `zh-CN`。
 - `--input-hash`
   - 可选。若不提供，由脚本自行计算。
 - `--generated-at`
@@ -135,7 +137,7 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
 ```bash
 python scripts/stage_runtime.py bootstrap_runtime_db \
   --source-path "/abs/path/paper.md" \
-  --language "zh-CN"
+  --language "<TARGET_LANGUAGE_FROM_PROMPT>"
 ```
 
 ### 典型非法示例
@@ -158,10 +160,50 @@ python scripts/stage_runtime.py bootstrap_runtime_db
 }
 ```
 
+## `persist_render_templates`
+
+### 命令
+
+```bash
+python scripts/stage_runtime.py persist_render_templates \
+  [--db-path PATH] \
+  [--payload-file FILE]
+```
+
+### 输入方式
+
+- 通过 stdin JSON 或 `--payload-file` 提供
+- payload 必须包含：
+  - `target_language`
+  - `digest_template`
+  - `citation_analysis_template`
+
+### 最小合法示例
+
+```json
+{
+  "target_language": "fr-FR",
+  "digest_template": "## TL;DR\n{% for paragraph in digest_slots.tldr.paragraphs %}\n{{ paragraph }}\n{% endfor %}\n",
+  "citation_analysis_template": "## Signaux de citation dans la section de revue\n\n### Résumé\n{{ summary }}\n"
+}
+```
+
+### 成功输出
+
+```json
+{
+  "target_language": "fr-FR",
+  "digest_template_path": "/abs/path/run-root/.literature_digest_tmp/templates/digest.runtime.md.j2",
+  "citation_analysis_template_path": "/abs/path/run-root/.literature_digest_tmp/templates/citation_analysis.runtime.md.j2",
+  "error": null
+}
+```
+
 ### 常见失败原因
 
-- `source_path` 不存在或不可读
-- 传入非法 `language`，但脚本未做回退
+- `target_language` 与 `runtime_inputs.language` 不一致
+- 模板字符串为空
+- 未先完成 `bootstrap_runtime_db`
 
 ## `normalize_source`
 
@@ -179,6 +221,9 @@ python scripts/stage_runtime.py normalize_source \
 
 - 不接受业务 payload
 - 只读取 bootstrap 已写入的 `source_path` 与 `language`
+- 新主路径还要求前序已经通过 `persist_render_templates` 固化：
+  - `runtime_inputs.digest_template_path`
+  - `runtime_inputs.citation_analysis_template_path`
 - 本步只接受 `--out-md`、`--out-meta`、`--persist-db-only` 这三个可选 CLI 参数
 
 ### 参数含义
@@ -189,6 +234,11 @@ python scripts/stage_runtime.py normalize_source \
   - 可选。把标准化元数据物化到指定路径。
 - `--persist-db-only`
   - 可选。只写 DB，不物化副产物。
+- 单文件 `.tex` / LaTeX 工程目录
+  - 脚本会生成 fenced raw source：
+    - tex 原文放入 ` ```tex ` fence
+    - `.bib` 原文追加到尾部的 ` ```bibtex ` fence
+    - `source_meta` 记录 `source_type`、`main_tex_path`、`included_tex_files`、`bib_files`
 
 ### 最小合法示例
 
@@ -216,8 +266,11 @@ python scripts/stage_runtime.py normalize_source --source-path "/tmp/paper.md"
 
 ### 常见失败原因
 
+- `source_path` 不存在或不可读
 - DB 中缺少 bootstrap 产生的输入上下文
+- DB 中缺少 `persist_render_templates` 产生的运行时模板路径
 - 源文件既不是可解析 PDF，也不是可读 UTF-8 文本
+- LaTeX 工程目录中无法稳定检测主入口 `.tex`
 
 ## `persist_outline_and_scopes`
 
@@ -453,6 +506,8 @@ python scripts/stage_runtime.py prepare_references_workset \
 - 不接受业务 payload
 - 只依赖前序已入库决策：标准化文本与 `references_scope`
 - deterministic splitting 固定采用 `line-first`：先按行切，单行内再做 inline split；疑似跨行续写只会进入 review，不会自动合并
+- 若 scope 内包含 `\bibitem{...}`，脚本按 `\bibitem` 起点切条
+- 若 scope 落在 ` ```bibtex ` fence，脚本按顶层 `@type{key,` 起点切条，并为 `.bib` entry 直接生成 deterministic field candidate
 
 ### 输出字段说明
 
@@ -715,6 +770,8 @@ python scripts/stage_runtime.py prepare_citation_workset \
 - 不接受业务 payload
 - 只依赖前序已入库决策：标准化文本、`citation_scope`、`reference_items`
 - 本步只接受 `--out` 与 `--persist-db-only` 这两个可选 CLI 参数
+- 对 LaTeX 输入，额外识别 `\cite{...}`、`\citep{...}`、`\citet{...}` 与多 key 形式
+- 若 `reference_items` 元数据里存在 `citekey` 或 `bibitem_key`，映射优先按这些 key 进行
 
 ### 输出字段说明
 
@@ -1075,6 +1132,8 @@ python scripts/stage_runtime.py render_and_validate [--db-path PATH] --mode rend
 - 正式发布只从 DB 派生最终成品
 - 正式 render 的写盘目录只读取 `runtime_inputs.output_dir`
 - `literature-digest.result.json` 只写到 `runtime_inputs.result_json_path`
+- digest Markdown 只读取 `runtime_inputs.digest_template_path`
+- citation Markdown report 只读取 `runtime_inputs.citation_analysis_template_path`
 - 最终 stdout JSON 中所有文件路径字段都输出为绝对路径
 - 若旧库缺失这些目录键，兼容模式下才回退到当前工作目录
 - `citation_analysis.md` / `citation_analysis.json.report_md` 会共同包含由 renderer 生成的“关键文献”与“时间线分析”小节

@@ -37,7 +37,7 @@ STAGE_RULES: dict[str, dict[str, Any]] = {
     },
     "stage_1_normalize_source": {
         "required_reads": ["runtime_inputs.source_path", "runtime_inputs.language", "runtime_inputs.generated_at", "runtime_inputs.input_hash"],
-        "required_writes": ["source_documents.normalized_source"],
+        "required_writes": ["runtime_inputs.digest_template_path", "runtime_inputs.citation_analysis_template_path", "source_documents.normalized_source", "action_receipts"],
     },
     "stage_2_outline_and_scopes": {
         "required_reads": ["source_documents.normalized_source"],
@@ -314,7 +314,7 @@ def _default_instruction_refs(stage: str) -> list[dict[str, str]]:
 
 def _instruction_refs(stage: str, next_action: str) -> list[dict[str, str]]:
     refs = _default_instruction_refs(stage)
-    if next_action in {"confirm_runtime_paths", "bootstrap_runtime_db", "normalize_source"}:
+    if next_action in {"confirm_runtime_paths", "bootstrap_runtime_db", "persist_render_templates", "normalize_source"}:
         refs[0]["section"] = "Bootstrap and source normalization"
     elif next_action == "persist_outline_and_scopes":
         refs[0]["section"] = "Outline and scope extraction"
@@ -379,10 +379,20 @@ def _command_example(next_action: str, db_path: Path) -> dict[str, Any] | None:
         return {
             "command": (
                 "python scripts/stage_runtime.py bootstrap_runtime_db "
-                f'{db_arg} --source-path "<SOURCE_PATH>" --language "zh-CN"'
+                f'{db_arg} --source-path "<SOURCE_PATH>" --language "<TARGET_LANGUAGE_FROM_PROMPT>"'
             ),
             "payload_example": None,
-            "notes": "This step reads prompt inputs, not a payload file. Replace the placeholder values with the real source_path and language for this run. Directory paths were already fixed by confirm_runtime_paths.",
+            "notes": "This step reads prompt inputs, not a payload file. Decide the target language before bootstrap: use the explicit user-requested language when provided, otherwise infer it from the prompt language, and only fall back to zh-CN when inference is unstable. Directory paths were already fixed by confirm_runtime_paths.",
+        }
+    if next_action == "persist_render_templates":
+        return {
+            "command": f"python scripts/stage_runtime.py persist_render_templates {db_arg} {payload_arg}",
+            "payload_example": {
+                "target_language": "fr-FR",
+                "digest_template": "## TL;DR\n{% for paragraph in digest_slots.tldr.paragraphs %}\n{{ paragraph }}\n{% endfor %}\n",
+                "citation_analysis_template": "## Signaux de citation dans la section de revue\n\n### Résumé\n{{ summary }}\n",
+            },
+            "notes": "For en-* and zh-* targets, copy the matching repository source templates verbatim into this payload. For other languages, translate the repository source templates first, then persist them here as the runtime templates that render will consume.",
         }
     if next_action == "normalize_source":
         return {
@@ -547,7 +557,9 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
     if next_action == "confirm_runtime_paths":
         return "Before calling any skill script, first run `cwd()` / `pwd` in the current shell and capture that working directory. Do not `cd` first, and do not run gate_runtime.py or bootstrap_runtime_db first. Then call `confirm_runtime_paths` with that exact cwd and rerun gate using the confirmed db_path."
     if next_action == "bootstrap_runtime_db":
-        return "Bootstrap runtime inputs now. Do not decide directories here; working_dir, tmp_dir, db_path, result_json_path, and output_dir must already have been fixed by confirm_runtime_paths."
+        return "Bootstrap runtime inputs now. Do not decide directories here; working_dir, tmp_dir, db_path, result_json_path, and output_dir must already have been fixed by confirm_runtime_paths. Decide the target language before this step: use the explicit user-requested language when provided, otherwise infer it from the prompt language, and only fall back to zh-CN if inference is unstable."
+    if next_action == "persist_render_templates":
+        return "Persist the runtime render templates now. For en-* and zh-* targets, copy the matching repository source templates into the payload verbatim. For other languages, translate the source templates first. Render will later read only these DB-backed runtime templates from tmp_dir."
     if next_action == "normalize_source":
         return "Run source normalization now. Do not respecify source_path or language; this step must read the bootstrap state from DB."
     if next_action == "persist_outline_and_scopes":
@@ -605,8 +617,18 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
             if "confirm_runtime_paths" not in receipts:
                 missing.append("action_receipts.confirm_runtime_paths")
     if stage == "stage_1_normalize_source":
-        if not inputs.get("source_path"):
-            missing.append("runtime_inputs.source_path")
+        if next_action == "persist_render_templates":
+            for key in ["source_path", "language", "generated_at", "input_hash"]:
+                if not inputs.get(key):
+                    missing.append(f"runtime_inputs.{key}")
+            if "bootstrap_runtime_db" not in receipts:
+                missing.append("action_receipts.bootstrap_runtime_db")
+        elif next_action == "normalize_source":
+            for key in ["source_path", "language", "digest_template_path", "citation_analysis_template_path"]:
+                if not inputs.get(key):
+                    missing.append(f"runtime_inputs.{key}")
+            if "persist_render_templates" not in receipts:
+                missing.append("action_receipts.persist_render_templates")
     elif stage == "stage_2_outline_and_scopes":
         row = connection.execute("SELECT 1 FROM source_documents WHERE doc_key = 'normalized_source' LIMIT 1").fetchone()
         if row is None:
@@ -663,6 +685,8 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
             missing.append("citation_timeline")
         if count("citation_summary") == 0:
             missing.append("citation_summary")
+        if "persist_render_templates" not in receipts:
+            missing.append("action_receipts.persist_render_templates")
         for action_name in REQUIRED_STAGE5_RECEIPTS:
             if action_name not in receipts:
                 missing.append(f"action_receipts.{action_name}")
