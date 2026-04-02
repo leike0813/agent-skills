@@ -111,6 +111,100 @@ clear_dir_contents() {
   eval "${old_nullglob}" >/dev/null 2>&1 || true
 }
 
+extract_skill_info() {
+  local skill_dir="$1"
+  local skill_md="${skill_dir}/SKILL.md"
+  [[ -f "$skill_md" ]] || return 1
+  
+  local name desc
+  name="$(awk '
+    BEGIN{in_fm=0}
+    /^---[[:space:]]*$/ {in_fm = 1 - in_fm; next}
+    in_fm==1 && $0 ~ /^[[:space:]]*name:[[:space:]]*/ {
+      sub(/^[[:space:]]*name:[[:space:]]*/, "", $0);
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0);
+      gsub(/^["'"'"']|["'"'"']$/, "", $0);
+      print $0; exit
+    }
+  ' "$skill_md")"
+  
+  desc="$(awk '
+    BEGIN{in_fm=0}
+    /^---[[:space:]]*$/ {in_fm = 1 - in_fm; next}
+    in_fm==1 && $0 ~ /^[[:space:]]*description:[[:space:]]*/ {
+      sub(/^[[:space:]]*description:[[:space:]]*/, "", $0);
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0);
+      gsub(/^["'"'"']|["'"'"']$/, "", $0);
+      print $0; exit
+    }
+  ' "$skill_md")"
+  
+  [[ -n "$name" ]] || name="$(basename "$skill_dir")"
+  [[ -n "$desc" ]] || desc="No description available."
+  
+  printf '%s\t%s\n' "$name" "$desc"
+}
+
+sync_readme_skills_table() {
+  local agg_wt="$1"
+  local skills_dir="$2"
+  local readme="${agg_wt}/README.md"
+  
+  log "Syncing README.md skills table..."
+  
+  [[ -d "${agg_wt}/${skills_dir}" ]] || return 0
+  
+  local tmpfile="${TMPDIR}/skills_table.md"
+  
+  {
+    echo "# agent-skills"
+    echo ""
+    echo "This repo aggregates skills as git submodules."
+    echo ""
+    echo "## Available Skills"
+    echo ""
+    echo "| Skill-ID | 说明 |"
+    echo "|----------|------|"
+    
+    local skill_dirs=()
+    for entry in "${agg_wt}/${skills_dir}"/*/; do
+      [[ -d "$entry" ]] || continue
+      local skill_name
+      skill_name="$(basename "$entry")"
+      skill_dirs+=("$skill_name")
+    done
+    
+    IFS=$'\n' sorted=($(sort <<<"${skill_dirs[*]}")); unset IFS
+    
+    for skill_name in "${sorted[@]}"; do
+      local skill_path="${agg_wt}/${skills_dir}/${skill_name}"
+      local info
+      if info="$(extract_skill_info "$skill_path")"; then
+        local name desc
+        name="$(echo "$info" | cut -f1)"
+        desc="$(echo "$info" | cut -f2)"
+        desc="$(echo "$desc" | sed 's/|/\\|/g')"
+        echo "| ${name} | ${desc} |"
+      fi
+    done
+  } > "$tmpfile"
+  
+  if [[ -f "$readme" ]]; then
+    cp "$readme" "${readme}.bak"
+  fi
+  cp "$tmpfile" "$readme"
+  
+  git -C "${agg_wt}" add "README.md"
+  if ! git -C "${agg_wt}" diff --cached --quiet; then
+    git -C "${agg_wt}" commit -m "docs: sync skills table in README.md"
+    git -C "${agg_wt}" push origin "${AGG_MAIN}"
+    log "README.md synced and pushed."
+  else
+    log "No changes to README.md"
+    [[ -f "${readme}.bak" ]] && rm -f "${readme}.bak"
+  fi
+}
+
 # -----------------------------
 # args
 # -----------------------------
@@ -365,6 +459,9 @@ if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
   else
     log "No changes detected for ${AGG_MAIN}:${AGG_SKILL_DIR_REL}"
   fi
+  
+  # Sync README.md skills table after updating main
+  sync_readme_skills_table "${AGG_WT}" "${AGG_SKILLS_DIR}"
 fi
 
 # ==============================================================================
