@@ -8,6 +8,7 @@ This repo aggregates skills as git submodules.
 |----------|------|
 | greeting-generator | 节日祝福生成器 - 根据用户提供的节日信息、个人画像及发送对象列表，批量生成得体且富有文采的个性化祝福语。 |
 | literature-digest | Generate a paper digest (Markdown), structured references (JSON), and citation analysis artifacts from a source file using a SQLite-gated runtime. |
+| literature-digest-lite | Generate a paper digest (Markdown) from a source file using a simplified runtime without SQLite-gating. |
 | literature-explainer | 学术论文分析与问题回答助手，以状态化流程、证据约束、脚本化记忆与验证支撑论文理解、问答和学习笔记生成。 |
 | literature-match | Match Markdown reference entries/参考文献 to Zotero Better BibTeX items (citekey as SSOT) and output match_result.json with candidates, itemKey, zotero_tags, and pdf_attachments. Use when you need deterministic+retrieval matching (doi/arxiv/url → TF-IDF topK → needs_llm) without modifying the input document. |
 | paper-condenser | 交互式学术论文凝缩转写 Skill。Use when Codex needs to guide a user through staged manuscript understanding, target-setting, style analysis, condensation planning, and final journal-paper drafting with a SQLite single source of truth and strict gate-driven progression. |
