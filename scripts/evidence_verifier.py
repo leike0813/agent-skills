@@ -14,7 +14,7 @@ from html import unescape
 from typing import Any
 
 FIXED_HALLUCINATION_WARNING = "刚才的证据中可能存在虚假证据，请注意。"
-VALID_SOURCE_TYPES = {"web_url", "reference_title"}
+VALID_SOURCE_TYPES = {"web_url", "reference_title", "paper_text"}
 REQUIRED_EVIDENCE_FIELDS = {"source_type", "source", "keywords", "claim"}
 
 
@@ -259,6 +259,18 @@ def _validate_evidence_item(item: Any, index: int) -> tuple[bool, dict[str, Any]
             "valid_source_types": sorted(VALID_SOURCE_TYPES),
         }
 
+    # paper_text type (internal evidence) skips verification
+    if source_type == "paper_text":
+        return True, {
+            "index": index,
+            "status": "skipped",
+            "reason": "internal_evidence_no_verification_needed",
+            "source_type": source_type,
+            "source": str(item["source"]),
+            "claim": str(item["claim"]),
+            "keywords": [str(k) for k in item["keywords"]],
+        }
+
     keywords = item["keywords"]
     if not isinstance(keywords, list) or not any(str(keyword).strip() for keyword in keywords):
         return False, {"index": index, "status": "fail", "reason": "keywords_must_be_non_empty_array"}
@@ -289,10 +301,11 @@ def handle_instructions() -> None:
                     "验证结果",
                 ],
                 "evidence_item": {
-                    "source_type": "web_url | reference_title",
+                    "source_type": "web_url | reference_title | paper_text",
                     "source_must_be_verifiable": True,
                     "keywords_min_items": 1,
                     "claim_must_describe_supported_assertion": True,
+                    "paper_text_handling": "internal evidence skipped automatically without network verification",
                 },
                 "invalid_input_failures": [
                     "Evidence item is not an object.",
@@ -303,10 +316,11 @@ def handle_instructions() -> None:
                 "verification": {
                     "web_url": "fetch URL and pass when at least one keyword appears in page text",
                     "reference_title": "query Crossref/arXiv/Semantic Scholar and pass when any backend confirms the title",
+                    "paper_text": "internal evidence skipped automatically without network verification",
                     "verdict_policy": {
-                        "pass": "all evidence items pass",
-                        "fail": "any evidence item explicitly fails",
-                        "uncertain": "no explicit fail but at least one item cannot be verified due to network or backend availability",
+                        "pass": "all evidence items pass (skipped items excluded)",
+                        "fail": "any evidence item explicitly fails (excluding skipped)",
+                        "uncertain": "no explicit fail but at least one item cannot be verified due to network or backend availability (excluding skipped)",
                     },
                 },
                 "post_verdict_actions": {
@@ -374,6 +388,12 @@ def handle_verify(evidence_json: str) -> None:
             statuses.append("fail")
             continue
 
+        # paper_text type already returned skipped in _validate_evidence_item
+        if invalid_result.get("status") == "skipped":
+            results.append(invalid_result)
+            statuses.append("skipped")
+            continue
+
         source_type = str(item["source_type"])
         source = str(item["source"])
         keywords = [str(keyword) for keyword in item["keywords"]]
@@ -393,11 +413,14 @@ def handle_verify(evidence_json: str) -> None:
         )
         statuses.append(verification.status)
 
-    if not results:
+    # Determine verdict after excluding skipped items
+    verifiable_statuses = [s for s, r in zip(statuses, results) if r.get("status") != "skipped"]
+
+    if not verifiable_statuses:
+        verdict = "pass"  # No items requiring verification, default to pass
+    elif "fail" in verifiable_statuses:
         verdict = "fail"
-    elif "fail" in statuses:
-        verdict = "fail"
-    elif "uncertain" in statuses:
+    elif "uncertain" in verifiable_statuses:
         verdict = "uncertain"
     else:
         verdict = "pass"
