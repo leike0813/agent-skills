@@ -16,7 +16,7 @@
   },
   "entrypoint": {
     "prompts": {
-      "common": "Normalize the uploaded file `{{ input.source_path }}` first, then execute the staged workflow from SKILL.md. Do not auto-generate a note artifact unless the user explicitly requests it and confirms the save. Finish by printing a JSON object."
+      "common": "Normalize the uploaded file `{{ input.source_path }}` first, then execute the staged workflow from SKILL.md. **DO NOT** terminate the task prematurely without explicit instructions from the user. **DO NOT** auto-generate a note artifact unless the user explicitly requests it and confirms the save. Once the note is saved, the task is considered complete and you may conclude the mission without requiring further instructions from the user. *ALWAYS* finish by printing a single valid JSON object."
     }
   }
 }
