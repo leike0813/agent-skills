@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,7 +77,9 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS runtime_warnings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             warning TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            resolved_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS runtime_errors (
@@ -84,7 +87,9 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             code TEXT NOT NULL,
             message TEXT NOT NULL,
             stage TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            resolved_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS workflow_state (
@@ -291,6 +296,25 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    _migrate_schema(connection)
+
+
+def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _ensure_column(connection: sqlite3.Connection, table_name: str, column_sql: str) -> None:
+    column_name = column_sql.split()[0]
+    if column_name not in _table_columns(connection, table_name):
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+
+def _migrate_schema(connection: sqlite3.Connection) -> None:
+    _ensure_column(connection, "runtime_warnings", "status TEXT NOT NULL DEFAULT 'active'")
+    _ensure_column(connection, "runtime_warnings", "resolved_at TEXT")
+    _ensure_column(connection, "runtime_errors", "status TEXT NOT NULL DEFAULT 'active'")
+    _ensure_column(connection, "runtime_errors", "resolved_at TEXT")
 
 
 def _seed_runtime_run(connection: sqlite3.Connection) -> None:
@@ -343,7 +367,7 @@ def fetch_runtime_inputs(connection: sqlite3.Connection) -> dict[str, str]:
 
 def add_runtime_warning(connection: sqlite3.Connection, warning: str) -> None:
     connection.execute(
-        "INSERT INTO runtime_warnings (warning, created_at) VALUES (?, ?)",
+        "INSERT INTO runtime_warnings (warning, created_at, status) VALUES (?, ?, 'active')",
         (warning, utc_now_iso()),
     )
     touch_runtime(connection)
@@ -351,21 +375,69 @@ def add_runtime_warning(connection: sqlite3.Connection, warning: str) -> None:
 
 def add_runtime_warning_once(connection: sqlite3.Connection, warning: str) -> None:
     row = connection.execute(
-        "SELECT 1 FROM runtime_warnings WHERE warning = ? LIMIT 1",
+        "SELECT 1 FROM runtime_warnings WHERE warning = ? AND status = 'active' LIMIT 1",
         (warning,),
     ).fetchone()
     if row is None:
         add_runtime_warning(connection, warning)
 
 
+def _warning_category(warning: str) -> str:
+    return warning.split(":", 1)[0].strip()
+
+
+def _warning_detail(warning: str) -> str:
+    if ":" not in warning:
+        return ""
+    return warning.split(":", 1)[1].strip()
+
+
+def _aggregate_runtime_warnings(warnings: list[str]) -> list[str]:
+    grouped: dict[str, list[str]] = {}
+    passthrough: list[str] = []
+    for warning in warnings:
+        category = _warning_category(warning)
+        detail = _warning_detail(warning)
+        if detail:
+            grouped.setdefault(category, []).append(detail)
+        else:
+            passthrough.append(warning)
+
+    aggregated: list[str] = []
+    for category, details in grouped.items():
+        deduped = list(dict.fromkeys(details))
+        if len(deduped) == 1:
+            aggregated.append(f"{category}: {deduped[0]}")
+            continue
+        entry_indexes: list[str] = []
+        block_indexes: list[str] = []
+        for detail in deduped:
+            entry_match = re.search(r"\bentry_index=(\d+)\b", detail)
+            block_match = re.search(r"\bblock_index=(\d+)\b", detail)
+            if entry_match is not None:
+                entry_indexes.append(entry_match.group(1))
+            if block_match is not None:
+                block_indexes.append(block_match.group(1))
+        if entry_indexes and len(entry_indexes) == len(deduped):
+            aggregated.append(f"{category}: {len(deduped)} entries")
+        elif block_indexes and len(block_indexes) == len(deduped):
+            aggregated.append(f"{category}: {len(deduped)} blocks")
+        else:
+            aggregated.append(f"{category}: {len(deduped)} occurrences")
+
+    return list(dict.fromkeys([*passthrough, *aggregated]))
+
+
 def fetch_runtime_warnings(connection: sqlite3.Connection) -> list[str]:
-    rows = connection.execute("SELECT warning FROM runtime_warnings ORDER BY id ASC").fetchall()
-    return [str(row["warning"]) for row in rows]
+    rows = connection.execute(
+        "SELECT warning FROM runtime_warnings WHERE status = 'active' ORDER BY id ASC"
+    ).fetchall()
+    return _aggregate_runtime_warnings([str(row["warning"]) for row in rows])
 
 
 def set_runtime_error(connection: sqlite3.Connection, code: str, message: str, stage: str) -> None:
     connection.execute(
-        "INSERT INTO runtime_errors (code, message, stage, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO runtime_errors (code, message, stage, created_at, status) VALUES (?, ?, ?, ?, 'active')",
         (code, message, stage, utc_now_iso()),
     )
     set_workflow_state(
@@ -379,9 +451,53 @@ def set_runtime_error(connection: sqlite3.Connection, code: str, message: str, s
     )
 
 
+def resolve_runtime_errors(
+    connection: sqlite3.Connection,
+    *,
+    stage: str | None = None,
+    code: str | None = None,
+) -> int:
+    clauses = ["status = 'active'"]
+    params: list[str] = []
+    if stage is not None:
+        clauses.append("stage = ?")
+        params.append(stage)
+    if code is not None:
+        clauses.append("code = ?")
+        params.append(code)
+    resolved_at = utc_now_iso()
+    cursor = connection.execute(
+        f"UPDATE runtime_errors SET status = 'resolved', resolved_at = ? WHERE {' AND '.join(clauses)}",
+        [resolved_at, *params],
+    )
+    if cursor.rowcount:
+        touch_runtime(connection)
+    return int(cursor.rowcount or 0)
+
+
+def resolve_runtime_warnings(
+    connection: sqlite3.Connection,
+    *,
+    warning_prefix: str | None = None,
+) -> int:
+    if warning_prefix is None:
+        cursor = connection.execute(
+            "UPDATE runtime_warnings SET status = 'resolved', resolved_at = ? WHERE status = 'active'",
+            (utc_now_iso(),),
+        )
+    else:
+        cursor = connection.execute(
+            "UPDATE runtime_warnings SET status = 'resolved', resolved_at = ? WHERE status = 'active' AND warning LIKE ?",
+            (utc_now_iso(), f"{warning_prefix}%"),
+        )
+    if cursor.rowcount:
+        touch_runtime(connection)
+    return int(cursor.rowcount or 0)
+
+
 def fetch_latest_error(connection: sqlite3.Connection) -> dict[str, str] | None:
     row = connection.execute(
-        "SELECT code, message, stage FROM runtime_errors ORDER BY id DESC LIMIT 1"
+        "SELECT code, message, stage FROM runtime_errors WHERE status = 'active' ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if row is None:
         return None

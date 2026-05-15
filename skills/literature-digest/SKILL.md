@@ -345,9 +345,10 @@ python scripts/stage_runtime.py bootstrap_runtime_db --source-path "/tmp/paper.m
   - `bootstrap_runtime_db` 成功后，且 gate 返回 `persist_render_templates`
 - 调用命令：
 ```bash
-python scripts/stage_runtime.py persist_render_templates --payload-file /tmp/render_templates.json
+python scripts/stage_runtime.py persist_render_templates [--payload-file /tmp/render_templates.json]
 ```
-- 必须提供的参数 / payload：
+- `en-*` / `zh-*` 目标语言可省略 payload，脚本会自动复制仓库内对应 source template。
+- 其它语言必须通过 `--payload-file` 提供：
   - `target_language`
   - `digest_template`
   - `citation_analysis_template`
@@ -355,7 +356,7 @@ python scripts/stage_runtime.py persist_render_templates --payload-file /tmp/ren
   - `target_language`：本次 run 最终要渲染的目标语言；必须与 bootstrap 已写入的 `language` 一致
   - `digest_template`：本次 run 专用的 digest Markdown 运行时模板
   - `citation_analysis_template`：本次 run 专用的 citation Markdown 运行时模板
-  - `en-*` / `zh-*`：直接复制仓库内对应 source template
+  - `en-*` / `zh-*`：省略 payload 时由脚本直接复制仓库内对应 source template
   - 其它语言：先基于仓库 source template 翻译，再写入这两个字段
 - 最小合法示例：
 ```json
@@ -542,7 +543,8 @@ python scripts/stage_runtime.py persist_reference_entry_splits --payload-file /t
   - `blocks`
 - 各 payload 字段含义：
   - `blocks[*].block_index`：当前需要复核的 suspect block 编号；只能来自 gate 返回的 `suspect_blocks`
-  - `blocks[*].resolution`：当前 block 的边界决策，只允许 `split` / `keep` / `merge`
+  - `review_generation_id`：可选；若提供，必须匹配当前 suspect set，避免复核旧版本 block
+  - `blocks[*].resolution`：当前 block 的边界决策，只允许 `split` / `keep` / `merge` / `force_keep`
   - `blocks[*].entries`：复核后的 raw entry 列表；只能调整边界，不得改写文本内容
 - 最小合法示例：
 ```json
@@ -640,7 +642,7 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
   - `items`
 - 各 payload 字段含义：
   - `items[*].ref_index`：对应哪条 citation workset item
-  - `items[*].function`：条目级语义类别
+  - `items[*].function`：条目级语义类别；只允许 `background` / `baseline` / `contrast` / `component` / `dataset` / `tooling` / `historical` / `uncategorized`
   - `items[*].topic`：这篇文献在当前综述范围里代表的主题、路线或对象
   - `items[*].usage`：原文为什么在这里引用它，用它支撑什么论证
   - `items[*].keywords`：2-5 个短词组，提炼该文献在当前综述范围中的任务、方法、对象或路线；不能把标题整句原样抄进来

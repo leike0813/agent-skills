@@ -20,7 +20,7 @@
 ## DB 已有旧状态时怎么判断能否续跑
 
 - 若 gate 返回的是正常主路径 `next_action`，说明可以续跑，不要清库。
-- 若 gate 返回 `repair_db_state`，优先补缺失的前置数据，不要直接重建全部 DB。
+- 若 gate 返回 `repair_db_state`，先执行 gate 返回的 `scripts/stage_runtime.py repair_db_state ...` 命令；该命令只做安全修复，例如补 `input_hash`、清理已恢复的 active error、从成功 receipt 恢复 workflow state。
 - 若 `runtime_inputs.source_path` 指向的源文件已经换了，当前 DB 不应复用，应删除整个 `.literature_digest_tmp/` 后重新 bootstrap。
 
 ## 哪些文件可以删除重跑

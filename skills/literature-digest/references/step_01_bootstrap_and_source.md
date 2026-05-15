@@ -203,11 +203,13 @@ python scripts/stage_runtime.py bootstrap_runtime_db \
 ```bash
 python scripts/stage_runtime.py persist_render_templates \
   --db-path "/abs/path/run-root/.literature_digest_tmp/literature_digest.db" \
-  --payload-file "/tmp/render_templates.json"
+  [--payload-file "/tmp/render_templates.json"]
 ```
 
 规则：
 - 本步必须在 `bootstrap_runtime_db` 之后执行
+- `zh-*` / `en-*` 目标语言可省略 payload，脚本会复制仓库内置模板
+- 其它语言仍必须用 `--payload-file` 提供翻译后的 runtime templates
 - `target_language` 必须与 bootstrap 已写入的 `language` 一致
 - `en-*` / `zh-*` 目标语言直接复制仓库 source template
 - 其它语言先翻译仓库 source template，再把最终模板字符串写入 payload

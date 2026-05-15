@@ -279,6 +279,7 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 
 ```json
 {
+  "review_generation_id": "review-0123abcd",
   "blocks": [
     {
       "block_index": 3,
@@ -295,8 +296,10 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 要求：
 
 - 这一步只修 entry boundary，不抽 `author[] / title / year`
+- `review_generation_id` 可选；若提供，必须匹配当前 gate / workset 返回的 suspect set
 - `blocks[*].block_index` 必须来自 gate 返回的 `suspect_blocks`
-- `blocks[*].resolution` 只允许 `split` / `keep` / `merge`
+- `blocks[*].resolution` 只允许 `split` / `keep` / `merge` / `force_keep`
+- `force_keep` 用于确认当前 suspect block 是假阳性；脚本会按单条 entry 接受并记录 warning
 - 全部 `blocks[*].entries[]` 规范化后连接起来，必须与对应 suspect block 的 `source_text` 完全一致
 - 若复核后仍残留 grouped-entry suspicion，脚本必须以 `reference_entry_splitting_failed` 阻断本阶段
 

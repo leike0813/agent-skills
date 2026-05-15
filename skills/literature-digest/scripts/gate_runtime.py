@@ -6,6 +6,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -359,6 +364,12 @@ def _sql_examples(stage: str, next_action: str) -> list[dict[str, str]]:
 
 
 def _command_example(next_action: str, db_path: Path) -> dict[str, Any] | None:
+    if next_action == "repair_db_state":
+        return {
+            "command": f'python scripts/stage_runtime.py repair_db_state --db-path "{db_path}"',
+            "payload_example": None,
+            "notes": "Use the formal repair command first. It only performs safe repairs such as filling missing runtime inputs, resolving stale diagnostics, and restoring workflow_state from successful receipts. SQL examples are diagnostic fallback guidance.",
+        }
     if next_action.startswith("repair_"):
         return None
 
@@ -386,13 +397,13 @@ def _command_example(next_action: str, db_path: Path) -> dict[str, Any] | None:
         }
     if next_action == "persist_render_templates":
         return {
-            "command": f"python scripts/stage_runtime.py persist_render_templates {db_arg} {payload_arg}",
+            "command": f"python scripts/stage_runtime.py persist_render_templates {db_arg} [--payload-file \"<PAYLOAD_FILE>\"]",
             "payload_example": {
                 "target_language": "fr-FR",
                 "digest_template": "## TL;DR\n{% for paragraph in digest_slots.tldr.paragraphs %}\n{{ paragraph }}\n{% endfor %}\n",
                 "citation_analysis_template": "## Signaux de citation dans la section de revue\n\n### Résumé\n{{ summary }}\n",
             },
-            "notes": "For en-* and zh-* targets, copy the matching repository source templates verbatim into this payload. For other languages, translate the repository source templates first, then persist them here as the runtime templates that render will consume.",
+            "notes": "For en-* and zh-* targets, omit --payload-file and the runtime will copy the matching repository templates. For other languages, translate the repository source templates first, then persist them through --payload-file.",
         }
     if next_action == "normalize_source":
         return {

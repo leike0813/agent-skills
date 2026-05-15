@@ -16,6 +16,11 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from jsonschema import validate  # type: ignore[import-untyped]
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -46,10 +51,12 @@ from runtime_db import (  # noqa: E402
     fetch_runtime_inputs,
     fetch_section_scope,
     fetch_source_document,
+    fetch_workflow_state,
     initialize_database,
     delete_action_receipts,
     has_action_receipt,
     register_artifact,
+    resolve_runtime_errors,
     set_runtime_error,
     set_runtime_input,
     set_workflow_state,
@@ -452,6 +459,7 @@ def _record_action_receipt(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     delete_action_receipts(connection, ACTION_RECEIPT_INVALIDATIONS.get(action_name, []))
+    resolve_runtime_errors(connection, stage=stage)
     store_action_receipt(connection, action_name=action_name, stage=stage, status="succeeded", metadata=metadata)
 
 
@@ -1283,6 +1291,25 @@ def _looks_like_reference_entry_start(text: str) -> bool:
     normalized = _normalize_reference_entry_text(text)
     if not normalized:
         return False
+    lowered = normalized.lower()
+    venue_prefixes = (
+        "in proceedings",
+        "proceedings",
+        "in:",
+        "pages ",
+        "pp.",
+        "journal ",
+        "conference ",
+        "in cvpr",
+        "in iccv",
+        "in eccv",
+        "in neurips",
+        "in nips",
+        "in iclr",
+        "in icml",
+    )
+    if lowered.startswith(venue_prefixes):
+        return False
     if REFERENCE_ENTRY_START_RE.match(normalized):
         return True
     return _looks_like_author_year_entry_start(normalized)
@@ -1322,6 +1349,10 @@ def _find_inline_reference_start_offsets(raw: str) -> list[int]:
     if not normalized:
         return []
     offsets = [0]
+    for match in re.finditer(r"\s(?=\[\d{1,4}\]\s+\S)", normalized):
+        candidate_offset = match.end()
+        if candidate_offset > 0:
+            offsets.append(candidate_offset)
     for match in REFERENCE_SENTENCE_BREAK_RE.finditer(normalized):
         candidate_offset = match.end()
         if candidate_offset >= len(normalized):
@@ -1551,6 +1582,15 @@ def _split_reference_entries(lines: list[str], scope: Scope) -> list[dict[str, A
     return _build_reference_entries_from_blocks(blocks)
 
 
+def _looks_like_full_name_author_part(text: str) -> bool:
+    tokens = [token.strip(" .") for token in re.split(r"\s+", text.strip()) if token.strip(" .")]
+    if len(tokens) < 2:
+        return False
+    if any(len(token) == 1 for token in tokens):
+        return False
+    return any(char.isalpha() for token in tokens for char in token)
+
+
 def _split_author_candidates(author_text: str) -> list[str]:
     text = author_text.strip().strip(" ,;:")
     if not text:
@@ -1558,6 +1598,10 @@ def _split_author_candidates(author_text: str) -> list[str]:
     comma_style = [match.group(0).strip().rstrip(" ,;:") for match in COMMA_STYLE_AUTHOR_RE.finditer(text)]
     if comma_style:
         return comma_style
+    if "," in text:
+        parts = [part.strip().rstrip(" ,;:") for part in text.split(",") if part.strip()]
+        if len(parts) > 1 and all(_looks_like_full_name_author_part(part) for part in parts):
+            return parts
     if ";" in text:
         return [part.strip().rstrip(" ,;:") for part in text.split(";") if part.strip()]
     if " and " in text.lower():
@@ -1930,7 +1974,7 @@ def _detect_reference_block_suspicions(
 
         if source_format in {"bibtex", "latex_bibitem"}:
             reasons = []
-        elif len(proposed_entries) > 1:
+        elif len(proposed_entries) > 1 and not all(REFERENCE_ENTRY_START_RE.match(entry.strip()) for entry in proposed_entries):
             reasons.append("single line contains multiple strong reference starts")
             suspicion_kind = "grouped_entries_in_single_line"
         elif not _ends_with_reference_tail(source_text):
@@ -1949,7 +1993,11 @@ def _detect_reference_block_suspicions(
                 reasons.append("following line looks like continuation text rather than a new reference entry")
                 suspicion_kind = "possible_multiline_entry"
         else:
-            if entry_style in {"author-year", "mixed"} and len(source_text) > 450:
+            has_detected_number = any(
+                dict(entry.get("metadata", {})).get("detected_ref_number") is not None
+                for entry in entries_by_block.get(block_index, [])
+            )
+            if entry_style == "author-year" and not has_detected_number and len(source_text) > 450:
                 reasons.append("entry text is unusually long for a single author-year reference")
                 suspicion_kind = suspicion_kind or "mixed_or_ambiguous_boundary"
 
@@ -2126,6 +2174,7 @@ def _build_reference_workset_export(
             "split_mode": "line-first",
             "grouping_suspect_count": len(suspect_blocks),
             "requires_split_review": requires_split_review,
+            "review_generation_id": _reference_review_generation_id(suspect_blocks) if suspect_blocks else "",
         },
         "blocks": [
             {
@@ -2799,9 +2848,10 @@ def _normalize_function_value(function_value: object) -> tuple[str, str | None]:
     normalized = str(function_value or "").strip().lower()
     if normalized in ALLOWED_CITATION_FUNCTIONS:
         return normalized, None
+    allowed = ", ".join(sorted(ALLOWED_CITATION_FUNCTIONS))
     if not normalized:
-        return "uncategorized", "citation function missing; normalized to uncategorized"
-    return "uncategorized", f"citation function '{function_value}' normalized to uncategorized"
+        return "uncategorized", f"citation function missing; normalized to uncategorized; allowed values: {allowed}"
+    return "uncategorized", f"citation function '{function_value}' normalized to uncategorized; allowed values: {allowed}"
 
 
 def _validate_citation_semantics_payload(
@@ -3417,6 +3467,7 @@ def _validate_public_output(
 
 
 def _set_success_state(connection, *, stage: str, substep: str, next_action: str, status: str) -> None:  # type: ignore[no-untyped-def]
+    resolve_runtime_errors(connection, stage=stage)
     set_workflow_state(
         connection,
         current_stage=stage,
@@ -3442,6 +3493,19 @@ def _validate_render_templates_payload(payload: dict[str, Any]) -> tuple[dict[st
         "digest_template": digest_template,
         "citation_analysis_template": citation_template,
     }, None
+
+
+def _default_render_templates_payload(language: str) -> dict[str, str] | None:
+    normalized = language.strip().lower()
+    if not normalized.startswith(("zh", "en")):
+        return None
+    digest_template_path = _repo_digest_template_path(language)
+    citation_template_path = _repo_citation_template_path(language)
+    return {
+        "target_language": language,
+        "digest_template": digest_template_path.read_text(encoding="utf-8"),
+        "citation_analysis_template": citation_template_path.read_text(encoding="utf-8"),
+    }
 
 
 def _handle_confirm_runtime_paths(args: argparse.Namespace) -> int:
@@ -3552,17 +3616,89 @@ def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
     return 0
 
 
+def _repair_state_from_receipts(connection) -> tuple[str, str, str, str]:  # type: ignore[no-untyped-def]
+    if has_action_receipt(connection, "render_and_validate"):
+        return ("stage_7_completed", "completed", "completed", "workflow completed")
+    if has_action_receipt(connection, "persist_citation_summary"):
+        return ("stage_6_render_and_validate", "render_and_validate", "render_and_validate", "ready to render final artifacts")
+    if has_action_receipt(connection, "persist_citation_timeline"):
+        return ("stage_5_citation", "persist_citation_summary", "persist_citation_summary", "ready to persist citation summary")
+    if has_action_receipt(connection, "persist_citation_semantics"):
+        return ("stage_5_citation", "persist_citation_timeline", "persist_citation_timeline", "ready to persist citation timeline")
+    if has_action_receipt(connection, "prepare_citation_workset"):
+        return ("stage_5_citation", "persist_citation_semantics", "persist_citation_semantics", "ready to persist citation semantics")
+    if has_action_receipt(connection, "persist_references"):
+        return ("stage_5_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
+    if has_action_receipt(connection, "persist_reference_entry_splits"):
+        return ("stage_4_references", "persist_references", "persist_references", "ready to persist references")
+    if has_action_receipt(connection, "prepare_references_workset"):
+        return ("stage_4_references", "persist_references", "persist_references", "ready to persist references")
+    if has_action_receipt(connection, "persist_digest"):
+        return ("stage_4_references", "prepare_references_workset", "prepare_references_workset", "ready to prepare references workset")
+    if has_action_receipt(connection, "persist_outline_and_scopes"):
+        return ("stage_3_digest", "persist_digest", "persist_digest", "ready to persist digest")
+    if has_action_receipt(connection, "normalize_source"):
+        return ("stage_2_outline_and_scopes", "persist_outline_and_scopes", "persist_outline_and_scopes", "ready to persist outline and scopes")
+    if has_action_receipt(connection, "persist_render_templates"):
+        return ("stage_1_normalize_source", "normalize_source", "normalize_source", "ready to normalize source")
+    if has_action_receipt(connection, "bootstrap_runtime_db"):
+        return ("stage_1_normalize_source", "persist_render_templates", "persist_render_templates", "ready to persist render templates")
+    if has_action_receipt(connection, "confirm_runtime_paths"):
+        return ("stage_0_bootstrap", "bootstrap_runtime_db", "bootstrap_runtime_db", "ready to bootstrap runtime database")
+    return ("stage_0_bootstrap", "confirm_runtime_paths", "confirm_runtime_paths", "runtime paths must be confirmed")
+
+
+def _handle_repair_db_state(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    initialize_database(db_path)
+    repairs: list[str] = []
+    with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        source_path_value = inputs.get("source_path", "")
+        if source_path_value and not inputs.get("input_hash"):
+            source_path = Path(source_path_value).expanduser().resolve()
+            if source_path.exists():
+                set_runtime_input(connection, "input_hash", sha256_path(source_path))
+                repairs.append("filled input_hash")
+
+        state = fetch_workflow_state(connection)
+        if state is not None:
+            active_error = fetch_latest_error(connection)
+            if active_error is not None:
+                resolved = resolve_runtime_errors(connection, stage=str(active_error["stage"]))
+                if resolved:
+                    repairs.append(f"resolved {resolved} active runtime error(s)")
+            stage, substep, next_action, status = _repair_state_from_receipts(connection)
+            set_workflow_state(
+                connection,
+                current_stage=stage,
+                current_substep=substep,
+                stage_gate="ready",
+                next_action=next_action,
+                status_summary=status,
+                last_error_code=None,
+            )
+            repairs.append(f"restored workflow_state to {stage}/{next_action}")
+        connection.commit()
+    print(json.dumps({"repairs": repairs, "db_path": str(db_path), "error": None}, ensure_ascii=False))
+    return 0
+
+
 def _handle_persist_render_templates(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
-    payload = _read_json_payload(args.payload_file)
-    normalized_payload, error = _validate_render_templates_payload(payload)
     with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        payload = _read_json_payload(args.payload_file)
+        if not payload:
+            default_payload = _default_render_templates_payload(str(inputs.get("language", "zh-CN") or "zh-CN"))
+            if default_payload is not None:
+                payload = default_payload
+        normalized_payload, error = _validate_render_templates_payload(payload)
         if error is not None or normalized_payload is None:
             set_runtime_error(connection, "render_templates_failed", error or "invalid render template payload", "stage_1_normalize_source")
             connection.commit()
             print(json.dumps({"error": {"code": "render_templates_failed", "message": error or "invalid render template payload"}}, ensure_ascii=False))
             return 2
-        inputs = fetch_runtime_inputs(connection)
         runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
         templates_dir = _runtime_templates_dir(runtime_paths)
         digest_template_path = (templates_dir / RUNTIME_DIGEST_TEMPLATE_FILENAME).resolve()
@@ -3917,6 +4053,7 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
         blocks = list(prepared["blocks"])
         suspect_blocks = list(prepared["suspect_blocks"])
         requires_split_review = bool(prepared["requires_split_review"])
+        review_generation_id = _reference_review_generation_id(suspect_blocks) if suspect_blocks else ""
         _replace_reference_workset(connection, entries=normalized_entries, candidates=candidates, batches=batches)
         for warning in warnings:
             add_runtime_warning_once(connection, warning)
@@ -3938,6 +4075,7 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
                 "requires_split_review": requires_split_review,
                 "entry_style": str(prepared["entry_style"]),
                 "grouping_suspect_count": len(suspect_blocks),
+                "review_generation_id": review_generation_id,
             },
         )
         connection.commit()
@@ -3968,6 +4106,7 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
                 "split_mode": "line-first",
                 "grouping_suspect_count": len(suspect_blocks),
                 "requires_split_review": requires_split_review,
+                "review_generation_id": review_generation_id,
                 "suspect_blocks": [
                     {
                         "block_index": block["block_index"],
@@ -3991,6 +4130,22 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
 def _canonical_reference_scope_text(lines: list[str], scope: Scope) -> str:
     scoped_lines, _ = _scope_lines_without_heading(lines, scope)
     return _normalize_reference_entry_text(" ".join(line.strip() for line in scoped_lines if line.strip()))
+
+
+def _reference_review_generation_id(suspect_blocks: list[dict[str, Any]]) -> str:
+    basis = json.dumps(
+        [
+            {
+                "block_index": block.get("block_index"),
+                "source_text": block.get("source_text"),
+                "member_block_indexes": block.get("member_block_indexes", []),
+            }
+            for block in suspect_blocks
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return f"review-{zlib.crc32(basis.encode('utf-8')) & 0xFFFFFFFF:08x}"
 
 
 def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
@@ -4030,6 +4185,24 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
             print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
             return 2
 
+        review_generation_id = _reference_review_generation_id(suspect_blocks)
+        submitted_generation_id = str(payload.get("review_generation_id", "")).strip()
+        if submitted_generation_id and submitted_generation_id != review_generation_id:
+            message = "review_generation_id is stale; reload the current suspect_blocks and resubmit"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "error": {"code": "reference_entry_splitting_failed", "message": message},
+                        "review_generation_id": review_generation_id,
+                        "suspect_blocks": suspect_blocks,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
         suspect_by_index = {int(block["block_index"]): block for block in suspect_blocks}
         if {int(block["block_index"]) for block in suspect_blocks} != {
             int(block.get("block_index", -1)) for block in blocks_payload if isinstance(block, dict)
@@ -4037,10 +4210,11 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
             message = "blocks must cover every suspect block exactly once"
             set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
             connection.commit()
-            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}, "suspect_blocks": suspect_blocks}, ensure_ascii=False))
+            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}, "review_generation_id": review_generation_id, "suspect_blocks": suspect_blocks}, ensure_ascii=False))
             return 2
 
         reviewed_blocks: dict[int, dict[str, Any]] = {}
+        force_kept_sources: set[str] = set()
         for index, block in enumerate(blocks_payload):
             if not isinstance(block, dict):
                 message = f"blocks[{index}] must be object"
@@ -4057,8 +4231,8 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                 return 2
             resolution = str(block.get("resolution", "")).strip()
-            if resolution not in {"split", "keep", "merge"}:
-                message = f"blocks[{index}].resolution must be split, keep, or merge"
+            if resolution not in {"split", "keep", "merge", "force_keep"}:
+                message = f"blocks[{index}].resolution must be split, keep, merge, or force_keep"
                 set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
@@ -4080,8 +4254,8 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
                     print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                     return 2
                 reviewed_entries.append(normalized)
-            if resolution == "merge" and len(reviewed_entries) != 1:
-                message = f"blocks[{index}].resolution=merge requires exactly one merged entry"
+            if resolution in {"merge", "force_keep"} and len(reviewed_entries) != 1:
+                message = f"blocks[{index}].resolution={resolution} requires exactly one entry"
                 set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
@@ -4105,6 +4279,8 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
                 "resolution": resolution,
                 "entries": reviewed_entries,
             }
+            if resolution == "force_keep":
+                force_kept_sources.add(canonical_source)
 
         reviewed_raw_entries: list[str] = []
         consumed_block_indexes: set[int] = set()
@@ -4137,6 +4313,22 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
 
         prepared = _prepare_reference_workset_state(lines=lines, scope=scope, reviewed_raw_entries=reviewed_raw_entries)
         suspect_blocks = list(prepared["suspect_blocks"])
+        if force_kept_sources:
+            suspect_blocks = [
+                block
+                for block in suspect_blocks
+                if _normalize_reference_entry_text(str(block.get("source_text", ""))) not in force_kept_sources
+            ]
+            if not suspect_blocks:
+                prepared["suspect_blocks"] = []
+                prepared["requires_split_review"] = False
+                prepared["warnings"] = [
+                    warning
+                    for warning in list(prepared["warnings"])
+                    if not warning.startswith(WARNING_REFERENCE_ENTRY_GROUPING_SUSPECT)
+                ]
+                for source in sorted(force_kept_sources):
+                    add_runtime_warning_once(connection, f"reference_entry_force_kept: {source[:120]}")
         if suspect_blocks:
             message = "reviewed entries still contain reference-boundary suspicion; resolve each suspect block into stable single references before persisting"
             set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
@@ -4147,6 +4339,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
                 json.dumps(
                     {
                         "error": {"code": "reference_entry_splitting_failed", "message": message},
+                        "review_generation_id": _reference_review_generation_id(suspect_blocks),
                         "suspect_blocks": [
                             {
                                 "block_index": block["block_index"],
@@ -4211,6 +4404,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
                 "split_mode": "line-first",
                 "grouping_suspect_count": 0,
                 "requires_split_review": False,
+                "review_generation_id": "",
                 "error": None,
             },
             ensure_ascii=False,
@@ -4310,9 +4504,14 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
 
             candidate_obj = candidates_by_entry[entry_index][selected_pattern]
             author = _as_str_list(item.get("author"))
-            oversplit_message = _detect_reference_author_oversplit(
-                author,
-                _as_str_list(candidate_obj.get("author_candidates")),
+            candidate_confidence = _as_confidence(candidate_obj.get("confidence"), 0.0)
+            oversplit_message = (
+                _detect_reference_author_oversplit(
+                    author,
+                    _as_str_list(candidate_obj.get("author_candidates")),
+                )
+                if candidate_confidence >= 0.6
+                else None
             )
             if oversplit_message is not None:
                 warning = f"{WARNING_REFERENCE_AUTHOR_OVERSPLIT}: entry_index={entry_index} pattern={selected_pattern}"
@@ -4965,6 +5164,10 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--generated-at", default="")
     bootstrap.add_argument("--model", default="")
     bootstrap.set_defaults(handler=_handle_bootstrap_runtime_db)
+
+    repair = subparsers.add_parser("repair_db_state")
+    repair.add_argument("--db-path", default="")
+    repair.set_defaults(handler=_handle_repair_db_state)
 
     render_templates = subparsers.add_parser("persist_render_templates")
     render_templates.add_argument("--db-path", default="")

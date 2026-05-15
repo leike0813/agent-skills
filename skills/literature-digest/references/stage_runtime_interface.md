@@ -47,6 +47,10 @@ python scripts/stage_runtime.py <subcommand> [args...]
 - `persist_citation_summary`
 - `render_and_validate --mode render`
 
+### 修复 subcommand
+
+- `repair_db_state`
+
 主路径强约束：
 
 - 一旦某项信息已由前序阶段写入 DB，后续主路径 subcommand 不得再通过 CLI / JSON 重传或覆盖
@@ -172,7 +176,8 @@ python scripts/stage_runtime.py persist_render_templates \
 
 ### 输入方式
 
-- 通过 stdin JSON 或 `--payload-file` 提供
+- `zh-*` / `en-*` 目标语言可省略 payload，脚本会复制仓库内置模板。
+- 其它语言通过 `--payload-file` 提供 payload；stdin 只保留为兼容 fallback。
 - payload 必须包含：
   - `target_language`
   - `digest_template`
@@ -285,7 +290,7 @@ python scripts/stage_runtime.py persist_outline_and_scopes \
 ### 支持的输入方式
 
 - `--payload-file FILE`
-- stdin JSON
+- stdin JSON（兼容 fallback；大 payload 仍优先 `--payload-file`）
 
 ### Payload 顶层结构
 
@@ -592,6 +597,7 @@ python scripts/stage_runtime.py persist_reference_entry_splits \
 
 ```json
 {
+  "review_generation_id": "review-...",
   "blocks": []
 }
 ```
@@ -600,6 +606,10 @@ python scripts/stage_runtime.py persist_reference_entry_splits \
 
 - `blocks`
   - 必填。仅包含当前 `suspect_blocks` 的局部复核结果。
+- `review_generation_id`
+  - 可选。若提供，必须匹配当前 suspect set。
+- `blocks[*].resolution`
+  - 只允许 `split` / `keep` / `merge` / `force_keep`。
 - `blocks[*].block_index`
   - 必填。必须对应当前 workset 返回的 suspect block。
 - `blocks[*].resolution`

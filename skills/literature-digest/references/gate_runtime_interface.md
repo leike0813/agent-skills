@@ -229,7 +229,7 @@ stdout 只输出一个 JSON 对象，字段固定为：
 - 正常主路径只参考 `command_example`
 - payload 类动作默认通过 `--payload-file <PATH>` 调用
 - `payload_example` 只展示最小合法 JSON，不替代阶段业务文档
-- 当 `next_action = persist_render_templates` 时，`payload_example` 会直接展示：
+- 当 `next_action = persist_render_templates` 时，`zh-*` / `en-*` 可省略 payload；其它语言的 `payload_example` 会展示：
   - `target_language`
   - `digest_template`
   - `citation_analysis_template`
@@ -237,7 +237,7 @@ stdout 只输出一个 JSON 对象，字段固定为：
 
 ## `sql_examples` 约束
 
-`sql_examples` 只在 repair 阶段提供最小 SQL 示例，不提供全量 SQL 手册。
+`repair_db_state` 优先使用 gate 返回的正式 `command_example` 执行。`sql_examples` 只在 repair 阶段提供最小诊断 SQL 示例，不提供全量 SQL 手册。
 
 如果当前动作是 repair，`sql_examples` 默认偏向：
 
