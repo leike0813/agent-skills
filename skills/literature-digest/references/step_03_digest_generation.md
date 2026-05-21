@@ -60,18 +60,43 @@
   },
   "section_summaries": [
     { "source_heading": "Introduction", "items": ["...", "..."] }
-  ]
+  ],
+  "representative_image": {
+    "status": "none"
+  }
 }
 ```
 
 约束：
 
-- 本步只接受 `digest_slots + section_summaries`
+- 本步只接受 `digest_slots + section_summaries`，以及可选的 `representative_image`
 - `digest_slots` 必须完整覆盖 5 个固定槽位
 - `section_summaries` 必须按大纲顺序提供
 - 最终 digest 直接由 `digest_slots + section_summaries` 渲染
 - LLM 只负责槽位内容，不负责最终标题文本与排版
 - `language` 不来自本阶段 payload；最终标题语言只允许来自 `runtime_inputs.language`
+- `representative_image` 只能基于文本证据判断；本 skill 不读取、确认、导出图片本体
+
+### 代表图选择规则
+
+- 若能从正文、caption、Markdown/HTML 图片引用、PDF 解析文本中的 figure label/caption/page hint 可靠定位图片，则输出 `representative_image.status = "selected"`。
+- 优先选择概括论文核心方法、系统架构、pipeline、模型结构、总体实验设计或关键结果的图；method / architecture / pipeline figure 优先于 central results figure。
+- 避免选择纯表格、只有公式的图、页面装饰图或低信息量图片。
+- Markdown 输入中若选择 `![caption](figures/foo.png)` 或 `<img src="figures/foo.png">`，`source_kind` 使用 `markdown_image_ref`，`markdown_src_hint` 必须来自原 Markdown 中实际出现的 src，不要改写为绝对路径。
+- LaTeX 输入中若规范化文本保留了 `\includegraphics{...}`、`\includegraphics[...]{...}` 或等价图片路径线索，可复用 `source_kind="markdown_image_ref"` 与 `markdown_src_hint` 表达该原文图片路径；`markdown_src_hint` 仍必须取自原文路径文本，不补全扩展名、不改写目录、不检查文件存在性。
+- PDF 输入不提取图片本体；若文本解析中有 figure label/caption/page 信息，`source_kind` 使用 `pdf_figure_caption`，只输出 label/caption/page metadata。
+- 若完全无法可靠定位代表图，输出 `{"status": "none"}`。
+
+`status="selected"` 时字段要求：
+
+- `source_kind`：`markdown_image_ref` 或 `pdf_figure_caption`
+- `label`：来自正文或 caption，例如 `Figure 1`、`Fig. 2`、`Figure 3a`
+- `caption_quote`：从原文摘取的短 caption 片段，建议不超过 240 字符，不改写
+- `section_hint`：图片附近章节名，没有就省略
+- `page_hint`：可靠获得页码时使用 1-based page number，否则省略
+- `markdown_src_hint`：Markdown/HTML/LaTeX 文本图片引用可用，填写原文中出现的 src/path hint
+- `selection_reason`：一句话说明为什么这张图最能代表论文
+- `confidence`：`high`、`medium` 或 `low`
 
 ### LLM 实际提交内容与最终 Markdown 的映射关系
 
@@ -112,7 +137,18 @@
   },
   "section_summaries": [
     { "source_heading": "Introduction", "items": ["定义问题背景", "总结主要挑战"] }
-  ]
+  ],
+  "representative_image": {
+    "status": "selected",
+    "source_kind": "markdown_image_ref",
+    "label": "Figure 2",
+    "caption_quote": "Overview of the proposed pipeline",
+    "section_hint": "Methods",
+    "page_hint": 4,
+    "markdown_src_hint": "figures/overview.png",
+    "selection_reason": "该图概括论文核心方法流程。",
+    "confidence": "medium"
+  }
 }
 ```
 

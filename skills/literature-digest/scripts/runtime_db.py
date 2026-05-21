@@ -163,6 +163,12 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS representative_image (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            content_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS reference_entries (
             entry_index INTEGER PRIMARY KEY,
             raw TEXT NOT NULL,
@@ -817,6 +823,29 @@ def fetch_digest_section_summaries(connection: sqlite3.Connection) -> list[dict[
         }
         for row in rows
     ]
+
+
+def store_representative_image(connection: sqlite3.Connection, representative_image: dict[str, Any]) -> None:
+    now = utc_now_iso()
+    connection.execute(
+        """
+        INSERT INTO representative_image (id, content_json, updated_at)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            content_json = excluded.content_json,
+            updated_at = excluded.updated_at
+        """,
+        (_json_dump(representative_image), now),
+    )
+    touch_runtime(connection)
+
+
+def fetch_representative_image(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    row = connection.execute("SELECT content_json FROM representative_image WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    obj = json.loads(str(row["content_json"]))
+    return obj if isinstance(obj, dict) else None
 
 
 def store_reference_entries(connection: sqlite3.Connection, entries: list[dict[str, Any]]) -> None:
@@ -1641,6 +1670,9 @@ def build_public_output_payload(connection: sqlite3.Connection) -> dict[str, Any
     }
     if "citation_analysis_report_path" in artifacts:
         payload["citation_analysis_report_path"] = str(Path(artifacts["citation_analysis_report_path"]["path"]).expanduser().resolve())
+    representative_image = fetch_representative_image(connection)
+    if representative_image is not None:
+        payload["representative_image"] = representative_image
     latest_error = fetch_latest_error(connection)
     if latest_error is not None:
         payload["error"] = {"code": latest_error["code"], "message": latest_error["message"]}

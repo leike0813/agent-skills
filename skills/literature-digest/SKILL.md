@@ -30,6 +30,17 @@ compatibility: Requires local filesystem read access to source_path; no network 
   "references_path": "/abs/path/references.json",
   "citation_analysis_path": "/abs/path/citation_analysis.json",
   "citation_analysis_report_path": "/abs/path/citation_analysis.md",
+  "representative_image": {
+    "status": "selected",
+    "source_kind": "markdown_image_ref",
+    "label": "Figure 2",
+    "caption_quote": "Overview of the proposed pipeline",
+    "section_hint": "Methods",
+    "page_hint": 4,
+    "markdown_src_hint": "figures/overview.png",
+    "selection_reason": "该图概括论文核心方法流程。",
+    "confidence": "medium"
+  },
   "provenance": {
     "generated_at": "2026-03-31T09:00:00Z",
     "input_hash": "sha256:0123456789abcdef",
@@ -75,6 +86,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - `error`
 - stdout 可选包含：
   - `citation_analysis_report_path`
+  - `representative_image`
 - 最终公开产物固定为：
   - `digest.md`
   - `references.json`
@@ -470,6 +482,8 @@ python scripts/stage_runtime.py persist_digest --payload-file /tmp/digest_payloa
 - 必须提供的参数 / payload：
   - `digest_slots`
   - `section_summaries`
+- 可选提供的参数 / payload：
+  - `representative_image`
 - 各 payload 字段含义：
   - `digest_slots.tldr.paragraphs`：全局摘要段落数组
   - `digest_slots.research_question_and_contributions.research_question`：研究问题一句话说明
@@ -479,6 +493,24 @@ python scripts/stage_runtime.py persist_digest --payload-file /tmp/digest_payloa
   - `digest_slots.limitations_and_reproducibility.items`：局限与可复现性线索列表
   - `section_summaries[*].source_heading`：对应原文章节标题
   - `section_summaries[*].items`：该章节的要点列表
+  - `representative_image`：代表图选择结果；只能基于正文文本、caption、Markdown/HTML 图片引用、PDF 解析文本中的 figure label/caption/page hint 判断，不读取或导出图片本体
+- `representative_image` 选择规则：
+  - 若有明确文本证据，优先选择能概括论文核心方法、系统架构、pipeline、模型结构、总体实验设计或关键结果的图；method / architecture / pipeline figure 优先于 central results figure
+  - 避免选择纯表格、只有公式的图、页面装饰图或低信息量图片
+  - Markdown 输入中若选择 `![caption](figures/foo.png)` 或 `<img src="figures/foo.png">`，`markdown_src_hint` 必须来自原文实际出现的 src，不改写为绝对路径，不确认文件是否存在
+  - LaTeX 输入中若规范化文本保留了 `\includegraphics{...}`、`\includegraphics[...]{...}` 或等价图片路径线索，可复用 `source_kind="markdown_image_ref"` 与 `markdown_src_hint` 表达该原文图片路径；`markdown_src_hint` 仍必须取自原文路径文本，不补全扩展名、不改写目录、不检查文件存在性
+  - PDF 输入不提取或导出图片本体；若 PDF 文本中有可靠 figure label/caption/page 信息，可输出 `source_kind="pdf_figure_caption"`，否则返回 `{"status":"none"}`
+  - 没有明确文本证据可定位图片时，必须返回 `{"status":"none"}`
+- `representative_image` 字段：
+  - `status`：必须为 `selected` 或 `none`
+  - `source_kind`：`selected` 时填写，只能为 `markdown_image_ref` 或 `pdf_figure_caption`
+  - `label`：来自正文或 caption，例如 `Figure 1`、`Fig. 2`、`Figure 3a`，不得编造
+  - `caption_quote`：原文中的短 caption 片段，建议不超过 240 字符，不改写
+  - `section_hint`：图片附近章节名，没有就省略
+  - `page_hint`：能可靠获得页码时使用 1-based page number，否则省略
+  - `markdown_src_hint`：Markdown/HTML/LaTeX 文本图片引用可用，填写原文中出现的 src/path hint
+  - `selection_reason`：一句话说明为什么这张图最能代表论文
+  - `confidence`：`high`、`medium` 或 `low`
 - 最小合法示例：
 ```json
 {
@@ -494,7 +526,10 @@ python scripts/stage_runtime.py persist_digest --payload-file /tmp/digest_payloa
   },
   "section_summaries": [
     {"source_heading": "Introduction", "items": ["定义研究背景", "说明核心挑战"]}
-  ]
+  ],
+  "representative_image": {
+    "status": "none"
+  }
 }
 ```
 - 完成后应该看到的 gate 结果：
@@ -757,6 +792,7 @@ python scripts/stage_runtime.py render_and_validate --mode render
   - `references_path`：最终 references 文件路径
   - `citation_analysis_path`：最终 citation analysis JSON 路径
   - `citation_analysis_report_path`：可选 Markdown 报告路径
+  - `representative_image`：可选代表图选择结果；若 digest 阶段未提交则不输出
   - `literature-digest.result.json`：render 脚本把最终 stdout JSON 同步镜像到 DB 中 `result_json_path` 指定的固定结果文件
 - 最小合法示例：
 ```bash

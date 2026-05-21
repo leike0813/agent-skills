@@ -21,6 +21,98 @@
             "x-type": "artifact",
             "x-role": "citation-analysis-report"
         },
+        "representative_image": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "selected",
+                        "none"
+                    ]
+                },
+                "source_kind": {
+                    "type": "string",
+                    "enum": [
+                        "markdown_image_ref",
+                        "pdf_figure_caption"
+                    ]
+                },
+                "label": {
+                    "type": "string"
+                },
+                "caption_quote": {
+                    "type": "string"
+                },
+                "section_hint": {
+                    "type": "string"
+                },
+                "page_hint": {
+                    "type": [
+                        "integer",
+                        "null"
+                    ],
+                    "minimum": 1
+                },
+                "markdown_src_hint": {
+                    "type": "string"
+                },
+                "selection_reason": {
+                    "type": "string"
+                },
+                "confidence": {
+                    "type": "string",
+                    "enum": [
+                        "high",
+                        "medium",
+                        "low"
+                    ]
+                }
+            },
+            "required": [
+                "status"
+            ],
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "status": {
+                                "const": "none"
+                            }
+                        }
+                    },
+                    "then": {
+                        "properties": {
+                            "status": {
+                                "const": "none"
+                            }
+                        },
+                        "required": [
+                            "status"
+                        ],
+                        "additionalProperties": false
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "status": {
+                                "const": "selected"
+                            }
+                        }
+                    },
+                    "then": {
+                        "required": [
+                            "source_kind",
+                            "label",
+                            "caption_quote",
+                            "selection_reason",
+                            "confidence"
+                        ]
+                    }
+                }
+            ]
+        },
         "provenance": {
             "type": "object",
             "properties": {

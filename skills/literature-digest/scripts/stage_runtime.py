@@ -71,6 +71,7 @@ from runtime_db import (  # noqa: E402
     store_citation_workset_items,
     store_digest_section_summaries,
     store_digest_slots,
+    store_representative_image,
     store_outline_nodes,
     store_reference_batch,
     store_reference_entries,
@@ -2736,39 +2737,98 @@ def _normalize_keyword_list(value: object, field_name: str) -> tuple[list[str] |
     return normalized, None
 
 
-def _validate_digest_payload(payload: dict[str, Any]) -> tuple[dict[str, dict[str, Any]] | None, list[dict[str, Any]] | None, str | None]:
+def _validate_representative_image_obj(value: object, *, field_name: str = "representative_image") -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(value, dict):
+        return None, f"{field_name} must be object"
+    status = value.get("status")
+    if status not in {"selected", "none"}:
+        return None, f"{field_name}.status must be selected or none"
+    if status == "none":
+        return {"status": "none"}, None
+
+    source_kind = value.get("source_kind")
+    if source_kind not in {"markdown_image_ref", "pdf_figure_caption"}:
+        return None, f"{field_name}.source_kind must be markdown_image_ref or pdf_figure_caption"
+
+    normalized: dict[str, Any] = {"status": "selected", "source_kind": source_kind}
+    for key in ("label", "caption_quote", "selection_reason"):
+        item = value.get(key)
+        if not isinstance(item, str) or not item.strip():
+            return None, f"{field_name}.{key} must be non-empty string"
+        normalized[key] = item.strip()
+
+    confidence = value.get("confidence")
+    if confidence not in {"high", "medium", "low"}:
+        return None, f"{field_name}.confidence must be high, medium, or low"
+    normalized["confidence"] = confidence
+
+    section_hint = value.get("section_hint")
+    if isinstance(section_hint, str) and section_hint.strip():
+        normalized["section_hint"] = section_hint.strip()
+    elif section_hint not in (None, ""):
+        return None, f"{field_name}.section_hint must be string when present"
+
+    page_hint = value.get("page_hint")
+    if page_hint is not None:
+        normalized_page = _as_int_or_none(page_hint)
+        if normalized_page is None or normalized_page <= 0:
+            return None, f"{field_name}.page_hint must be positive integer when present"
+        normalized["page_hint"] = normalized_page
+
+    markdown_src_hint = value.get("markdown_src_hint")
+    if source_kind == "markdown_image_ref":
+        if not isinstance(markdown_src_hint, str) or not markdown_src_hint.strip():
+            return None, f"{field_name}.markdown_src_hint must be non-empty string for markdown_image_ref"
+        normalized["markdown_src_hint"] = markdown_src_hint.strip()
+    elif isinstance(markdown_src_hint, str) and markdown_src_hint.strip():
+        return None, f"{field_name}.markdown_src_hint is only valid for markdown_image_ref"
+    elif markdown_src_hint not in (None, ""):
+        return None, f"{field_name}.markdown_src_hint must be string when present"
+
+    return normalized, None
+
+
+def _validate_digest_payload(
+    payload: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]] | None, list[dict[str, Any]] | None, dict[str, Any] | None, str | None]:
     if "sections" in payload:
-        return None, None, "deprecated payload key 'sections' is not supported; use digest_slots + section_summaries"
+        return None, None, None, "deprecated payload key 'sections' is not supported; use digest_slots + section_summaries"
 
     digest_slots_obj = payload.get("digest_slots")
     section_summaries_obj = payload.get("section_summaries")
     if not isinstance(digest_slots_obj, dict):
-        return None, None, "digest_slots must be object"
+        return None, None, None, "digest_slots must be object"
     if not isinstance(section_summaries_obj, list):
-        return None, None, "section_summaries must be array"
+        return None, None, None, "section_summaries must be array"
+
+    representative_image = None
+    if "representative_image" in payload:
+        representative_image, error = _validate_representative_image_obj(payload.get("representative_image"))
+        if error is not None:
+            return None, None, None, error
 
     normalized_slots: dict[str, dict[str, Any]] = {}
 
     tldr = digest_slots_obj.get("tldr")
     if not isinstance(tldr, dict):
-        return None, None, "digest_slots.tldr must be object"
+        return None, None, None, "digest_slots.tldr must be object"
     paragraphs, error = _require_string_list(tldr.get("paragraphs"), "digest_slots.tldr.paragraphs")
     if error is not None:
-        return None, None, error
+        return None, None, None, error
     normalized_slots["tldr"] = {"paragraphs": paragraphs}
 
     research = digest_slots_obj.get("research_question_and_contributions")
     if not isinstance(research, dict):
-        return None, None, "digest_slots.research_question_and_contributions must be object"
+        return None, None, None, "digest_slots.research_question_and_contributions must be object"
     research_question = research.get("research_question")
     if not isinstance(research_question, str):
-        return None, None, "digest_slots.research_question_and_contributions.research_question must be string"
+        return None, None, None, "digest_slots.research_question_and_contributions.research_question must be string"
     contributions, error = _require_string_list(
         research.get("contributions"),
         "digest_slots.research_question_and_contributions.contributions",
     )
     if error is not None:
-        return None, None, error
+        return None, None, None, error
     normalized_slots["research_question_and_contributions"] = {
         "research_question": research_question,
         "contributions": contributions,
@@ -2777,22 +2837,22 @@ def _validate_digest_payload(payload: dict[str, Any]) -> tuple[dict[str, dict[st
     for slot_key in ("method_highlights", "key_results", "limitations_and_reproducibility"):
         slot_value = digest_slots_obj.get(slot_key)
         if not isinstance(slot_value, dict):
-            return None, None, f"digest_slots.{slot_key} must be object"
+            return None, None, None, f"digest_slots.{slot_key} must be object"
         items, error = _require_string_list(slot_value.get("items"), f"digest_slots.{slot_key}.items")
         if error is not None:
-            return None, None, error
+            return None, None, None, error
         normalized_slots[slot_key] = {"items": items}
 
     normalized_summaries: list[dict[str, Any]] = []
     for index, summary in enumerate(section_summaries_obj, start=1):
         if not isinstance(summary, dict):
-            return None, None, "section_summaries items must be objects"
+            return None, None, None, "section_summaries items must be objects"
         source_heading = summary.get("source_heading")
         if not isinstance(source_heading, str):
-            return None, None, "section_summaries.source_heading must be string"
+            return None, None, None, "section_summaries.source_heading must be string"
         items, error = _require_string_list(summary.get("items"), "section_summaries.items")
         if error is not None:
-            return None, None, error
+            return None, None, None, error
         normalized_summaries.append(
             {
                 "position": int(summary.get("position", index)),
@@ -2801,7 +2861,7 @@ def _validate_digest_payload(payload: dict[str, Any]) -> tuple[dict[str, dict[st
             }
         )
 
-    return normalized_slots, normalized_summaries, None
+    return normalized_slots, normalized_summaries, representative_image, None
 
 
 def _validate_digest_coverage(connection, digest_slots: dict[str, dict[str, Any]], section_summaries: list[dict[str, Any]]) -> tuple[list[str], str | None]:  # type: ignore[no-untyped-def]
@@ -3383,6 +3443,12 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
     }
     if citation_report_path.exists():
         out["citation_analysis_report_path"] = str(citation_report_path)
+    if "representative_image" in candidate:
+        representative_image, representative_error = _validate_representative_image_obj(candidate.get("representative_image"))
+        if representative_error is None and representative_image is not None:
+            out["representative_image"] = representative_image
+        else:
+            out["warnings"] = _as_str_list(out.get("warnings")) + [f"representative_image ignored: {representative_error}"]
     return out
 
 
@@ -3406,6 +3472,10 @@ def _validate_public_output(
         errors.append("provenance must be object")
 
     errors.extend(_validate_error_obj(payload.get("error")))
+    if "representative_image" in payload:
+        _, representative_error = _validate_representative_image_obj(payload.get("representative_image"))
+        if representative_error is not None:
+            errors.append(representative_error)
 
     references_path = payload.get("references_path", "")
     if isinstance(references_path, str) and references_path:
@@ -3976,7 +4046,7 @@ def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
 def _handle_persist_digest(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
-    digest_slots, section_summaries, error = _validate_digest_payload(payload)
+    digest_slots, section_summaries, representative_image, error = _validate_digest_payload(payload)
     with connect_db(db_path) as connection:
         if error is not None or digest_slots is None or section_summaries is None:
             set_runtime_error(connection, "digest_stage_failed", error or "invalid digest payload", "stage_3_digest")
@@ -3991,6 +4061,8 @@ def _handle_persist_digest(args: argparse.Namespace) -> int:
             return 2
         store_digest_slots(connection, digest_slots)
         store_digest_section_summaries(connection, section_summaries)
+        if representative_image is not None:
+            store_representative_image(connection, representative_image)
         for warning in coverage_warnings:
             add_runtime_warning_once(connection, warning)
         _set_success_state(
@@ -4007,6 +4079,7 @@ def _handle_persist_digest(args: argparse.Namespace) -> int:
             {
                 "stored_digest_slots": len(digest_slots),
                 "stored_section_summaries": len(section_summaries),
+                "representative_image": representative_image,
                 "error": None,
             },
             ensure_ascii=False,
