@@ -55,7 +55,9 @@
                     "minimum": 1
                 },
                 "markdown_src_hint": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
                 },
                 "selection_reason": {
                     "type": "string"
@@ -109,6 +111,50 @@
                             "selection_reason",
                             "confidence"
                         ]
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "status": {
+                                "const": "selected"
+                            },
+                            "source_kind": {
+                                "const": "markdown_image_ref"
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "source_kind"
+                        ]
+                    },
+                    "then": {
+                        "required": [
+                            "markdown_src_hint"
+                        ]
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "status": {
+                                "const": "selected"
+                            },
+                            "source_kind": {
+                                "const": "pdf_figure_caption"
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "source_kind"
+                        ]
+                    },
+                    "then": {
+                        "not": {
+                            "required": [
+                                "markdown_src_hint"
+                            ]
+                        }
                     }
                 }
             ]

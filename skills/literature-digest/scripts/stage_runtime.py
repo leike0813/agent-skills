@@ -2780,10 +2780,8 @@ def _validate_representative_image_obj(value: object, *, field_name: str = "repr
         if not isinstance(markdown_src_hint, str) or not markdown_src_hint.strip():
             return None, f"{field_name}.markdown_src_hint must be non-empty string for markdown_image_ref"
         normalized["markdown_src_hint"] = markdown_src_hint.strip()
-    elif isinstance(markdown_src_hint, str) and markdown_src_hint.strip():
+    elif "markdown_src_hint" in value:
         return None, f"{field_name}.markdown_src_hint is only valid for markdown_image_ref"
-    elif markdown_src_hint not in (None, ""):
-        return None, f"{field_name}.markdown_src_hint must be string when present"
 
     return normalized, None
 
