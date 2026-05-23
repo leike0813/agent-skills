@@ -495,6 +495,9 @@ python scripts/stage_runtime.py persist_digest --payload-file /tmp/digest_payloa
   - `section_summaries[*].items`：该章节的要点列表
   - `representative_image`：代表图选择结果；只能基于正文文本、caption、Markdown/HTML 图片引用、PDF 解析文本中的 figure label/caption/page hint 判断，不读取或导出图片本体
 - `representative_image` 选择规则：
+  - 必须主动寻找代表图候选，不得因为本 skill 不能读取图片本体就直接返回 `{"status":"none"}`；只要文本中存在可定位的图片引用、figure label、caption 或 LaTeX 图片路径，就必须基于 caption、附近段落、章节名和全文主题做选择判断
+  - `{"status":"none"}` 只允许用于没有可定位图片文本证据，或所有候选都明显属于纯表格、公式图、装饰图等低信息量内容；不得把 `none` 用作避免在多个候选之间排序的默认值
+  - 当存在多个候选但证据强弱不一时，必须选择最能代表论文主线的一张，并用 `confidence="medium"` 或 `confidence="low"` 表达不确定性，而不是返回 `none`
   - 若有明确文本证据，优先选择能概括论文核心方法、系统架构、pipeline、模型结构、总体实验设计或关键结果的图；method / architecture / pipeline figure 优先于 central results figure
   - 避免选择纯表格、只有公式的图、页面装饰图或低信息量图片
   - Markdown 输入中若选择 `![caption](figures/foo.png)` 或 `<img src="figures/foo.png">`，`markdown_src_hint` 必须来自原文实际出现的 src，不改写为绝对路径，不确认文件是否存在

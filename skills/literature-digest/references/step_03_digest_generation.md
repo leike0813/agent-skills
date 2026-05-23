@@ -79,6 +79,10 @@
 
 ### 代表图选择规则
 
+- 本阶段必须主动寻找代表图候选，不得因为不能读取图片本体就直接返回 `{"status": "none"}`。只要文本中存在可定位的图片引用、figure label、caption 或 LaTeX 图片路径，就必须基于 caption、附近段落、章节名和全文主题做选择判断。
+- 返回 `{"status": "none"}` 前，必须确认没有可定位图片文本证据，或所有候选都明显属于纯表格、公式图、页面装饰图、logo/封面装饰等低信息量内容。`none` 不是规避排序或规避低置信选择的默认值。
+- 当存在多个候选但证据强弱不一时，必须选择最能代表论文主线的一张，并通过 `confidence="medium"` 或 `confidence="low"` 表达不确定性；不要因为无法达到高置信度而返回 `none`。
+- 候选召回时优先检查包含以下线索的 label/caption/附近段落：`overview`、`framework`、`architecture`、`pipeline`、`method`、`model`、`workflow`、`system`、`design`、`approach`、`results`、`main`、`overall`、`proposed`，以及对应中文“概览、框架、架构、流程、方法、模型、系统、设计、总体、提出、结果”等词。
 - 若能从正文、caption、Markdown/HTML 图片引用、PDF 解析文本中的 figure label/caption/page hint 可靠定位图片，则输出 `representative_image.status = "selected"`。
 - 优先选择概括论文核心方法、系统架构、pipeline、模型结构、总体实验设计或关键结果的图；method / architecture / pipeline figure 优先于 central results figure。
 - 避免选择纯表格、只有公式的图、页面装饰图或低信息量图片。
