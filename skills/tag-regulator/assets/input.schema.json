@@ -18,6 +18,12 @@
       "description": "Absolute path to controlled vocabulary file injected by Strict Key-Matching from uploads/valid_tags.",
       "x-input-source": "file",
       "extensions": [".yaml", ".yml", ".json"]
+    },
+    "digest_markdown": {
+      "type": "string",
+      "description": "Optional absolute path to a paper digest markdown file injected from uploads/digest_markdown.",
+      "x-input-source": "file",
+      "extensions": [".md", ".markdown"]
     }
   },
   "required": ["input_tags", "valid_tags"],

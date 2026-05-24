@@ -18,6 +18,7 @@ metadata:
 - `{{ parameter.valid_tags_format }}`：受控词表文件格式（`yaml|json|auto`），默认 `yaml`
 - `{{ parameter.tag_note_language }}`：`suggest_tags[].note` 使用的语言（自由字符串，推荐 BCP 47，如 `zh-CN`/`en-US`）
 - `{{ input.valid_tags }}`：受控词表文件路径
+- `{{ input.digest_markdown }}`：可选 digest Markdown 文件路径（用于推断补充语义证据）
 
 在 stdout 输出**且只能输出一个 JSON 对象**，描述：
 
@@ -89,6 +90,7 @@ metadata:
 - 确保 `input_tags` 为字符串数组。
 - `metadata` 允许自由类型（JSON 对象、纯文本、bibtex-like 字符串均可）。
 - 读取 `{{ input.valid_tags }}` 文件路径，确定 `valid_tags_format`（默认 `yaml`）。
+- `digest_markdown` 为可选输入：缺失或空值时直接忽略；不可读/编码异常时记录 `warnings` 后忽略，不得触发失败兜底。
 - 若 `input_tags` 缺失/非法，或 `{{ input.valid_tags }}` 读取/解析/结构校验失败 → 按“失败兜底”直接返回错误输出。
 
 #### valid_tags_format 解析规则（必须遵守）
@@ -163,13 +165,17 @@ JSON：
 3) `keywords`
 4) `conference_name`
 5) `publication_title`
+6) `digest_markdown`（仅当可读时，作为 metadata 之后的补充语义证据）
 
 推断规则：
 
+- 受控词表约束最高；`input_tags` 与 `metadata` 为主证据；`digest_markdown` 仅用于补足摘要缺失、细化任务/方法/模型语义与提升 `suggest_tags[].note` 质量。
 - 推断结果必须优先映射到 `valid_tags`（即：只把受控词表支持的 tag 写入 `add_tags`）。
+- `digest_markdown` 不得绕过词表约束直接写入 `add_tags`。
 - 若某个概念很相关但不在 `valid_tags`，则将其归一化后写入 `suggest_tags[].tag`，并生成对应 `suggest_tags[].note`，不得写入 `add_tags`。
 - suggest_tags[].note **必须是简短的，直接的对于 `suggest_tags[].tag` 的语义描述，例如 `目标检测`、`DEtection TRansformer`、`端到端训练` 等，不需要对原因进行说明！不允许加入额外的描述！**
 - suggest_tags[].note 如果是不适合翻译的专有概念（如 `Vision Transformer`、`Ground Truth`等），可以保留原文而不进行翻译。
+- `infer_tag=false` 时，必须忽略 `digest_markdown`，不得触发推断增强。
 - 若不确定，倾向于不添加，并在 `warnings` 中说明不确定性。
 
 ### Step 4：确定性输出整形（稳定排序）

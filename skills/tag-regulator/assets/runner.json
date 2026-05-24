@@ -9,7 +9,7 @@
   ],
   "entrypoint": {
     "prompts": {
-      "common": "- file inputs: valid_tags={{ input.valid_tags }}\n- inline inputs: metadata={{ input.metadata }}, input_tags={{ input.input_tags }}\n- parameters: valid_tags_format={{ parameter.valid_tags_format }}, infer_tag={{ parameter.infer_tag }}, tag_note_language={{ parameter.tag_note_language }}\n\nExecute the tasks strictly according to `SKILL.md`. Output **exactly one valid JSON object** to stdout."
+      "common": "- file inputs: valid_tags={{ input.valid_tags }}, digest_markdown={{ input.digest_markdown }} (optional)\n- inline inputs: metadata={{ input.metadata }}, input_tags={{ input.input_tags }}\n- parameters: valid_tags_format={{ parameter.valid_tags_format }}, infer_tag={{ parameter.infer_tag }}, tag_note_language={{ parameter.tag_note_language }}\n\nExecute the tasks strictly according to `SKILL.md`. Output **exactly one valid JSON object** to stdout."
     }
   }
 }
