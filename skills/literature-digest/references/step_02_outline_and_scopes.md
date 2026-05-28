@@ -13,11 +13,13 @@
 - 后续阶段将生成 digest 结构化槽位与分章节摘要
 - 后续阶段将定位 references 区块并抽取结构化引文条目
 - 由 LLM 从骨架中生成**唯一 `citation_scope` 定义对象**（可覆盖一个或多个章节）并覆盖必要子章节，后续 citation 阶段再基于 DB 行执行抽取、聚合与最终渲染
+- 同步生成 `literature_matching_metadata`，用于下游 Index / Discovery 的轻量 BM25 候选召回；它不是正文阅读真源，也不替代 digest artifact
 
 在当前 SQLite runtime 中，这些语义结果对应：
 - `outline_nodes`
 - `section_scopes.references_scope`
 - `section_scopes.citation_scope`
+- `literature_matching_metadata`
 
 ## 分阶段执行与持久化（强制）
 
@@ -25,8 +27,9 @@
 
 - 大纲结果写入 `outline_nodes`
 - references 范围与 citation 范围写入 `section_scopes`
+- matching metadata 写入 `literature_matching_metadata`
 - 本阶段只负责把骨架与 scope 决策写入 DB
-- `digest.md`、`references.json` 与 `citation_analysis.json` 一律在 `stage_6_render_and_validate` 统一渲染发布
+- `digest.md`、`references.json`、`citation_analysis.json` 与 `literature_matching_metadata.json` 一律在 `stage_6_render_and_validate` 统一渲染发布
 - **禁止跳过 DB 持久化直接构造最终公开文件**
 
 当前阶段的核心表语义：
@@ -34,12 +37,15 @@
   - 全文大纲、层级、行号与父子关系
 - `section_scopes`
   - `references_scope` 与 `citation_scope` 的标题、边界和附加 metadata
+- `literature_matching_metadata`
+  - 主题短语、方法、问题、数据集与排除词的轻量 JSON sidecar
 - `workflow_state`
   - 记录当前 stage/substep/gate，作为下一动作的唯一真源
 
 硬约束：
 
 - `citation_scope` 与 `references_scope` 一旦在本阶段写入 DB，就成为后续阶段唯一合法输入来源
+- `literature_matching_metadata` 一旦在本阶段写入 DB，后续 render 只能读取 DB，不得在 stage 6 临时重算
 - 后续主路径不得再通过 CLI / JSON 重传 scope 文件、scope 边界或 scope 标题
 
 ### `persist_outline_and_scopes` payload 形状
@@ -73,6 +79,14 @@
       "selection_reason": "综述职责覆盖引言与相关工作",
       "covered_sections": ["Introduction", "Related Works"]
     }
+  },
+  "literature_matching_metadata": {
+    "schema": "literature_matching_metadata.v1",
+    "key_terms": ["retrieval-augmented generation", "citation-aware literature review"],
+    "methods": ["dense retrieval", "citation graph analysis"],
+    "problems": ["literature discovery", "evidence synthesis"],
+    "datasets": ["S2ORC"],
+    "exclude_terms": ["clinical trial matching"]
   }
 }
 ```
@@ -83,6 +97,57 @@
 - `references_scope` / `citation_scope` 不接受“章节名列表”或“语义描述”充当 payload。
 - `parent_node_id` 必须显式出现；一级标题写 `null`。
 - `metadata` 必须显式出现；没有补充信息时传 `{}`。
+- `literature_matching_metadata` 顶层对象必须显式出现；不得省略或后续补写。
+
+### `literature_matching_metadata` 生成规则
+
+该 sidecar 只服务轻量匹配召回，应从论文标题、摘要、Introduction、方法章节标题、实验资源名与整体问题陈述中提取短语；不得生成 `bm25_text`，不得复制大段摘要或引用原文段落。
+
+字段全部必填：
+
+- `schema`：固定为 `literature_matching_metadata.v1`。
+- `key_terms`：最能代表论文主题的短语，最多 12 个。
+- `methods`：模型、算法、机制、技术路线，最多 8 个。
+- `problems`：研究任务、问题、挑战或目标，最多 8 个。
+- `datasets`：数据集、benchmark、语料或资源，最多 8 个；没有则传 `[]`。
+- `exclude_terms`：容易误召回但不应匹配的方向，最多 6 个；没有则传 `[]`。
+
+写作约束：
+
+- 每项使用短语而不是完整句子。
+- 字符串可包含中英文、连字符、缩写和数据集正式名称。
+- 只做可信提取，不为了凑满数量而臆造。
+- 空字符串没有信息量，应避免输出；脚本会 trim 并过滤空字符串。
+- 数组超限、非字符串项、缺失字段或 schema 错误都会被拒绝。
+
+正例：
+
+```json
+{
+  "schema": "literature_matching_metadata.v1",
+  "key_terms": ["non-autoregressive neural machine translation", "sequence-level knowledge distillation"],
+  "methods": ["fertility prediction", "parallel decoding"],
+  "problems": ["machine translation latency", "multimodality in translation"],
+  "datasets": ["WMT14 English-German"],
+  "exclude_terms": ["medical image segmentation"]
+}
+```
+
+反例：
+
+```json
+{
+  "schema": "literature_matching_metadata.v1",
+  "key_terms": ["This paper proposes a very good method and achieves strong results on many benchmarks."],
+  "methods": "transformer",
+  "problems": [],
+  "datasets": [],
+  "exclude_terms": [],
+  "bm25_text": "..."
+}
+```
+
+原因：`methods` 不是数组，`bm25_text` 不属于合同，`key_terms` 是完整泛化句而不是可匹配短语。
 
 ## Citation Analysis（Dynamic Citation Scope）中的 scope 决策前半段
 

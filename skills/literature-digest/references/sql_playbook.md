@@ -49,6 +49,8 @@
   - 无法稳定映射的引文标记
 - `citation_summary`
   - 引文全局总结：agent 在条目分析完成后写入的总体自然语言总结
+- `literature_matching_metadata`
+  - 文献匹配元数据：stage 2 写入、render 输出为 `literature_matching_metadata.json`
 - `artifact_registry`
   - 公开产物登记表：最终 artifacts 的路径与来源表
 
@@ -64,7 +66,7 @@
 - `reference_batches` / `citation_batches` 记录批次边界与状态
 - `reference_parse_candidates` 决定 references refine 时可被选择的合法 pattern 集合
 - `reference_entries` 若仍出现 grouped-entry 或 multiline-entry suspicion，必须先做 block-level split review，再允许 `persist_references`
-- `digest_slots`、`digest_section_summaries`、`reference_items`、`citation_workset_items`、`citation_items`、`citation_summary`、`citation_unmapped_mentions` 共同决定最终发布是否可进行
+- `digest_slots`、`digest_section_summaries`、`literature_matching_metadata`、`reference_items`、`citation_workset_items`、`citation_items`、`citation_summary`、`citation_unmapped_mentions` 共同决定最终发布是否可进行
 - `citation_mention_links` 必须完整解释已稳定映射的 mention -> reference 关系
 - `citation_items` 只负责语义判断，不再承载 reference snapshot 或 mention 列表真源
 - `citation_summary` 是 `citation_analysis.json.summary` 的唯一真源

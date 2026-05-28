@@ -300,6 +300,7 @@ gate 至少检查这些关键前置：
   - `artifact_registry.digest_path`
   - `artifact_registry.references_path`
   - `artifact_registry.citation_analysis_path`
+  - `artifact_registry.literature_matching_metadata_path`
 
 若前置缺失，gate 会把：
 

@@ -16,6 +16,11 @@
             "x-type": "artifact",
             "x-role": "citation-analysis"
         },
+        "literature_matching_metadata_path": {
+            "type": "string",
+            "x-type": "artifact",
+            "x-role": "literature-matching-metadata"
+        },
         "citation_analysis_report_path": {
             "type": "string",
             "x-type": "artifact",
@@ -187,6 +192,7 @@
         "digest_path",
         "references_path",
         "citation_analysis_path",
+        "literature_matching_metadata_path",
         "provenance",
         "warnings",
         "error"

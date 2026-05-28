@@ -11,7 +11,7 @@ from typing import Any
 DB_FILENAME = "literature_digest.db"
 TMP_DIRNAME = ".literature_digest_tmp"
 
-REQUIRED_ARTIFACT_KEYS = {"digest_path", "references_path", "citation_analysis_path"}
+REQUIRED_ARTIFACT_KEYS = {"digest_path", "references_path", "citation_analysis_path", "literature_matching_metadata_path"}
 OPTIONAL_ARTIFACT_KEYS = {"citation_analysis_report_path"}
 
 DIGEST_SLOT_KEYS = (
@@ -164,6 +164,12 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS representative_image (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            content_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS literature_matching_metadata (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             content_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -842,6 +848,29 @@ def store_representative_image(connection: sqlite3.Connection, representative_im
 
 def fetch_representative_image(connection: sqlite3.Connection) -> dict[str, Any] | None:
     row = connection.execute("SELECT content_json FROM representative_image WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    obj = json.loads(str(row["content_json"]))
+    return obj if isinstance(obj, dict) else None
+
+
+def store_literature_matching_metadata(connection: sqlite3.Connection, metadata: dict[str, Any]) -> None:
+    now = utc_now_iso()
+    connection.execute(
+        """
+        INSERT INTO literature_matching_metadata (id, content_json, updated_at)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            content_json = excluded.content_json,
+            updated_at = excluded.updated_at
+        """,
+        (_json_dump(metadata), now),
+    )
+    touch_runtime(connection)
+
+
+def fetch_literature_matching_metadata(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    row = connection.execute("SELECT content_json FROM literature_matching_metadata WHERE id = 1").fetchone()
     if row is None:
         return None
     obj = json.loads(str(row["content_json"]))
@@ -1611,6 +1640,20 @@ def build_citation_render_context(connection: sqlite3.Connection, report_md: str
     return {"citation_analysis": fetch_citation_payload(connection, report_md=report_md)}
 
 
+def build_literature_matching_metadata_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
+    metadata = fetch_literature_matching_metadata(connection)
+    if metadata is None:
+        metadata = {
+            "schema": "literature_matching_metadata.v1",
+            "key_terms": [],
+            "methods": [],
+            "problems": [],
+            "datasets": [],
+            "exclude_terms": [],
+        }
+    return {"literature_matching_metadata": metadata}
+
+
 def register_artifact(
     connection: sqlite3.Connection,
     *,
@@ -1660,6 +1703,7 @@ def build_public_output_payload(connection: sqlite3.Connection) -> dict[str, Any
         "digest_path": str(Path(artifacts.get("digest_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("digest_path", {}).get("path", "") else "",
         "references_path": str(Path(artifacts.get("references_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("references_path", {}).get("path", "") else "",
         "citation_analysis_path": str(Path(artifacts.get("citation_analysis_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("citation_analysis_path", {}).get("path", "") else "",
+        "literature_matching_metadata_path": str(Path(artifacts.get("literature_matching_metadata_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("literature_matching_metadata_path", {}).get("path", "") else "",
         "provenance": {
             "generated_at": inputs.get("generated_at", ""),
             "input_hash": inputs.get("input_hash", ""),

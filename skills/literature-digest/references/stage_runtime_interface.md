@@ -298,7 +298,8 @@ python scripts/stage_runtime.py persist_outline_and_scopes \
 {
   "outline_nodes": [],
   "references_scope": {},
-  "citation_scope": {}
+  "citation_scope": {},
+  "literature_matching_metadata": {}
 }
 ```
 
@@ -327,6 +328,15 @@ python scripts/stage_runtime.py persist_outline_and_scopes \
     - `line_start`
     - `line_end`
     - `metadata`
+- `literature_matching_metadata`
+  - 必填。下游 Index / Discovery 候选召回用的轻量 sidecar，最终由 render 写成 `literature_matching_metadata.json`。
+  - 唯一合法形状：
+    - `schema` 固定为 `literature_matching_metadata.v1`
+    - `key_terms` 字符串数组，最多 12 项
+    - `methods` 字符串数组，最多 8 项
+    - `problems` 字符串数组，最多 8 项
+    - `datasets` 字符串数组，最多 8 项
+    - `exclude_terms` 字符串数组，最多 6 项
 
 ### 最小合法示例
 
@@ -364,6 +374,14 @@ python scripts/stage_runtime.py persist_outline_and_scopes \
       "selection_reason": "综述职责集中在前两章",
       "covered_sections": ["Introduction", "Related Work"]
     }
+  },
+  "literature_matching_metadata": {
+    "schema": "literature_matching_metadata.v1",
+    "key_terms": ["retrieval-augmented generation", "citation-aware literature review"],
+    "methods": ["dense retrieval", "citation graph analysis"],
+    "problems": ["literature discovery", "evidence synthesis"],
+    "datasets": ["S2ORC"],
+    "exclude_terms": ["clinical trial matching"]
   }
 }
 ```
@@ -374,7 +392,8 @@ python scripts/stage_runtime.py persist_outline_and_scopes \
 {
   "outline_nodes": ["Introduction", "Related Work"],
   "references_scope": {"section_title": "References", "line_start": 10, "line_end": 20, "metadata": {}},
-  "citation_scope": {"section_title": "Introduction", "line_start": 1, "line_end": 9, "metadata": {}}
+  "citation_scope": {"section_title": "Introduction", "line_start": 1, "line_end": 9, "metadata": {}},
+  "literature_matching_metadata": {"schema": "literature_matching_metadata.v1", "key_terms": [], "methods": [], "problems": [], "datasets": [], "exclude_terms": []}
 }
 ```
 
@@ -400,6 +419,14 @@ python scripts/stage_runtime.py persist_outline_and_scopes \
       "covered_sections": ["Introduction", "Related Work"]
     }
   },
+  "literature_matching_metadata": {
+    "schema": "literature_matching_metadata.v1",
+    "key_terms": ["retrieval-augmented generation"],
+    "methods": ["dense retrieval"],
+    "problems": ["literature discovery"],
+    "datasets": [],
+    "exclude_terms": []
+  },
   "error": null
 }
 ```
@@ -408,6 +435,7 @@ python scripts/stage_runtime.py persist_outline_and_scopes \
 
 - `citation_scope` 缺少可执行的范围信息
 - `outline_nodes` 无法支持后续章节顺序判断
+- `literature_matching_metadata` 缺失字段、schema 不匹配、数组超限或包含非字符串项
 
 ## `persist_digest`
 

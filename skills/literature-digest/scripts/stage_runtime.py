@@ -31,6 +31,7 @@ from runtime_db import (  # noqa: E402
     build_citation_render_context,
     build_citation_report_render_context,
     build_digest_render_context,
+    build_literature_matching_metadata_render_context,
     build_public_output_payload,
     build_references_render_context,
     connect_db,
@@ -71,6 +72,7 @@ from runtime_db import (  # noqa: E402
     store_citation_workset_items,
     store_digest_section_summaries,
     store_digest_slots,
+    store_literature_matching_metadata,
     store_representative_image,
     store_outline_nodes,
     store_reference_batch,
@@ -145,6 +147,14 @@ SCOPE_REQUIRED_KEYS = (
     "line_end",
     "metadata",
 )
+LITERATURE_MATCHING_METADATA_SCHEMA = "literature_matching_metadata.v1"
+LITERATURE_MATCHING_METADATA_LIMITS = {
+    "key_terms": 12,
+    "methods": 8,
+    "problems": 8,
+    "datasets": 8,
+    "exclude_terms": 6,
+}
 
 WARNING_REFERENCE_LOW_CONFIDENCE = "reference_parse_low_confidence"
 WARNING_REFERENCE_PATTERN_AMBIGUOUS = "reference_pattern_ambiguous"
@@ -281,6 +291,7 @@ DIGEST_FILENAME = "digest.md"
 REFERENCES_FILENAME = "references.json"
 CITATION_ANALYSIS_FILENAME = "citation_analysis.json"
 CITATION_ANALYSIS_REPORT_FILENAME = "citation_analysis.md"
+LITERATURE_MATCHING_METADATA_FILENAME = "literature_matching_metadata.json"
 STAGE_ERROR_CODES = {
     "digest_stage_failed",
     "references_stage_failed",
@@ -1210,6 +1221,36 @@ def _validate_scope_payload(scope_obj: object, scope_name: str) -> tuple[dict[st
         "line_end": line_end,
         "metadata": dict(metadata),
     }, None
+
+
+def _validate_literature_matching_metadata_payload(metadata_obj: object) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(metadata_obj, dict):
+        return None, "literature_matching_metadata must be object"
+    schema_value = metadata_obj.get("schema")
+    if schema_value != LITERATURE_MATCHING_METADATA_SCHEMA:
+        return None, f"literature_matching_metadata.schema must be {LITERATURE_MATCHING_METADATA_SCHEMA}"
+    allowed_keys = {"schema", *LITERATURE_MATCHING_METADATA_LIMITS.keys()}
+    extra_keys = sorted(str(key) for key in metadata_obj.keys() if key not in allowed_keys)
+    if extra_keys:
+        return None, f"literature_matching_metadata contains unsupported keys: {', '.join(extra_keys)}"
+    normalized: dict[str, Any] = {"schema": LITERATURE_MATCHING_METADATA_SCHEMA}
+    for key, limit in LITERATURE_MATCHING_METADATA_LIMITS.items():
+        if key not in metadata_obj:
+            return None, f"literature_matching_metadata missing required key: {key}"
+        value = metadata_obj.get(key)
+        if not isinstance(value, list):
+            return None, f"literature_matching_metadata.{key} must be array"
+        if len(value) > limit:
+            return None, f"literature_matching_metadata.{key} must contain at most {limit} items"
+        items: list[str] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                return None, f"literature_matching_metadata.{key}[{index}] must be string"
+            item_text = item.strip()
+            if item_text:
+                items.append(item_text)
+        normalized[key] = items
+    return normalized, None
 
 
 def _sanitize_citation_line(line: str) -> str:
@@ -3412,10 +3453,25 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
     references_path = output_root / REFERENCES_FILENAME
     citation_path = output_root / CITATION_ANALYSIS_FILENAME
     citation_report_path = output_root / CITATION_ANALYSIS_REPORT_FILENAME
+    matching_metadata_path = output_root / LITERATURE_MATCHING_METADATA_FILENAME
 
     _write_text(digest_path, digest_content)
     _write_json(references_path, references_items)
     _write_json(citation_path, citation_obj)
+    matching_metadata = candidate.get("literature_matching_metadata")
+    normalized_matching_metadata, matching_error = _validate_literature_matching_metadata_payload(matching_metadata)
+    if normalized_matching_metadata is None:
+        normalized_matching_metadata = {
+            "schema": LITERATURE_MATCHING_METADATA_SCHEMA,
+            "key_terms": [],
+            "methods": [],
+            "problems": [],
+            "datasets": [],
+            "exclude_terms": [],
+        }
+        if matching_error is not None:
+            warnings.append(f"literature_matching_metadata ignored: {matching_error}")
+    _write_json(matching_metadata_path, normalized_matching_metadata)
     if str(citation_obj.get("report_md", "")).strip():
         _write_text(citation_report_path, str(citation_obj["report_md"]))
 
@@ -3431,6 +3487,7 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
         "digest_path": str(digest_path),
         "references_path": str(references_path),
         "citation_analysis_path": str(citation_path),
+        "literature_matching_metadata_path": str(matching_metadata_path),
         "provenance": {
             "generated_at": str(generated_at),
             "input_hash": str(input_hash),
@@ -3456,7 +3513,15 @@ def _validate_public_output(
     preprocess_artifact: Path | None,
     db_path: Path | None,
 ) -> list[str]:
-    required = ["digest_path", "references_path", "citation_analysis_path", "provenance", "warnings", "error"]
+    required = [
+        "digest_path",
+        "references_path",
+        "citation_analysis_path",
+        "literature_matching_metadata_path",
+        "provenance",
+        "warnings",
+        "error",
+    ]
     errors: list[str] = []
     for key in required:
         if key not in payload:
@@ -3513,6 +3578,20 @@ def _validate_public_output(
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"citation_analysis_report_path unreadable text: {exc}")
 
+    matching_path = payload.get("literature_matching_metadata_path", "")
+    if isinstance(matching_path, str) and matching_path:
+        path = Path(matching_path)
+        if not path.exists():
+            errors.append(f"literature_matching_metadata_path does not exist: {path}")
+        else:
+            try:
+                matching_obj = json.loads(path.read_text(encoding="utf-8"))
+                _, matching_error = _validate_literature_matching_metadata_payload(matching_obj)
+                if matching_error is not None:
+                    errors.append(matching_error)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"literature_matching_metadata_path unreadable JSON: {exc}")
+
     expected_mentions, preprocess_error = _extract_preprocess_expected_mentions(preprocess_artifact)
     if preprocess_error is not None:
         errors.append(preprocess_error)
@@ -3525,7 +3604,13 @@ def _validate_public_output(
         try:
             with connect_db(db_path) as connection:
                 db_payload = build_public_output_payload(connection)
-            for key in ["digest_path", "references_path", "citation_analysis_path", "citation_analysis_report_path"]:
+            for key in [
+                "digest_path",
+                "references_path",
+                "citation_analysis_path",
+                "literature_matching_metadata_path",
+                "citation_analysis_report_path",
+            ]:
                 if key in db_payload and payload.get(key, "") != db_payload.get(key, ""):
                     errors.append(f"{key} does not match runtime DB artifact registry")
         except Exception as exc:  # noqa: BLE001
@@ -3991,15 +4076,25 @@ def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
     outline_nodes, outline_error = _validate_outline_nodes_payload(payload.get("outline_nodes", []))
     references_scope, references_scope_error = _validate_scope_payload(payload.get("references_scope"), "references_scope")
     citation_scope, citation_scope_error = _validate_scope_payload(payload.get("citation_scope"), "citation_scope")
+    literature_matching_metadata, literature_matching_metadata_error = _validate_literature_matching_metadata_payload(
+        payload.get("literature_matching_metadata")
+    )
 
     with connect_db(db_path) as connection:
-        first_error = outline_error or references_scope_error or citation_scope_error
-        if first_error is not None or outline_nodes is None or references_scope is None or citation_scope is None:
+        first_error = outline_error or references_scope_error or citation_scope_error or literature_matching_metadata_error
+        if (
+            first_error is not None
+            or outline_nodes is None
+            or references_scope is None
+            or citation_scope is None
+            or literature_matching_metadata is None
+        ):
             set_runtime_error(connection, "citation_scope_failed", first_error or "invalid outline/scope payload", "stage_2_outline_and_scopes")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_scope_failed", "message": first_error or "invalid outline/scope payload"}}, ensure_ascii=False))
             return 2
         store_outline_nodes(connection, outline_nodes)
+        store_literature_matching_metadata(connection, literature_matching_metadata)
         store_section_scope(
             connection,
             scope_key="references_scope",
@@ -4033,6 +4128,7 @@ def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
                 "stored_outline_nodes": len(outline_nodes),
                 "references_scope": references_scope,
                 "citation_scope": citation_scope,
+                "literature_matching_metadata": literature_matching_metadata,
                 "error": None,
             },
             ensure_ascii=False,
@@ -5076,6 +5172,7 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
         digest_context = build_digest_render_context(connection)
         references_context = build_references_render_context(connection)
         citation_report_context = build_citation_report_render_context(connection)
+        matching_metadata_context = build_literature_matching_metadata_render_context(connection)
 
         digest_md = _render_markdown(
             runtime_template_paths.digest_template_path.name,
@@ -5094,19 +5191,34 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
         )
         citation_context = build_citation_render_context(connection, report_md)
         citation_analysis_json = _render_json("citation_analysis.json.j2", citation_context, "citation_analysis.schema.json")
+        matching_metadata_json = _render_json(
+            "literature_matching_metadata.json.j2",
+            matching_metadata_context,
+            "literature_matching_metadata.schema.json",
+        )
 
         digest_path = (output_root / DIGEST_FILENAME).resolve()
         references_path = (output_root / REFERENCES_FILENAME).resolve()
         citation_analysis_path = (output_root / CITATION_ANALYSIS_FILENAME).resolve()
         citation_report_path = (output_root / CITATION_ANALYSIS_REPORT_FILENAME).resolve()
+        matching_metadata_path = (output_root / LITERATURE_MATCHING_METADATA_FILENAME).resolve()
 
         _write_text(digest_path, digest_md)
         _write_text(references_path, references_json)
         _write_text(citation_analysis_path, citation_analysis_json)
+        _write_text(matching_metadata_path, matching_metadata_json)
 
         register_artifact(connection, artifact_key="digest_path", path=digest_path, is_required=True, media_type="text/markdown", source_table="digest_slots")
         register_artifact(connection, artifact_key="references_path", path=references_path, is_required=True, media_type="application/json", source_table="reference_items")
         register_artifact(connection, artifact_key="citation_analysis_path", path=citation_analysis_path, is_required=True, media_type="application/json", source_table="citation_summary")
+        register_artifact(
+            connection,
+            artifact_key="literature_matching_metadata_path",
+            path=matching_metadata_path,
+            is_required=True,
+            media_type="application/json",
+            source_table="literature_matching_metadata",
+        )
         if report_md.strip():
             _write_text(citation_report_path, report_md)
             register_artifact(connection, artifact_key="citation_analysis_report_path", path=citation_report_path, is_required=False, media_type="text/markdown", source_table="citation_summary")
@@ -5125,6 +5237,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
                 "digest_path": "",
                 "references_path": "",
                 "citation_analysis_path": "",
+                "literature_matching_metadata_path": "",
                 "provenance": {"generated_at": "", "input_hash": "", "model": ""},
                 "warnings": [],
                 "error": {
@@ -5142,6 +5255,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
                 "digest_path": "",
                 "references_path": "",
                 "citation_analysis_path": "",
+                "literature_matching_metadata_path": "",
                 "provenance": {"generated_at": "", "input_hash": "", "model": ""},
                 "warnings": [],
                 "error": {
@@ -5157,11 +5271,12 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
             errors = _validate_public_output(payload, preprocess_artifact=None, db_path=db_path)
         except Exception as exc:  # noqa: BLE001
             payload = {
-                "digest_path": "",
-                "references_path": "",
-                "citation_analysis_path": "",
-                "provenance": {"generated_at": "", "input_hash": "", "model": ""},
-                "warnings": [],
+            "digest_path": "",
+            "references_path": "",
+            "citation_analysis_path": "",
+            "literature_matching_metadata_path": "",
+            "provenance": {"generated_at": "", "input_hash": "", "model": ""},
+            "warnings": [],
                 "error": {
                     "code": "citation_report_failed",
                     "message": f"render mode failed before validation: {exc}",

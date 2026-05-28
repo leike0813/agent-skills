@@ -1,6 +1,6 @@
 ---
 name: literature-digest
-description: Generate a paper digest (Markdown), structured references (JSON), and citation analysis artifacts from a source file using a SQLite-gated runtime.
+description: Generate a paper digest (Markdown), structured references (JSON), and citation analysis artifacts from a source literature(.md/.pdf/latex). Use this skill when you need to extract the core content of the literature, extract structured references, and perform citation context analysis.
 compatibility: Requires local filesystem read access to source_path; no network required.
 ---
 
@@ -29,6 +29,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
   "digest_path": "/abs/path/digest.md",
   "references_path": "/abs/path/references.json",
   "citation_analysis_path": "/abs/path/citation_analysis.json",
+  "literature_matching_metadata_path": "/abs/path/literature_matching_metadata.json",
   "citation_analysis_report_path": "/abs/path/citation_analysis.md",
   "representative_image": {
     "status": "selected",
@@ -58,6 +59,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
   "digest_path": "",
   "references_path": "",
   "citation_analysis_path": "",
+  "literature_matching_metadata_path": "",
   "provenance": {
     "generated_at": "",
     "input_hash": "",
@@ -79,6 +81,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - `digest_path`
   - `references_path`
   - `citation_analysis_path`
+  - `literature_matching_metadata_path`
   - `provenance.generated_at`
   - `provenance.input_hash`
   - `provenance.model`
@@ -91,7 +94,9 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - `digest.md`
   - `references.json`
   - `citation_analysis.json`
+  - `literature_matching_metadata.json`
   - `citation_analysis.md`
+- `literature_matching_metadata.json` 必须包含 `schema = "literature_matching_metadata.v1"` 以及 `key_terms`、`methods`、`problems`、`datasets`、`exclude_terms`
 - `citation_analysis.json` 必须包含：
   - `meta`
   - `summary`
@@ -202,6 +207,10 @@ compatibility: Requires local filesystem read access to source_path; no network 
 - `citation_scope`
   - 中文名：引文分析范围
   - 定义：citation workset 抽取允许覆盖的章节范围定义。
+  - 适用动作：`persist_outline_and_scopes`
+- `literature_matching_metadata`
+  - 中文名：文献匹配元数据
+  - 定义：用于下游 Index / Discovery 候选召回的轻量主题、方法、问题、数据集与排除词 sidecar；不是正文阅读真源。
   - 适用动作：`persist_outline_and_scopes`
 - `digest_slots`
   - 中文名：digest 槽位
@@ -416,6 +425,7 @@ python scripts/stage_runtime.py persist_outline_and_scopes --payload-file /tmp/o
   - `outline_nodes`
   - `references_scope`
   - `citation_scope`
+  - `literature_matching_metadata`
 - 各 payload 字段含义：
   - `outline_nodes[*].node_id`：节点唯一 ID；同一 payload 内不得重复
   - `outline_nodes[*].heading_level`：标题层级；一级标题通常为 `1`
@@ -428,6 +438,8 @@ python scripts/stage_runtime.py persist_outline_and_scopes --payload-file /tmp/o
   - `citation_scope.section_title`：citation workset 唯一合法抽取范围的标题
   - `citation_scope.line_start` / `line_end`：citation 唯一合法抽取边界
   - `citation_scope.metadata`：范围决策说明；至少包含 `selection_reason`，可附 `covered_sections`
+  - `literature_matching_metadata.schema`：固定为 `literature_matching_metadata.v1`
+  - `literature_matching_metadata.key_terms` / `methods` / `problems` / `datasets` / `exclude_terms`：字符串数组，分别最多 12 / 8 / 8 / 8 / 6 项
 - 最小合法示例：
 ```json
 {
@@ -465,6 +477,14 @@ python scripts/stage_runtime.py persist_outline_and_scopes --payload-file /tmp/o
       "selection_reason": "综述职责集中在引言与相关工作",
       "covered_sections": ["Introduction", "Related Work"]
     }
+  },
+  "literature_matching_metadata": {
+    "schema": "literature_matching_metadata.v1",
+    "key_terms": ["retrieval-augmented generation", "citation-aware literature review"],
+    "methods": ["dense retrieval", "citation graph analysis"],
+    "problems": ["literature discovery", "evidence synthesis"],
+    "datasets": ["S2ORC"],
+    "exclude_terms": ["clinical trial matching"]
   }
 }
 ```
