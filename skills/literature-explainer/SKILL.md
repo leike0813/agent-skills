@@ -1,6 +1,6 @@
 ---
 name: literature-explainer
-description: 学术论文分析与问题回答助手，以状态化流程、证据约束、脚本化记忆与验证支撑论文理解、问答和学习笔记生成。
+description: An academic paper analysis and question-answering assistant that supports paper comprehension, Q&A, and study note generation through stateful workflows, evidence constraints, scripted memory, and verification. Use this skill when users want to ask questions about the content of a paper and obtain reliable answers.
 ---
 
 # Literature Explainer
