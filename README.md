@@ -11,6 +11,7 @@ This repo aggregates skills as git submodules.
 | literature-digest-lite | Generate a paper digest (Markdown) from a source file using a simplified runtime without SQLite-gating. |
 | literature-explainer | 学术论文分析与问题回答助手，以状态化流程、证据约束、脚本化记忆与验证支撑论文理解、问答和学习笔记生成。 |
 | literature-match | Match Markdown reference entries/参考文献 to Zotero Better BibTeX items (citekey as SSOT) and output match_result.json with candidates, itemKey, zotero_tags, and pdf_attachments. Use when you need deterministic+retrieval matching (doi/arxiv/url → TF-IDF topK → needs_llm) without modifying the input document. |
+| MinerU Document Extractor | Convert PDFs, scanned documents, images, Word (DOC/DOCX), PowerPoint (PPT/PPTX), Excel (XLS/XLSX), and web pages into clean Markdown, HTML, LaTeX, or DOCX. Use this skill when dealing with complex layouts, tables/formulas, and requiring high-fidelity, academic-grade document conversion. |
 | paper-condenser | 交互式学术论文凝缩转写 Skill。Use when Codex needs to guide a user through staged manuscript understanding, target-setting, style analysis, condensation planning, and final journal-paper drafting with a SQLite single source of truth and strict gate-driven progression. |
 | review-master | 适用于 LaTeX 论文原稿与 Markdown/txt 审稿意见文件的交互式审稿回复流程。运行时以 SQLite 为唯一真源，gate-and-render 核心脚本负责状态门禁、视图重渲染和下一步指令输出。 |
 | skill-converter-agent | 目录优先的 Skill 转换代理，将普通 skill 改造为 Skill-Runner 可执行 skill 包。 |
