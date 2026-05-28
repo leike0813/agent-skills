@@ -1,6 +1,6 @@
 ---
 name: literature-digest-lite
-description: Generate a paper digest (Markdown) from a source file using a simplified runtime without SQLite-gating.
+description: Generate a paper digest (Markdown) from a source literature(.md/.pdf/latex). Use this skill when you only need to extract the core content of the literature.
 compatibility: Requires local filesystem read access to source_path; no network required.
 ---
 

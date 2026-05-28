@@ -27,6 +27,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 try:
     from jinja2 import FileSystemLoader, Environment
 except ImportError:
@@ -165,7 +170,7 @@ def _normalize_latex_source(source_path: Path) -> tuple[str, dict[str, Any]]:
 
 def _convert_pdf_with_pymupdf4llm(source_path: Path) -> str:
     try:
-        import pymupdf4llm  # type: ignore[import-not-found]
+        import pymupdf4llm  # type: ignore[import-untyped]
     except ImportError as exc:
         raise RuntimeError(f"pymupdf4llm unavailable: {exc}") from exc
     try:
@@ -283,11 +288,11 @@ def validate_digest_payload(
     if not isinstance(rqc, dict):
         return None, "digest_slots.research_question_and_contributions must be a dict"
     for key in ["method_highlights", "key_results", "limitations_and_reproducibility"]:
-        slot = digest_slots.get(key)
+        slot_value = digest_slots.get(key)
         if (
-            not isinstance(slot, dict)
-            or "items" not in slot
-            or not isinstance(slot["items"], list)
+            not isinstance(slot_value, dict)
+            or "items" not in slot_value
+            or not isinstance(slot_value["items"], list)
         ):
             return None, f"digest_slots.{key}.items must be a list"
     section_summaries = payload.get("section_summaries")
