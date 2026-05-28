@@ -76,6 +76,14 @@ enums:
     - agent
     - user
     - collaborative
+  revision_change_type:
+    - added
+    - revised
+    - deleted
+    - moved
+    - reframed
+    - format_only
+    - response_only
   change_kind:
     - modified
     - added
@@ -153,6 +161,7 @@ required_tables:
   - revision_action_logs
   - revision_action_log_plan_links
   - revision_action_log_thread_links
+  - revision_action_log_entries
   - revision_action_log_file_diffs
   - working_copy_file_state
   - response_thread_rows
@@ -535,6 +544,20 @@ tables:
           log_id TEXT NOT NULL REFERENCES revision_action_logs(log_id) ON DELETE CASCADE,
           thread_id TEXT NOT NULL REFERENCES raw_review_threads(thread_id) ON DELETE CASCADE,
           PRIMARY KEY (log_id, thread_id)
+      )
+  - name: revision_action_log_entries
+    sql: |
+      CREATE TABLE IF NOT EXISTS revision_action_log_entries (
+          log_id TEXT NOT NULL REFERENCES revision_action_logs(log_id) ON DELETE CASCADE,
+          entry_order INTEGER NOT NULL,
+          target_file TEXT NOT NULL DEFAULT '',
+          target_locator TEXT NOT NULL DEFAULT '',
+          change_type TEXT NOT NULL CHECK (change_type IN ('added', 'revised', 'deleted', 'moved', 'reframed', 'format_only', 'response_only')),
+          change_summary TEXT NOT NULL DEFAULT '',
+          rationale TEXT NOT NULL DEFAULT '',
+          evidence_source TEXT NOT NULL DEFAULT '',
+          expected_response_use TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (log_id, entry_order)
       )
   - name: revision_action_log_file_diffs
     sql: |

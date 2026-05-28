@@ -19,7 +19,7 @@
 
 - Agent 负责语义理解、学术判断、策略制定、意见映射和用户交互
 - 脚本只负责确定性且可验证的工作：workspace 初始化、数据库读写辅助、状态门禁检查、恢复包输出和只读视图重渲染
-- Stage 5 的 manuscript execution items 与 response drafts 由 Agent 写入正式真源表，Stage 6 基于这些真源派生 revision backlog，再进入交互式改稿与审计闭环
+- Stage 5 的 manuscript execution items 与 response drafts 由 Agent 写入正式真源表，Stage 6 基于这些真源派生 revision backlog，再进入交互式改稿与 Agent-owned revision log 闭环
 
 ## Workflow Discipline
 
@@ -37,8 +37,8 @@
 - 每轮补材都要形成文件级 intake 判定；`accepted` 补材必须有落地映射
 - `active_comment_id` 允许显式切换，但不得静默切换 comment
 - Stage 6 以 `working_manuscript`、`revision_action_logs` 与 `response_thread_rows` 为闭环真源
-- Agent 每完成一轮明确修改后，都必须通过 `commit_revision_round.py` 提交，不能绕过 revision audit
-- `gate-and-render` 只负责检测未审计 diff 和闭环状态，不负责自动补写 revision log
+- Agent 每完成一轮明确修改后，都必须汇总结构化 semantic revision log，并通过 `commit_revision_round.py --payload ...` 提交
+- `gate-and-render` 只负责检测 revision plan 结案、thread-level response 覆盖和最终输出状态，不读取稿件 diff，也不自动补写 revision log
 - `response_latex` 必须是带 front matter 的完整可编译 LaTeX 文件
 
 ## Inputs And Outputs
@@ -67,4 +67,4 @@
 3. 原始审稿意见块抽取、去重、归并和 canonical atomic item 形成
 4. atomic workboard 规划
 5. 逐条策略与执行
-6. 交互式 working manuscript 改稿、revision audit、thread-level response 覆盖闭环
+6. 交互式 working manuscript 改稿、Agent-owned revision log、thread-level response 覆盖闭环

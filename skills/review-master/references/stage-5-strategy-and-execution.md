@@ -144,7 +144,7 @@ global blocker 的处理规则：
   - 以 `comment_id` 为粒度
   - 保存当前条目的 response 草案与简短 rationale
 
-这些真源用于派生 Stage 6 的 revision backlog、revision audit 和 response 覆盖闭环。
+这些真源用于派生 Stage 6 的 revision backlog、Agent-owned revision log 和 response 覆盖闭环。
 
 若仍存在 evidence gap，当前条目仍可继续保留 blocker；但 draft authoring 的前置条件始终是“策略已确认”，而不是“blocker 已全部关闭”。
 
@@ -273,7 +273,7 @@ Stage 5 到这里为止，必须已经完成：
 Stage 5 不负责：
 
 - 最终成文润色
-- revision audit 记录
+- Agent-owned revision log 记录
 - thread-level response row 组装
 - `working_manuscript` 最终交付
 - 可选 `latexdiff_manuscript`

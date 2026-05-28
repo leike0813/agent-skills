@@ -589,31 +589,32 @@
 ## `recipe_stage6_commit_revision_round`
 
 - 适用阶段：`stage_6`
-- 何时使用：一轮明确的 `working_manuscript` 修改已经发生，需要把增量修改写入 revision audit 真源时
+- 何时使用：一轮明确的 `working_manuscript` 修改已经发生，需要由 Agent 汇总本轮语义改动并写入 revision log 真源时
 - 必须更新的表：
   - `revision_action_logs`
   - `revision_action_log_plan_links`
   - `revision_action_log_thread_links`
-  - `revision_action_log_file_diffs`
-  - `working_copy_file_state`
+  - `revision_action_log_entries`
+  - 视情况更新 `revision_plan_actions.status`
   - `resume_brief`
   - 视情况更新 `resume_recent_decisions`
 - 推荐 SQL 顺序：
   1. `PRAGMA foreign_keys = ON`
   2. 写入一条 `revision_action_logs`
   3. 批量插入对应的 plan/thread links
-  4. 批量插入文件级 diff 摘录
-  5. 刷新 `working_copy_file_state`
+  4. 批量插入 Agent 汇总的 `revision_action_log_entries`
+  5. 视情况将已完成或已取消的 `revision_plan_actions.status` 更新为 `completed` 或 `dismissed`
   6. `UPDATE resume_brief ...`
   7. 视情况更新 `resume_recent_decisions`
 - 写后门槛：
   - 本轮修改已可追溯到明确的 `log_id`
-  - 本轮涉及的文件状态已刷新到最新审计状态
+  - completed/draft log 至少包含一条结构化语义修改条目
+  - 本轮涉及的 plan action 与 reviewer thread 已通过关系表显式关联
 
 ## `recipe_stage6_refresh_response_rows`
 
 - 适用阶段：`stage_6`
-- 何时使用：revision audit 更新后，需要刷新 thread-level response rows 与覆盖关系时
+- 何时使用：semantic revision log 更新后，需要刷新 thread-level response rows 与覆盖关系时
 - 必须更新的表：
   - `response_thread_action_log_links`
   - `response_thread_rows`

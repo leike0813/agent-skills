@@ -14,12 +14,12 @@
 - {{ msg("view.revision_log.change_note") }}: {{ item.change_note or '' }}
 - {{ msg("view.revision_log.response_note") }}: {{ item.response_note or '' }}
 
-| `file_order` | `relative_path` | `change_kind` | {{ msg("view.revision_log.diff_excerpt") }} |
-| --- | --- | --- | --- |
-{% for diff in item.file_diffs -%}
-| {{ diff.file_order }} | {{ diff.relative_path }} | {{ diff.change_kind }} | {{ diff.diff_excerpt }} |
+| `entry_order` | `target_file` | `target_locator` | `change_type` | {{ msg("view.revision_log.change_summary") }} | {{ msg("view.revision_log.rationale") }} | {{ msg("view.revision_log.evidence_source") }} | {{ msg("view.revision_log.expected_response_use") }} |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+{% for entry in item.entries -%}
+| {{ entry.entry_order }} | {{ entry.target_file or '' }} | {{ entry.target_locator or '' }} | {{ entry.change_type }} | {{ entry.change_summary }} | {{ entry.rationale or '' }} | {{ entry.evidence_source or '' }} | {{ entry.expected_response_use or '' }} |
 {% else -%}
-|  |  |  |  |
+|  |  |  |  |  |  |  |  |
 {% endfor %}
 
 {% else -%}

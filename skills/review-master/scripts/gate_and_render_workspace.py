@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sqlite3
 import sys
@@ -14,7 +13,6 @@ from workspace_db import (
     AGENT_RESUME_MD,
     ACTION_COPY_VARIANTS_MD,
     ALLOWED_EVIDENCE_GAP,
-    ALLOWED_CHANGE_KIND,
     ALLOWED_COPY_ROLE,
     ALLOWED_MANUSCRIPT_EXECUTION_ITEM_CATEGORY,
     ALLOWED_ARTIFACT_STATUS,
@@ -52,7 +50,6 @@ from workspace_db import (
     REVISION_ACTION_LOG_MD,
     REVISION_EXECUTION_GRAPH_MD,
     REVISION_GUIDE_MD,
-    SOURCE_SNAPSHOT_DIR,
     SUPPLEMENT_SUGGESTION_PLAN_MD,
     SUPPLEMENT_INTAKE_PLAN_MD,
     RESPONSE_TABLE_PREVIEW_MD,
@@ -63,7 +60,6 @@ from workspace_db import (
     STRATEGY_CARD_DIR,
     TARGET_LOCATION_RE,
     THREAD_TO_ATOMIC_MAPPING_MD,
-    WORKING_MANUSCRIPT_DIR,
     artifact_paths,
     build_stage3_character_coverage_metrics,
     connect_db,
@@ -283,23 +279,6 @@ def compact_excerpt(value: str, *, limit: int = 120) -> str:
     return compact
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def collect_relative_file_hashes(root: Path) -> dict[str, str]:
-    if not root.exists():
-        return {}
-    payload: dict[str, str] = {}
-    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
-        payload[str(path.relative_to(root))] = file_sha256(path)
-    return payload
-
-
 def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
     raw_thread_links = fetch_all(
         connection,
@@ -418,20 +397,13 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         connection,
         "SELECT log_id, thread_id FROM revision_action_log_thread_links ORDER BY log_id, thread_id",
     )
-    revision_action_log_file_diffs = fetch_all(
+    revision_action_log_entries = fetch_all(
         connection,
         """
-        SELECT log_id, file_order, relative_path, change_kind, diff_excerpt, before_excerpt, after_excerpt
-        FROM revision_action_log_file_diffs
-        ORDER BY log_id, file_order
-        """,
-    )
-    working_copy_file_state = fetch_all(
-        connection,
-        """
-        SELECT relative_path, snapshot_sha256, last_audited_sha256, current_sha256, last_log_id
-        FROM working_copy_file_state
-        ORDER BY relative_path
+        SELECT log_id, entry_order, target_file, target_locator, change_type,
+               change_summary, rationale, evidence_source, expected_response_use
+        FROM revision_action_log_entries
+        ORDER BY log_id, entry_order
         """,
     )
     action_copy_variants = fetch_all(
@@ -543,8 +515,7 @@ def load_supporting_maps(connection: sqlite3.Connection) -> dict[str, Any]:
         "revision_action_logs": revision_action_logs,
         "revision_action_log_plan_links": revision_action_log_plan_links,
         "revision_action_log_thread_links": revision_action_log_thread_links,
-        "revision_action_log_file_diffs": revision_action_log_file_diffs,
-        "working_copy_file_state": working_copy_file_state,
+        "revision_action_log_entries": revision_action_log_entries,
         "action_copy_variants": action_copy_variants,
         "selected_action_copy_variants": selected_action_copy_variants,
         "response_thread_rows": response_thread_rows,
@@ -1644,6 +1615,27 @@ def validate_dependencies(
                         f"revision plan action '{plan_action_id}' remains in status '{status}'",
                         path=db_path,
                     )
+        with connect_db(db_path) as connection:
+            logs_without_entries = fetch_all(
+                connection,
+                """
+                SELECT ral.log_id
+                FROM revision_action_logs ral
+                LEFT JOIN revision_action_log_entries rale ON rale.log_id = ral.log_id
+                WHERE ral.status != 'cancelled'
+                GROUP BY ral.log_id
+                HAVING COUNT(rale.entry_order) = 0
+                ORDER BY ral.log_order, ral.log_id
+                """,
+            )
+        for row in logs_without_entries:
+            add_issue(
+                dependency_errors,
+                "revision_action_log_entries",
+                "missing_semantic_log_entries",
+                f"revision action log '{row['log_id']}' has no Agent-authored semantic entries",
+                path=db_path,
+            )
         for thread_id in sorted(raw_thread_ids):
             response_row = response_thread_row_map.get(thread_id)
             if response_row is None:
@@ -1668,14 +1660,6 @@ def validate_dependencies(
                     path=db_path,
                     thread_id=thread_id,
                 )
-        if unaudited_paths:
-            add_issue(
-                dependency_errors,
-                "working_copy_file_state",
-                "unaudited_working_copy_changes",
-                "working_manuscript contains file changes that were not captured by revision audit",
-                path=db_path,
-            )
         for artifact_name in ("working_manuscript", "response_markdown", "response_latex", "latexdiff_manuscript"):
             if artifact_name not in export_artifact_map:
                 add_issue(
@@ -1965,14 +1949,6 @@ def validate_consistency(
                     path=db_path,
                     thread_id=thread_id,
                 )
-        if unaudited_paths:
-            add_issue(
-                consistency_errors,
-                "working_copy_file_state",
-                "stage_gate_with_unaudited_working_copy_changes",
-                f"stage_6 is ready but working_manuscript has unaudited changes: {', '.join(unaudited_paths)}",
-                path=db_path,
-            )
     return consistency_errors
 
 
@@ -2027,8 +2003,7 @@ def build_repair_sequence(
         "revision_action_logs": "recipe_stage6_commit_revision_round",
         "revision_action_log_plan_links": "recipe_stage6_commit_revision_round",
         "revision_action_log_thread_links": "recipe_stage6_commit_revision_round",
-        "revision_action_log_file_diffs": "recipe_stage6_commit_revision_round",
-        "working_copy_file_state": "recipe_stage6_commit_revision_round",
+        "revision_action_log_entries": "recipe_stage6_commit_revision_round",
         "response_thread_resolution_links": "recipe_stage6_upsert_response_thread_rows",
         "style_profiles": "recipe_stage6_upsert_style_profiles",
         "style_profile_rules": "recipe_stage6_upsert_style_profiles",
@@ -2071,8 +2046,7 @@ def build_repair_sequence(
         "revision_action_logs": ["review-master.db", REVISION_ACTION_LOG_MD],
         "revision_action_log_plan_links": ["review-master.db", REVISION_ACTION_LOG_MD],
         "revision_action_log_thread_links": ["review-master.db", REVISION_ACTION_LOG_MD, RESPONSE_COVERAGE_MATRIX_MD],
-        "revision_action_log_file_diffs": ["review-master.db", REVISION_ACTION_LOG_MD],
-        "working_copy_file_state": ["review-master.db", REVISION_ACTION_LOG_MD, FINAL_CHECKLIST_MD],
+        "revision_action_log_entries": ["review-master.db", REVISION_ACTION_LOG_MD],
         "response_thread_resolution_links": ["review-master.db", RESPONSE_LETTER_OUTLINE_MD, RESPONSE_TABLE_PREVIEW_MD],
         "style_profiles": ["review-master.db", STYLE_PROFILE_MD],
         "style_profile_rules": ["review-master.db", STYLE_PROFILE_MD],
@@ -2115,8 +2089,7 @@ def build_repair_sequence(
         "revision_action_logs": localization.msg("gate.repair.default"),
         "revision_action_log_plan_links": localization.msg("gate.repair.default"),
         "revision_action_log_thread_links": localization.msg("gate.repair.default"),
-        "revision_action_log_file_diffs": localization.msg("gate.repair.default"),
-        "working_copy_file_state": localization.msg("gate.repair.default"),
+        "revision_action_log_entries": localization.msg("gate.repair.default"),
         "response_thread_resolution_links": localization.msg("gate.repair.response_thread_resolution_links"),
         "style_profiles": localization.msg("gate.repair.style_profiles"),
         "style_profile_rules": localization.msg("gate.repair.style_profile_rules"),
@@ -2372,46 +2345,15 @@ def load_stage6_revision_state(connection: sqlite3.Connection, artifact_root: Pa
         ORDER BY thread_id, link_order, log_id
         """,
     )
-    working_copy_rows = fetch_all(
-        connection,
-        """
-        SELECT relative_path, snapshot_sha256, last_audited_sha256, current_sha256, last_log_id
-        FROM working_copy_file_state
-        ORDER BY relative_path
-        """,
-    )
     copy_map = {str(row["copy_role"]): row for row in manuscript_copy_rows}
-    working_root = artifact_root / MANUSCRIPT_COPY_ROOT / WORKING_MANUSCRIPT_DIR
-    snapshot_root = artifact_root / MANUSCRIPT_COPY_ROOT / SOURCE_SNAPSHOT_DIR
-    if "working_manuscript" in copy_map and str(copy_map["working_manuscript"]["copy_root"]).strip():
-        working_root = Path(str(copy_map["working_manuscript"]["copy_root"]))
-    if "source_snapshot" in copy_map and str(copy_map["source_snapshot"]["copy_root"]).strip():
-        snapshot_root = Path(str(copy_map["source_snapshot"]["copy_root"]))
-    current_hashes = collect_relative_file_hashes(working_root)
-    snapshot_hashes = collect_relative_file_hashes(snapshot_root)
-    working_state_map = {str(row["relative_path"]): dict(row) for row in working_copy_rows}
-    unaudited_paths: list[str] = []
-    for relative_path, current_hash in current_hashes.items():
-        state_row = working_state_map.get(relative_path)
-        if state_row is None:
-            unaudited_paths.append(relative_path)
-            continue
-        last_audited_sha256 = str(state_row.get("last_audited_sha256") or "")
-        if current_hash != last_audited_sha256:
-            unaudited_paths.append(relative_path)
     thread_log_index: dict[str, list[str]] = defaultdict(list)
     for row in response_thread_action_log_links:
         thread_log_index[str(row["thread_id"])].append(str(row["log_id"]))
     return {
         "copy_map": copy_map,
-        "working_root": working_root,
-        "snapshot_root": snapshot_root,
-        "snapshot_hashes": snapshot_hashes,
-        "current_hashes": current_hashes,
         "revision_plan_rows": revision_plan_rows,
-        "working_state_map": working_state_map,
         "thread_log_index": dict(thread_log_index),
-        "unaudited_paths": sorted(set(unaudited_paths)),
+        "unaudited_paths": [],
     }
 
 
@@ -2672,16 +2614,6 @@ def build_stage_actions(
                     localization.msg("gate.allowed.enter_stage_6.reason"),
                     ["review-master.db", REVISION_GUIDE_MD, REVISION_EXECUTION_GRAPH_MD],
                     recipe_id="recipe_stage5_build_revision_backlog",
-                )
-            ]
-        if unaudited_paths:
-            return [
-                make_action(
-                    "record_revision_action",
-                    localization.msg("gate.allowed.record_revision_action.instruction"),
-                    localization.msg("gate.allowed.record_revision_action.reason"),
-                    ["review-master.db", REVISION_ACTION_LOG_MD, FINAL_CHECKLIST_MD],
-                    recipe_id="recipe_stage6_commit_revision_round",
                 )
             ]
         unresolved_actions = [

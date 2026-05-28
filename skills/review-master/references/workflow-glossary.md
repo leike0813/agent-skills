@@ -15,7 +15,7 @@
 - `stage_5`
   - 逐条策略与执行
 - `stage_6`
-  - 交互式改稿、revision audit 与 thread-level response 覆盖闭环
+  - 交互式改稿、Agent-owned revision log 与 thread-level response 覆盖闭环
 
 ## 正式对象命名
 
@@ -65,9 +65,9 @@
 - `review-master/scripts/gate_and_render_workspace.py`
   - `gate-and-render` 核心脚本
 - `review-master/scripts/capture_revision_action.py`
-  - Stage 6 revision 审计捕获脚本
+  - Stage 6 Agent-owned semantic revision log 写入脚本
 - `review-master/scripts/commit_revision_round.py`
-  - Stage 6 正式提交流程脚本（capture -> gate-and-render）
+  - Stage 6 正式提交流程脚本（semantic log write -> gate-and-render）
 
 `gate-and-render` 是唯一正式称呼。所有文档、恢复包和用户交互都使用这一称呼。
 
@@ -130,10 +130,12 @@
   - Stage 6 执行依赖关系
 - `revision_action_logs`
   - 每轮明确修改的正式审计记录
+- `revision_action_log_entries`
+  - 每轮修改对应的 Agent-authored semantic revision 条目
 - `revision_action_log_file_diffs`
-  - 每轮修改对应的文件级 diff 摘录
+  - legacy 文件级 diff 摘录表；不再作为 Stage 6 主流程真源
 - `working_copy_file_state`
-  - 记录当前稿件文件的 snapshot / audited / current 状态
+  - legacy 工作稿 hash 状态表；不再作为 Stage 6 门禁依据
 - `response_thread_rows`
   - 由已确认策略、revision logs 与 thread-level 聚合共同生成
 - `response_thread_action_log_links`

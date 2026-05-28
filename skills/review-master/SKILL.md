@@ -1,6 +1,6 @@
 ---
 name: review-master
-description: 适用于 LaTeX 论文原稿与 Markdown/txt 审稿意见文件的交互式审稿回复流程。运行时以 SQLite 为唯一真源，gate-and-render 核心脚本负责状态门禁、视图重渲染和下一步指令输出。
+description: Interactive Academic Paper Revision Assistant – Extracts and systematically organizes reviewer comments on a paper, devises a revision plan, interactively guides the user in creating a strategy card for each comment, and ultimately generates revision instructions for the original manuscript along with an execution flowchart. These are then handed over to an Agent for step-by-step, Human-in-the-Loop execution, resulting in a revised manuscript and a corresponding response letter. Use this skill when the user has received reviewer comments and needs to revise the paper.
 ---
 
 # review-master
@@ -231,8 +231,8 @@ conda run --no-capture-output -n DataProcessing python -u \
        └─ 若 pending_user_confirmations 非空 -> 请求用户确认 -> 回到 stage_4
   -> stage_5 逐条策略与执行
        └─ 若 global_blockers / evidence_gap 未关闭 -> 请求补材 -> 回到 stage_5
-  -> stage_6 working_manuscript 交互式改稿 / revision audit / thread-level response 覆盖闭环
-       └─ 若存在未审计 diff 或 thread 覆盖未闭环 -> 记录 revision round -> 重新运行 gate-and-render 核心脚本
+  -> stage_6 working_manuscript 交互式改稿 / Agent-owned revision log / thread-level response 覆盖闭环
+       └─ 若 revision plan 或 thread 覆盖未闭环 -> Agent 汇总语义修改 log -> 重新运行 gate-and-render 核心脚本
 
 每次正式写入：
  SQL write -> review-master.db
@@ -559,15 +559,16 @@ conda run --no-capture-output -n DataProcessing python -u \
 - `review-master/references/workflow-state-machine.md`
 - `review-master/references/sql-write-recipes.md`
 
-### 6. 阶段六：交互式改稿、revision audit 与 response 覆盖闭环
+### 6. 阶段六：交互式改稿、Agent-owned revision log 与 response 覆盖闭环
 
 做什么：
 
 - 读取并消费 `03-style-profile.md`
 - 基于 Stage 5 已确认策略与 execution items 派生 `revision_plan_actions`
 - 与用户协作，直接修改 `working_manuscript`
-- 通过 `capture_revision_action.py` 记录每一轮明确修改
-- 通过 `commit_revision_round.py` 以固定顺序执行 `capture -> gate-and-render`
+- 由 Agent 汇总每一轮明确修改的语义内容，形成结构化 revision log payload
+- 通过 `capture_revision_action.py` 写入 Agent-authored semantic log
+- 通过 `commit_revision_round.py` 以固定顺序执行 `semantic log write -> gate-and-render`
 - 写入 `response_thread_rows`
 - 写入 `response_thread_action_log_links`
 - 写入 `export_artifacts`
@@ -587,11 +588,11 @@ conda run --no-capture-output -n DataProcessing python -u \
 
 操作摘要：
 
-- Stage 6 的正式协作路径是 `working_manuscript`、revision audit 与 thread-level response 覆盖闭环
-- Stage 6 以 `working_manuscript` 为唯一协作修改稿，以 `source_snapshot` 为只读基准
-- Agent 每完成一轮明确修改，都必须通过 `commit_revision_round.py` 提交，不能只改文件不记审计
-- `gate-and-render` 保持只读；它只检查未审计 diff、response 覆盖与完成度，不替用户补写 revision log
-- `response_thread_rows` 必须由已确认策略、已完成 revision logs 与 thread-level 聚合共同驱动
+- Stage 6 的正式协作路径是 `working_manuscript`、Agent-owned revision log 与 thread-level response 覆盖闭环
+- Stage 6 以 `working_manuscript` 为唯一协作修改稿；`source_snapshot` 仅作为只读备份，不参与 revision log 或完成门禁
+- Agent 每完成一轮明确修改，都必须通过 `commit_revision_round.py --payload ...` 提交结构化语义 log，不能只改文件不记审计
+- `gate-and-render` 保持只读；它只检查 revision plan 结案、response 覆盖与完成度，不读取稿件 diff，也不替用户补写 revision log
+- `response_thread_rows` 必须由已确认策略、已完成 semantic revision logs 与 thread-level 聚合共同驱动
 - `response_only_resolution` 只用于无需直接改稿、但必须在回复信中解释的 thread
 - `working_manuscript`、`response_thread_rows` 与最终 response letter 必须使用文本语言
 - `latexdiff_manuscript` 是可选辅助，不是 Stage 6 硬门禁
@@ -600,7 +601,6 @@ conda run --no-capture-output -n DataProcessing python -u \
 
 - revision backlog 尚未建立
 - 仍有 `revision_plan_actions.status` 不是 `completed` 或 `dismissed`
-- `working_manuscript` 存在未审计 diff
 - 某个 `thread_id` 尚无最终 `response_thread_rows`
 - 某条 `response_thread_rows` 既没有 linked revision log，也没有显式标记 `response_only_resolution`
 - `gate-and-render` 返回 blocker 或 repair
@@ -608,7 +608,7 @@ conda run --no-capture-output -n DataProcessing python -u \
 完成定义：
 
 - 所有 `revision_plan_actions` 都已结案
-- 所有已发生的 `working_manuscript` 修改都已通过 revision audit 写库
+- 所有已发生的 `working_manuscript` 修改都已由 Agent 汇总为 semantic revision log 并写库
 - 每个 `thread_id` 都已有最终 response row，且 coverage matrix 显示闭环
 - `working_manuscript`、Markdown response letter、LaTeX response letter 已稳定可交付
 - 若环境支持，`latexdiff_manuscript` 已作为辅助视图生成
@@ -636,4 +636,4 @@ conda run --no-capture-output -n DataProcessing python -u \
 - 最终 response letter 必须按原始 `thread_id` 顺序回映，而不是按 `comment_id` 直接展开
 - `01-agent-resume.md` 是 Agent 恢复视图，不是用户主确认工件
 - `instruction_payload.resume_packet` 与 `01-agent-resume.md` 是恢复协议的正式入口
-- Stage 6 必须以 `working_manuscript` 与 revision audit 为正式闭环路径
+- Stage 6 必须以 `working_manuscript` 与 Agent-owned revision log 为正式闭环路径

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import difflib
-import hashlib
 import json
 import sqlite3
 import sys
@@ -14,6 +12,12 @@ from typing import Any
 from workspace_db import connect_db, ensure_runtime_schema_compatibility
 
 
+ALLOWED_LOG_STATUS = {"draft", "completed", "cancelled"}
+ALLOWED_OPERATOR_ROLE = {"agent", "user", "collaborative"}
+ALLOWED_PLAN_STATUS = {"todo", "blocked", "in_progress", "completed", "dismissed"}
+ALLOWED_CHANGE_TYPE = {"added", "revised", "deleted", "moved", "reframed", "format_only", "response_only"}
+
+
 def emit(payload: dict[str, Any], exit_code: int = 0) -> int:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
@@ -21,102 +25,91 @@ def emit(payload: dict[str, Any], exit_code: int = 0) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Capture one Stage 6 revision round into review-master runtime truth.")
+    parser = argparse.ArgumentParser(description="Capture one Agent-authored Stage 6 revision round into review-master runtime truth.")
     parser.add_argument("--artifact-root", required=True)
-    parser.add_argument("--summary", required=True)
-    parser.add_argument("--change-note", default="")
-    parser.add_argument("--response-note", default="")
-    parser.add_argument("--status", default="completed")
-    parser.add_argument("--operator-role", default="collaborative")
-    parser.add_argument("--plan-action-id", action="append", default=[])
-    parser.add_argument("--thread-id", action="append", default=[])
+    parser.add_argument("--payload", required=True, help="JSON object, or @path/to/payload.json, containing the Agent-authored revision log.")
     return parser.parse_args()
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def load_payload(raw_payload: str) -> dict[str, Any]:
+    if raw_payload.startswith("@"):
+        payload_path = Path(raw_payload[1:]).expanduser()
+        return json.loads(payload_path.read_text(encoding="utf-8"))
+    return json.loads(raw_payload)
 
 
-def load_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return path.read_text(encoding="utf-8", errors="replace")
+def list_field(payload: dict[str, Any], key: str) -> list[Any]:
+    value = payload.get(key, [])
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a list")
+    return value
 
 
-def compact_diff(before_text: str, after_text: str, *, limit: int = 24) -> str:
-    lines = list(
-        difflib.unified_diff(
-            before_text.splitlines(),
-            after_text.splitlines(),
-            fromfile="before",
-            tofile="after",
-            lineterm="",
-        )
+def string_value(payload: dict[str, Any], key: str, default: str = "") -> str:
+    value = payload.get(key, default)
+    if value is None:
+        return default
+    return str(value)
+
+
+def validate_payload(payload: dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a JSON object")
+    status = string_value(payload, "status", "completed")
+    if status not in ALLOWED_LOG_STATUS:
+        raise ValueError(f"status must be one of {sorted(ALLOWED_LOG_STATUS)}")
+    operator_role = string_value(payload, "operator_role", "agent")
+    if operator_role not in ALLOWED_OPERATOR_ROLE:
+        raise ValueError(f"operator_role must be one of {sorted(ALLOWED_OPERATOR_ROLE)}")
+    if not string_value(payload, "summary").strip():
+        raise ValueError("summary is required")
+
+    entries = list_field(payload, "entries")
+    if status != "cancelled" and not entries:
+        raise ValueError("completed or draft revision logs must include at least one semantic entry")
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"entries[{index}] must be an object")
+        change_type = string_value(entry, "change_type")
+        if change_type not in ALLOWED_CHANGE_TYPE:
+            raise ValueError(f"entries[{index}].change_type must be one of {sorted(ALLOWED_CHANGE_TYPE)}")
+        if not string_value(entry, "change_summary").strip():
+            raise ValueError(f"entries[{index}].change_summary is required")
+
+    for index, update in enumerate(list_field(payload, "plan_action_status_updates"), start=1):
+        if not isinstance(update, dict):
+            raise ValueError(f"plan_action_status_updates[{index}] must be an object")
+        if not string_value(update, "plan_action_id").strip():
+            raise ValueError(f"plan_action_status_updates[{index}].plan_action_id is required")
+        status_value = string_value(update, "status")
+        if status_value not in ALLOWED_PLAN_STATUS:
+            raise ValueError(f"plan_action_status_updates[{index}].status must be one of {sorted(ALLOWED_PLAN_STATUS)}")
+
+
+def insert_revision_log(connection: sqlite3.Connection, payload: dict[str, Any]) -> str:
+    log_id = string_value(payload, "log_id") or f"log_{uuid.uuid4().hex[:12]}"
+    created_at = string_value(payload, "created_at") or dt.datetime.now(dt.timezone.utc).isoformat()
+    max_log_order = connection.execute("SELECT COALESCE(MAX(log_order), 0) FROM revision_action_logs").fetchone()[0]
+    connection.execute(
+        """
+        INSERT INTO revision_action_logs (
+            log_id, log_order, status, operator_role, summary, change_note, response_note, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            log_id,
+            int(max_log_order) + 1,
+            string_value(payload, "status", "completed"),
+            string_value(payload, "operator_role", "agent"),
+            string_value(payload, "summary"),
+            string_value(payload, "change_note"),
+            string_value(payload, "response_note"),
+            created_at,
+        ),
     )
-    if len(lines) > limit:
-        lines = lines[:limit]
-    return "\n".join(lines)
-
-
-def collect_file_changes(snapshot_root: Path, working_root: Path) -> list[dict[str, str]]:
-    snapshot_files = {str(path.relative_to(snapshot_root)): path for path in snapshot_root.rglob("*") if path.is_file()} if snapshot_root.exists() else {}
-    working_files = {str(path.relative_to(working_root)): path for path in working_root.rglob("*") if path.is_file()} if working_root.exists() else {}
-    all_paths = sorted(set(snapshot_files) | set(working_files))
-    changes: list[dict[str, str]] = []
-    for relative_path in all_paths:
-        snapshot_path = snapshot_files.get(relative_path)
-        working_path = working_files.get(relative_path)
-        if snapshot_path is None and working_path is not None:
-            changes.append(
-                {
-                    "relative_path": relative_path,
-                    "change_kind": "added",
-                    "before_excerpt": "",
-                    "after_excerpt": load_text(working_path)[:500],
-                    "diff_excerpt": compact_diff("", load_text(working_path)),
-                    "snapshot_sha256": "",
-                    "current_sha256": file_sha256(working_path),
-                }
-            )
-            continue
-        if snapshot_path is not None and working_path is None:
-            before_text = load_text(snapshot_path)
-            changes.append(
-                {
-                    "relative_path": relative_path,
-                    "change_kind": "deleted",
-                    "before_excerpt": before_text[:500],
-                    "after_excerpt": "",
-                    "diff_excerpt": compact_diff(before_text, ""),
-                    "snapshot_sha256": file_sha256(snapshot_path),
-                    "current_sha256": "",
-                }
-            )
-            continue
-        assert snapshot_path is not None and working_path is not None
-        snapshot_hash = file_sha256(snapshot_path)
-        current_hash = file_sha256(working_path)
-        if snapshot_hash == current_hash:
-            continue
-        before_text = load_text(snapshot_path)
-        after_text = load_text(working_path)
-        changes.append(
-            {
-                "relative_path": relative_path,
-                "change_kind": "modified",
-                "before_excerpt": before_text[:500],
-                "after_excerpt": after_text[:500],
-                "diff_excerpt": compact_diff(before_text, after_text),
-                "snapshot_sha256": snapshot_hash,
-                "current_sha256": current_hash,
-            }
-        )
-    return changes
+    return log_id
 
 
 def main() -> int:
@@ -125,108 +118,81 @@ def main() -> int:
     db_path = artifact_root / "review-master.db"
     if not db_path.exists():
         return emit({"status": "error", "error": f"missing database: {db_path}"}, exit_code=1)
+    try:
+        payload = load_payload(args.payload)
+        validate_payload(payload)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return emit({"status": "error", "error": str(exc)}, exit_code=1)
 
-    log_id = f"log_{uuid.uuid4().hex[:12]}"
-    created_at = dt.datetime.now(dt.timezone.utc).isoformat()
-    with connect_db(db_path) as connection:
-        ensure_runtime_schema_compatibility(connection)
-        copy_rows = {
-            str(row["copy_role"]): row
-            for row in connection.execute(
+    try:
+        with connect_db(db_path) as connection:
+            ensure_runtime_schema_compatibility(connection)
+            log_id = insert_revision_log(connection, payload)
+            for plan_action_id in list_field(payload, "plan_action_ids"):
+                connection.execute(
+                    "INSERT INTO revision_action_log_plan_links (log_id, plan_action_id) VALUES (?, ?)",
+                    (log_id, str(plan_action_id)),
+                )
+            for thread_id in list_field(payload, "thread_ids"):
+                thread_id_text = str(thread_id)
+                connection.execute(
+                    "INSERT INTO revision_action_log_thread_links (log_id, thread_id) VALUES (?, ?)",
+                    (log_id, thread_id_text),
+                )
+                next_link_order = connection.execute(
+                    "SELECT COALESCE(MAX(link_order), 0) + 1 FROM response_thread_action_log_links WHERE thread_id = ?",
+                    (thread_id_text,),
+                ).fetchone()[0]
+                connection.execute(
+                    "INSERT OR REPLACE INTO response_thread_action_log_links (thread_id, log_id, link_order) VALUES (?, ?, ?)",
+                    (thread_id_text, log_id, int(next_link_order)),
+                )
+            for index, entry in enumerate(list_field(payload, "entries"), start=1):
+                connection.execute(
+                    """
+                    INSERT INTO revision_action_log_entries (
+                        log_id, entry_order, target_file, target_locator, change_type,
+                        change_summary, rationale, evidence_source, expected_response_use
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        log_id,
+                        index,
+                        string_value(entry, "target_file"),
+                        string_value(entry, "target_locator"),
+                        string_value(entry, "change_type"),
+                        string_value(entry, "change_summary"),
+                        string_value(entry, "rationale"),
+                        string_value(entry, "evidence_source"),
+                        string_value(entry, "expected_response_use"),
+                    ),
+                )
+            for update in list_field(payload, "plan_action_status_updates"):
+                cursor = connection.execute(
+                    "UPDATE revision_plan_actions SET status = ? WHERE plan_action_id = ?",
+                    (string_value(update, "status"), string_value(update, "plan_action_id")),
+                )
+                if cursor.rowcount == 0:
+                    raise sqlite3.IntegrityError(f"unknown plan_action_id in status update: {string_value(update, 'plan_action_id')}")
+            connection.execute(
                 """
-                SELECT copy_role, copy_root
-                FROM workspace_manuscript_copies
-                """
-            ).fetchall()
-        }
-        snapshot_row = copy_rows.get("source_snapshot")
-        working_row = copy_rows.get("working_manuscript")
-        snapshot_root = Path(str(snapshot_row["copy_root"])) if snapshot_row is not None else artifact_root / "manuscript-copies" / "source-snapshot"
-        working_root = Path(str(working_row["copy_root"])) if working_row is not None else artifact_root / "manuscript-copies" / "working-manuscript"
-        changes = collect_file_changes(snapshot_root, working_root)
-        max_log_order = connection.execute("SELECT COALESCE(MAX(log_order), 0) FROM revision_action_logs").fetchone()[0]
-        connection.execute(
-            """
-            INSERT INTO revision_action_logs (
-                log_id, log_order, status, operator_role, summary, change_note, response_note, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                log_id,
-                int(max_log_order) + 1,
-                str(args.status),
-                str(args.operator_role),
-                str(args.summary),
-                str(args.change_note),
-                str(args.response_note),
-                created_at,
-            ),
-        )
-        for index, plan_action_id in enumerate(args.plan_action_id, start=1):
-            connection.execute(
-                "INSERT INTO revision_action_log_plan_links (log_id, plan_action_id) VALUES (?, ?)",
-                (log_id, str(plan_action_id)),
-            )
-        for index, thread_id in enumerate(args.thread_id, start=1):
-            connection.execute(
-                "INSERT INTO revision_action_log_thread_links (log_id, thread_id) VALUES (?, ?)",
-                (log_id, str(thread_id)),
-            )
-            connection.execute(
-                "INSERT OR REPLACE INTO response_thread_action_log_links (thread_id, log_id, link_order) VALUES (?, ?, ?)",
-                (str(thread_id), log_id, index),
-            )
-        for index, change in enumerate(changes, start=1):
-            connection.execute(
-                """
-                INSERT INTO revision_action_log_file_diffs (
-                    log_id, file_order, relative_path, change_kind, diff_excerpt, before_excerpt, after_excerpt
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO export_artifacts (artifact_name, artifact_status, output_path)
+                VALUES ('working_manuscript', 'ready', ?)
+                ON CONFLICT(artifact_name) DO UPDATE SET artifact_status = 'ready', output_path = excluded.output_path
                 """,
-                (
-                    log_id,
-                    index,
-                    change["relative_path"],
-                    change["change_kind"],
-                    change["diff_excerpt"],
-                    change["before_excerpt"],
-                    change["after_excerpt"],
-                ),
+                (string_value(payload, "working_manuscript_path", "manuscript-copies/working-manuscript"),),
             )
-            connection.execute(
-                """
-                INSERT INTO working_copy_file_state (
-                    relative_path, snapshot_sha256, last_audited_sha256, current_sha256, last_log_id
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(relative_path) DO UPDATE SET
-                    snapshot_sha256 = excluded.snapshot_sha256,
-                    last_audited_sha256 = excluded.last_audited_sha256,
-                    current_sha256 = excluded.current_sha256,
-                    last_log_id = excluded.last_log_id
-                """,
-                (
-                    change["relative_path"],
-                    change["snapshot_sha256"],
-                    change["current_sha256"],
-                    change["current_sha256"],
-                    log_id,
-                ),
-            )
-        connection.execute(
-            """
-            INSERT INTO export_artifacts (artifact_name, artifact_status, output_path)
-            VALUES ('working_manuscript', 'ready', ?)
-            ON CONFLICT(artifact_name) DO UPDATE SET artifact_status = 'ready', output_path = excluded.output_path
-            """,
-            (str(working_root),),
-        )
-        connection.commit()
+            connection.commit()
+    except sqlite3.IntegrityError as exc:
+        return emit({"status": "error", "error": f"integrity error: {exc}"}, exit_code=1)
+
     return emit(
         {
             "status": "ok",
             "log_id": log_id,
-            "captured_files": [change["relative_path"] for change in changes],
-            "created_at": created_at,
+            "captured_entries": len(list_field(payload, "entries")),
+            "linked_plan_actions": [str(value) for value in list_field(payload, "plan_action_ids")],
+            "linked_threads": [str(value) for value in list_field(payload, "thread_ids")],
         }
     )
 

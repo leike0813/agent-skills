@@ -177,8 +177,7 @@
   - 写入 `revision_action_logs`
   - 写入 `revision_action_log_plan_links`
   - 写入 `revision_action_log_thread_links`
-  - 写入 `revision_action_log_file_diffs`
-  - 写入 `working_copy_file_state`
+  - 写入 `revision_action_log_entries`
   - 写入 `response_thread_rows`
   - 写入 `response_thread_action_log_links`
   - 写入 `export_artifacts`
@@ -187,14 +186,13 @@
   - 先读取 `11-manuscript-revision-guide.md` 与 `12-manuscript-execution-graph.md`
   - 参考 `03-style-profile.md`
   - 与用户协作修改 `working_manuscript`
-  - 每轮明确修改后，通过 `commit_revision_round.py` 提交
+  - 每轮明确修改后，由 Agent 汇总 semantic revision log，并通过 `commit_revision_round.py --payload ...` 提交
   - 持续刷新 `13-17` 工件
 - 阻断：
   - `revision_plan_actions` 未全部结案
-  - `working_manuscript` 存在未审计 diff
   - `thread_id` 尚未形成最终 row
   - 某条 response row 没有 revision log 或 `response_only_resolution`
 - 禁止：
-  - 修改 `working_manuscript` 后绕过审计提交
+  - 修改 `working_manuscript` 后绕过 Agent-owned revision log 提交
   - 用 `comment_id` 顺序直接替代 `thread_id` 顺序输出最终 Response Letter
   - 修改 `source_snapshot`

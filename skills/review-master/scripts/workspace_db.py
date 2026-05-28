@@ -129,6 +129,7 @@ DEFAULT_ENUMS = {
     "revision_plan_status": {"todo", "blocked", "in_progress", "completed", "dismissed"},
     "revision_log_status": {"draft", "completed", "cancelled"},
     "operator_role": {"agent", "user", "collaborative"},
+    "revision_change_type": {"added", "revised", "deleted", "moved", "reframed", "format_only", "response_only"},
     "change_kind": {"modified", "added", "deleted"},
     "response_resolution_kind": {"revision_backed", "response_only_resolution"},
     "artifact_name": {"working_manuscript", "response_markdown", "response_latex", "latexdiff_manuscript"},
@@ -178,14 +179,15 @@ REPAIR_PRIORITY = {
     "revision_action_logs": 26,
     "revision_action_log_plan_links": 27,
     "revision_action_log_thread_links": 28,
-    "revision_action_log_file_diffs": 29,
-    "working_copy_file_state": 30,
-    "response_thread_rows": 31,
-    "export_artifacts": 32,
-    "supplement_suggestion_items": 33,
-    "supplement_suggestion_intake_links": 34,
-    "supplement_intake_items": 35,
-    "supplement_landing_links": 36,
+    "revision_action_log_entries": 29,
+    "revision_action_log_file_diffs": 30,
+    "working_copy_file_state": 31,
+    "response_thread_rows": 32,
+    "export_artifacts": 33,
+    "supplement_suggestion_items": 34,
+    "supplement_suggestion_intake_links": 35,
+    "supplement_intake_items": 36,
+    "supplement_landing_links": 37,
 }
 
 STAGE3_COVERAGE_HARD_THRESHOLD = 30.0
@@ -258,6 +260,7 @@ ALLOWED_WORKSPACE_SOURCE_KIND = enum_values("workspace_source_kind")
 ALLOWED_REVISION_PLAN_STATUS = enum_values("revision_plan_status")
 ALLOWED_REVISION_LOG_STATUS = enum_values("revision_log_status")
 ALLOWED_OPERATOR_ROLE = enum_values("operator_role")
+ALLOWED_REVISION_CHANGE_TYPE = enum_values("revision_change_type")
 ALLOWED_CHANGE_KIND = enum_values("change_kind")
 ALLOWED_RESPONSE_RESOLUTION_KIND = enum_values("response_resolution_kind")
 ALLOWED_ARTIFACT_NAME = enum_values("artifact_name")
@@ -2082,30 +2085,33 @@ def build_revision_action_log_context(connection: sqlite3.Connection) -> dict[st
         ORDER BY log_id, thread_id
         """,
     )
-    diff_rows = fetch_all(
+    entry_rows = fetch_all(
         connection,
         """
-        SELECT log_id, file_order, relative_path, change_kind, diff_excerpt, before_excerpt, after_excerpt
-        FROM revision_action_log_file_diffs
-        ORDER BY log_id, file_order
+        SELECT log_id, entry_order, target_file, target_locator, change_type,
+               change_summary, rationale, evidence_source, expected_response_use
+        FROM revision_action_log_entries
+        ORDER BY log_id, entry_order
         """,
     )
     plan_index: dict[str, list[str]] = defaultdict(list)
     thread_index: dict[str, list[str]] = defaultdict(list)
-    diff_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    entry_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in plan_rows:
         plan_index[str(row["log_id"])].append(str(row["plan_action_id"]))
     for row in thread_rows:
         thread_index[str(row["log_id"])].append(str(row["thread_id"]))
-    for row in diff_rows:
-        diff_index[str(row["log_id"])].append(
+    for row in entry_rows:
+        entry_index[str(row["log_id"])].append(
             {
-                "file_order": int(row["file_order"]),
-                "relative_path": str(row["relative_path"]),
-                "change_kind": str(row["change_kind"] or ""),
-                "diff_excerpt": str(row["diff_excerpt"] or ""),
-                "before_excerpt": str(row["before_excerpt"] or ""),
-                "after_excerpt": str(row["after_excerpt"] or ""),
+                "entry_order": int(row["entry_order"]),
+                "target_file": str(row["target_file"] or ""),
+                "target_locator": str(row["target_locator"] or ""),
+                "change_type": str(row["change_type"] or ""),
+                "change_summary": str(row["change_summary"] or ""),
+                "rationale": str(row["rationale"] or ""),
+                "evidence_source": str(row["evidence_source"] or ""),
+                "expected_response_use": str(row["expected_response_use"] or ""),
             }
         )
     items = [
@@ -2120,7 +2126,7 @@ def build_revision_action_log_context(connection: sqlite3.Connection) -> dict[st
             "created_at": str(row["created_at"] or ""),
             "plan_action_ids": join_ordered(plan_index.get(str(row["log_id"]), [])),
             "thread_ids": join_ordered(thread_index.get(str(row["log_id"]), [])),
-            "file_diffs": diff_index.get(str(row["log_id"]), []),
+            "entries": entry_index.get(str(row["log_id"]), []),
         }
         for row in log_rows
     ]
@@ -2278,23 +2284,23 @@ def build_final_checklist_context(connection: sqlite3.Connection) -> dict[str, A
                 "thread_export_ready": thread_export_ready,
             }
         )
-    export_rows = [dict(row) for row in fetch_all(connection, "SELECT artifact_name, artifact_status, output_path FROM export_artifacts ORDER BY artifact_name")]
-    working_copy_rows = [
+    plan_rows = [
         dict(row)
         for row in fetch_all(
             connection,
             """
-            SELECT relative_path, snapshot_sha256, last_audited_sha256, current_sha256, last_log_id
-            FROM working_copy_file_state
-            ORDER BY relative_path
+            SELECT plan_action_id, plan_order, comment_id, execution_category, title, status
+            FROM revision_plan_actions
+            ORDER BY plan_order, plan_action_id
             """,
         )
     ]
+    export_rows = [dict(row) for row in fetch_all(connection, "SELECT artifact_name, artifact_status, output_path FROM export_artifacts ORDER BY artifact_name")]
     return {
         "atomic_rows": atomic_payload,
+        "plan_rows": plan_rows,
         "thread_rows": thread_payload,
         "export_rows": export_rows,
-        "working_copy_rows": working_copy_rows,
     }
 
 

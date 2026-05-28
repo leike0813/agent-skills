@@ -61,9 +61,8 @@
   - 每个阶段完成后
   - Stage 6 每轮提交后
 - Stage 6 中额外职责：
-  - 检查 `working_manuscript` 是否存在未审计 diff
   - 检查 `revision_plan_actions` 是否全部结案
-  - 检查 `response_thread_rows` 与 revision audit 的覆盖闭环
+  - 检查 `response_thread_rows` 与 semantic revision log 的覆盖闭环
 - 不负责：
   - 自动补写 revision log
   - 替用户生成语义判断
@@ -71,44 +70,45 @@
 ## `capture_revision_action.py`
 
 - 路径：`review-master/scripts/capture_revision_action.py`
-- 作用：把一轮已经发生的 `working_manuscript` 修改写入 revision audit 真源
+- 作用：把 Agent 汇总的一轮 `working_manuscript` 语义修改 log 写入 revision 真源
 - 固定输入语境：
-  - `source_snapshot`
-  - `working_manuscript`
-  - 上次已审计的文件状态
+  - Agent-authored JSON payload
+  - 本轮涉及的 `plan_action_id`
+  - 本轮涉及的 `thread_id`
 - 写入内容：
   - `revision_action_logs`
   - `revision_action_log_plan_links`
   - `revision_action_log_thread_links`
-  - `revision_action_log_file_diffs`
-  - `working_copy_file_state`
+  - `revision_action_log_entries`
+  - 视情况更新 `revision_plan_actions.status`
 - 典型职责：
-  - 计算自上次审计以来的增量 diff
-  - 记录 `before_excerpt` / `after_excerpt`
+  - 校验结构化 semantic revision log payload
+  - 记录 Agent 汇总的目标位置、改动类型、改动摘要、修改理由、证据来源和回复信用途
   - 记录关联的 `plan_action_id` 与 `thread_id`
 - 不负责：
   - 门禁判定
   - 只读视图渲染
+  - 读取稿件文件或生成 diff
 
 ## `commit_revision_round.py`
 
 - 路径：`review-master/scripts/commit_revision_round.py`
 - 作用：作为 Stage 6 的正式提交入口，固定执行：
-  1. `capture_revision_action.py`
+  1. `capture_revision_action.py --payload ...`
   2. `gate_and_render_workspace.py`
 - 使用规则：
-  - Agent 每完成一轮明确改稿后，必须通过它提交
-  - 用户手动改稿后，若希望纳入正式审计，也应通过它提交
+  - Agent 每完成一轮明确改稿后，必须先汇总语义修改条目，再通过它提交
+  - 用户手动改稿后，若希望纳入正式审计，也必须由 Agent 汇总为 payload 后提交
 - 价值：
-  - 把“改稿后立即 capture + gate”的动作绑定为单一入口
-  - 让 Stage 6 的 revision audit 与只读视图刷新保持同步
+  - 把“Agent 写入 semantic log + gate”的动作绑定为单一入口
+  - 让 Stage 6 的 semantic revision log 与只读视图刷新保持同步
 
 ## Stage 6 审计纪律
 
 - `working_manuscript` 是唯一允许直接修改的稿件副本
-- `source_snapshot` 是只读基准
-- 每次明确修改完成后，都要形成一条 revision action log
-- 若用户绕过正式提交入口直接改了 `working_manuscript`，下一次运行 `gate-and-render` 时会被识别为未审计 diff，并返回 `record_revision_action`
+- `source_snapshot` 是只读备份，不参与 revision log 或完成门禁
+- 每次明确修改完成后，都要由 Agent 形成一条结构化 revision action log
+- `gate-and-render` 不读取稿件 diff，不自动补写 log；它只依据 plan action 状态、revision log links 与 response row 覆盖判断 Stage 6 是否闭环
 
 ## 统一调用顺序
 
@@ -128,5 +128,5 @@
 ### Stage 6
 
 1. Agent 与用户修改 `working_manuscript`
-2. 运行 `commit_revision_round.py`
+2. Agent 汇总 semantic revision log payload，并运行 `commit_revision_round.py --payload ...`
 3. 读取更新后的 `13-17` 工件与 `instruction_payload`

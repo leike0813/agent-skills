@@ -15,15 +15,9 @@ def emit(payload: dict[str, Any], exit_code: int = 0) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Commit one revision round: capture audit state, then rerun gate-and-render.")
+    parser = argparse.ArgumentParser(description="Commit one Agent-authored revision round: write semantic audit payload, then rerun gate-and-render.")
     parser.add_argument("--artifact-root", required=True)
-    parser.add_argument("--summary", required=True)
-    parser.add_argument("--change-note", default="")
-    parser.add_argument("--response-note", default="")
-    parser.add_argument("--status", default="completed")
-    parser.add_argument("--operator-role", default="collaborative")
-    parser.add_argument("--plan-action-id", action="append", default=[])
-    parser.add_argument("--thread-id", action="append", default=[])
+    parser.add_argument("--payload", required=True, help="JSON object, or @path/to/payload.json, containing the Agent-authored revision log.")
     return parser.parse_args()
 
 
@@ -43,24 +37,7 @@ def main() -> int:
     script_root = Path(__file__).resolve().parent
     capture_script = script_root / "capture_revision_action.py"
     gate_script = script_root / "gate_and_render_workspace.py"
-    capture_args = [
-        "--artifact-root",
-        args.artifact_root,
-        "--summary",
-        args.summary,
-        "--change-note",
-        args.change_note,
-        "--response-note",
-        args.response_note,
-        "--status",
-        args.status,
-        "--operator-role",
-        args.operator_role,
-    ]
-    for value in args.plan_action_id:
-        capture_args.extend(["--plan-action-id", value])
-    for value in args.thread_id:
-        capture_args.extend(["--thread-id", value])
+    capture_args = ["--artifact-root", args.artifact_root, "--payload", args.payload]
     try:
         capture_payload = run_json(capture_script, capture_args)
         gate_payload = run_json(gate_script, ["--artifact-root", args.artifact_root])

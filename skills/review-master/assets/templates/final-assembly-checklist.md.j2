@@ -12,6 +12,16 @@
 |  |  |  |  |  |  |  |  |  |  |  |
 {% endfor %}
 
+## {{ msg("view.final_checklist.revision_plan_table") }}
+
+| `plan_action_id` | `comment_id` | `execution_category` | {{ msg("view.revision_graph.title_column") }} | `status` |
+| --- | --- | --- | --- | --- |
+{% for row in plan_rows -%}
+| {{ row.plan_action_id }} | {{ row.comment_id }} | {{ row.execution_category or '' }} | {{ row.title or '' }} | {{ row.status or '' }} |
+{% else -%}
+|  |  |  |  |  |
+{% endfor %}
+
 ## {{ msg("view.final_checklist.thread_coverage_table") }}
 
 | `thread_id` | `reviewer_id` | {{ msg("view.raw_threads.linked_atomic_comments") }} | `response_resolution_kind` | `audited_log_present` | {{ msg("view.final_checklist.final_row_ready") }} | {{ msg("view.final_checklist.linked_atomic_export_ready") }} | {{ msg("view.final_checklist.thread_export_ready") }} |
@@ -20,16 +30,6 @@
 | {{ row.thread_id }} | {{ row.reviewer_id }} | {{ row.linked_comment_ids or '' }} | {{ row.response_resolution_kind or '' }} | {{ row.audited_log_present }} | {{ row.response_row_ready }} | {{ row.linked_atomic_export_ready }} | {{ row.thread_export_ready }} |
 {% else -%}
 |  |  |  |  |  |  |  |  |
-{% endfor %}
-
-## {{ msg("view.final_checklist.working_copy_table") }}
-
-| `relative_path` | `last_log_id` | `snapshot_sha256` | `last_audited_sha256` | `current_sha256` |
-| --- | --- | --- | --- | --- |
-{% for row in working_copy_rows -%}
-| {{ row.relative_path }} | {{ row.last_log_id or '' }} | {{ row.snapshot_sha256 or '' }} | {{ row.last_audited_sha256 or '' }} | {{ row.current_sha256 or '' }} |
-{% else -%}
-|  |  |  |  |  |
 {% endfor %}
 
 ## {{ msg("view.final_checklist.export_artifact_table") }}
