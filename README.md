@@ -6,6 +6,7 @@ This repo aggregates skills as git submodules.
 
 | Skill-ID | 说明 |
 |----------|------|
+| autoskill-converter | Transform an ordinary skill that conforms to the Open Agent Skills specification into an AutoSkill package with input/output/execution contracts. Use this skill when you need to convert an ordinary Skill into an executable business package for Skill-Runner or Zotero-Agents, or to normalize the input/output of other skills. |
 | greeting-generator | Holiday Greeting Generator – Batch-generates personalized, appropriate, and elegantly written greetings based on user-provided holiday information, personal profiles, and recipient lists. Use this skill when users need to generate holiday greeting messages in bulk. |
 | literature-digest | Generate a paper digest (Markdown), structured references (JSON), and citation analysis artifacts from a source literature(.md/.pdf/latex). Use this skill when you need to extract the core content of the literature, extract structured references, and perform citation context analysis. |
 | literature-digest-lite | Generate a paper digest (Markdown) from a source literature(.md/.pdf/latex). Use this skill when you only need to extract the core content of the literature. |
