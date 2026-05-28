@@ -3,13 +3,13 @@
   "properties": {
     "valid_tags_format": {
       "type": "string",
-      "description": "Format of input.valid_tags. yaml/json are strict modes; auto explicitly tries yaml->json.",
+      "description": "Format of input.valid_tags when valid_tags is provided. yaml/json are strict modes; auto explicitly tries yaml->json.",
       "enum": ["yaml", "json", "auto"],
       "default": "yaml"
     },
     "infer_tag": {
       "type": "boolean",
-      "description": "Whether to infer tags from metadata. Effective behavior is still constrained by SKILL.md defaults when metadata is missing/empty.",
+      "description": "Whether to run metadata/digest-driven supplemental inference in controlled-vocabulary mode. In pure inference mode, false does not disable all suggestion generation when evidence exists.",
       "default": true
     },
     "tag_note_language": {

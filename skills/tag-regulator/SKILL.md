@@ -1,6 +1,6 @@
 ---
 name: tag-regulator
-description: 在严格受控词表（`valid_tags`）约束下，利用 LLM 语义理解对 Zotero tags 进行规范化，并可基于元数据推断（infer_tag）标签。作为 `$tag-regulator` 被调用，从 prompt payload 读取 `metadata`/`input_tags`/`valid_tags`/`infer_tag`，并支持 `tag_note_language` 控制建议说明语言，stdout 必须且只能输出一个 JSON 对象。
+description: Literature Tag Normalization Skill. Normalizes input tags input_tags into entries from a controlled vocabulary valid_tags, and can infer tags based on bibliographic metadata or literature digests, yielding tag suggestions suggest_tags that conform to the controlled vocabulary protocol. It can also operate in pure inference mode without providing valid_tags. Suitable for use with Zotero, but can also be applied to tag inference for any literature (as long as the original text can be converted to Markdown and directly supplied as digest_markdown).
 metadata:
   author: joshua
   version: "0.1.0"
@@ -13,23 +13,23 @@ metadata:
 给定 prompt 内的 payload：
 
 - `{{ input.metadata }}`：论文元数据（允许自由类型，只要语义明确即可，推荐：JSON/文本/bibtex-like）
-- `{{ input.input_tags }}`：待规范的原始 tag 列表（字符串数组）
-- `{{ parameter.infer_tag }}`：是否从元数据推断 tag（布尔语义；默认行为见下）
-- `{{ parameter.valid_tags_format }}`：受控词表文件格式（`yaml|json|auto`），默认 `yaml`
+- `{{ input.input_tags }}`：可选待规范的原始 tag 列表（字符串数组；缺失时按空数组处理）
+- `{{ parameter.infer_tag }}`：是否启用 metadata/digest 驱动的补充推断（布尔语义；受控词表模式与纯推断模式的有效行为见下）
+- `{{ parameter.valid_tags_format }}`：受控词表文件格式（`yaml|json|auto`），默认 `yaml`；仅在提供 `valid_tags` 时生效
 - `{{ parameter.tag_note_language }}`：`suggest_tags[].note` 使用的语言（自由字符串，推荐 BCP 47，如 `zh-CN`/`en-US`）
-- `{{ input.valid_tags }}`：受控词表文件路径
+- `{{ input.valid_tags }}`：可选受控词表文件路径；缺失或空值时进入纯推断模式
 - `{{ input.digest_markdown }}`：可选 digest Markdown 文件路径（用于推断补充语义证据）
 
 在 stdout 输出**且只能输出一个 JSON 对象**，描述：
 
-- 需要从输入列表中移除哪些 tag（`remove_tags`）
-- 需要新增哪些受控 tag（`add_tags`，且必须属于 `valid_tags`）
-- 需要建议哪些“已规范但不在受控词表中”的 tag（`suggest_tags`，对象项含 `tag` 与 `note`）
+- 需要从输入列表中移除哪些 tag（`remove_tags`；纯推断模式恒为空）
+- 需要新增哪些受控 tag（`add_tags`；提供 `valid_tags` 时必须属于 `valid_tags`，纯推断模式恒为空）
+- 需要建议哪些“已规范但未进入 `add_tags`”的 tag（`suggest_tags`，对象项含 `tag` 与 `note`）
 
 这是一个 **Agent Skill**：核心工作依赖语义理解（同义、改写、隐含含义），脚本仅用于校验/格式化等辅助，不承担语义决策。
 发布包内仅保留运行时必需脚本：
 
-- `tag-regulator/scripts/validate_valid_tags.py`（执行开始阶段校验 `valid_tags`）
+- `tag-regulator/scripts/validate_valid_tags.py`（提供 `valid_tags` 时，在执行开始阶段校验 `valid_tags`）
 - `tag-regulator/scripts/normalize_output.py`（输出前做确定性收敛）
 
 ## 强约束（必须遵守）
@@ -37,34 +37,47 @@ metadata:
 1) 非交互：不得提问；遇到分歧/不确定性采用保守默认行为并完成运行。
 2) stdout：**只输出一个 JSON 对象**（不得输出日志、解释、Markdown code fence 或多段 JSON）。
 3) 输出 JSON 必须包含下列 key（即使为空也必须存在）：
-   - `metadata`（回显；必须与输入一致，不得改写）
-   - `input_tags`（回显；必须与输入一致，不得改写）
+   - `metadata`（回显；必须与输入一致，不得改写；缺失时使用 `null`）
+   - `input_tags`（回显；必须与输入一致，不得改写；缺失时使用 `[]`）
    - `remove_tags`（数组；元素必须来自 `input_tags` 原始条目）
-   - `add_tags`（数组；不重复；每个元素必须属于 `valid_tags`）
-   - `suggest_tags`（对象数组；每项必须包含 `tag`/`note` 字符串；按 `tag` 去重并稳定排序；且 `tag` 不得属于 `valid_tags`）
+   - `add_tags`（数组；不重复；提供 `valid_tags` 时每个元素必须属于 `valid_tags`；纯推断模式必须为空）
+   - `suggest_tags`（对象数组；每项必须包含 `tag`/`note` 字符串；按 `tag` 去重并稳定排序；提供 `valid_tags` 时 `tag` 不得属于 `valid_tags`）
    - `provenance.generated_at`（UTC ISO-8601 字符串，以 `Z` 结尾）
    - `warnings`（数组）
    - `error`（`object|null`）
 4) 失败兜底：
-   - 读取 `input_tags` 失败，或读取/解析 `{{ input.valid_tags }}` 失败（缺失/不可读/类型错误/编码异常/格式不符）时，必须返回 schema 兼容 JSON：
+   - `input_tags` 缺失时按 `[]` 处理；若已提供但不是字符串数组，则按输入非法失败。
+   - 读取/解析已提供的 `{{ input.valid_tags }}` 失败（不可读/类型错误/编码异常/格式不符）时，必须返回 schema 兼容 JSON：
      - `remove_tags=[]`，`add_tags=[]`
      - `error` 为非空对象，至少包含 `{ "type": "...", "message": "..." }`
      - 仍需包含 `warnings`、`provenance.generated_at`，并在可用时回显 `metadata`/`input_tags`
+   - `{{ input.valid_tags }}` 缺失或空值不是错误，必须进入纯推断模式并在成功时输出 `error=null`。
+   - 若 `metadata`、可读非空 `digest_markdown`、`input_tags`、`valid_tags` 均缺失或为空，必须直接返回 `error.type="insufficient_input"` 的 schema 兼容 JSON。
 5) 受控词表：
-   - `add_tags ⊆ valid_tags` 为硬约束。
-   - 不在 `valid_tags` 但语义相关的候选 tag 只能进入 `suggest_tags`（先按命名规范归一化）。
+   - 提供 `valid_tags` 时，`add_tags ⊆ valid_tags` 为硬约束。
+   - 提供 `valid_tags` 时，不在 `valid_tags` 但语义相关的候选 tag 只能进入 `suggest_tags`（先按命名规范归一化）。
+   - 未提供 `valid_tags` 时，`remove_tags=[]` 且 `add_tags=[]` 为硬约束；所有候选只能进入 `suggest_tags`。
 6) `tag_note_language` 作用域：
    - 仅影响 `suggest_tags[].note` 的语言表达；
    - 不得影响 `remove_tags`、`add_tags`、`suggest_tags[].tag`、`warnings`、`error` 的取值与决策逻辑。
 
-## `infer_tag` 默认行为（必须遵守）
+## `infer_tag` 有效行为（必须遵守）
 
-判断是否启用推断（inference）：
+先判断可用语义证据：
 
-1) 若 `metadata` 缺失或为空 → 强制 `infer_tag=false`（忽略用户意图）。
-2) 否则，若 `infer_tag` 可被解释为真/假 → 采用该语义。
-3) 否则，若显式提供了 `infer_tag` 但无法解释为真/假 → 默认 `infer_tag=true`。
-4) 否则，若未提供 `infer_tag` 且 `metadata` 非空 → 默认 `infer_tag=true`。
+- `input_tags` 非空：可作为语义证据。
+- `metadata` 非空：可作为 metadata 推断证据。
+- `digest_markdown` 可读且内容非空：可作为 digest 推断证据。
+- `valid_tags` 存在且合法：可作为受控词表模式的规范化目标。
+
+有效规则：
+
+1) 若 `metadata`、可读非空 `digest_markdown`、`input_tags`、`valid_tags` 均缺失或为空 → 直接输出 `insufficient_input` 错误，不进入语义流程。
+2) 受控词表模式下，`input_tags` 规范化始终执行（只要 `input_tags` 非空），不受 `infer_tag=false` 影响。
+3) 受控词表模式下，若 `infer_tag` 可解释为 `false` → 仅禁用 metadata/digest 驱动的补充推断；不得禁用 `input_tags` 到 `valid_tags` 的规范化。
+4) 受控词表模式下，若 `infer_tag` 可解释为 `true`，或未提供/无法解释且存在 metadata 或 digest 证据 → 启用 metadata/digest 补充推断。
+5) 纯推断模式下，若存在任一语义证据（`input_tags`、metadata、digest），即使 `infer_tag=false` 也必须执行纯推断并输出可能的 `suggest_tags`；可在 `warnings` 记录已忽略该 false 值以避免 no-op。
+6) `digest_markdown` 不可读或编码异常时不算可用证据，只记录 warning 后忽略。
 
 ## `tag_note_language` 默认与作用域（必须遵守）
 
@@ -74,7 +87,7 @@ metadata:
 
 ## Tag 命名规范（生成 `suggest_tags` 时必须应用）
 
-遵循仓库中的规则（参考 `references/tag_standard.md`；受控词表内容以 `{{ input.valid_tags }}` 为准）：
+遵循仓库中的规则（参考 `references/tag_standard.md`；提供受控词表时，词表内容以 `{{ input.valid_tags }}` 为准）：
 
 - 统一格式：`facet:value` 或 `facet:path`（`facet` 永远小写）
 - 层级使用 `/`（例如 `field:CE/UG/Tunnel`）
@@ -87,13 +100,15 @@ metadata:
 
 ### Step 0：读取并校验 payload
 
-- 确保 `input_tags` 为字符串数组。
+- 若 `input_tags` 缺失，则按空数组处理并在输出中回显 `input_tags=[]`；若已提供，则必须是字符串数组。
 - `metadata` 允许自由类型（JSON 对象、纯文本、bibtex-like 字符串均可）。
-- 读取 `{{ input.valid_tags }}` 文件路径，确定 `valid_tags_format`（默认 `yaml`）。
-- `digest_markdown` 为可选输入：缺失或空值时直接忽略；不可读/编码异常时记录 `warnings` 后忽略，不得触发失败兜底。
-- 若 `input_tags` 缺失/非法，或 `{{ input.valid_tags }}` 读取/解析/结构校验失败 → 按“失败兜底”直接返回错误输出。
+- 若提供 `{{ input.valid_tags }}` 文件路径，则确定 `valid_tags_format`（默认 `yaml`）并进入受控词表模式。
+- 若 `{{ input.valid_tags }}` 缺失或空值，则进入纯推断模式：不读取受控词表、不调用 `validate_valid_tags.py`、不写入 `remove_tags` 或 `add_tags`。
+- `digest_markdown` 为可选输入：缺失或空值时直接忽略；不可读/编码异常时记录 `warnings` 后忽略，不得触发失败兜底；可读但内容为空时不算可用语义证据。
+- 若 `metadata`、可读非空 `digest_markdown`、`input_tags`、`valid_tags` 均缺失或为空 → 直接返回 `insufficient_input` 错误输出。
+- 若 `input_tags` 已提供但非法，或在已提供 `{{ input.valid_tags }}` 时读取/解析/结构校验失败 → 按“失败兜底”直接返回错误输出。
 
-#### valid_tags_format 解析规则（必须遵守）
+#### valid_tags_format 解析规则（仅在提供 `valid_tags` 时适用）
 
 - 默认 `valid_tags_format=yaml`。
 - 支持：`yaml|json|auto`。**（不支持 markdown / txt 这类无结构约束的文本文件，因为当文件损坏时容易形成误解析，导致产出错误，污染 tag）**
@@ -110,9 +125,9 @@ JSON：
 - 文件内容顶层为字符串数组，例如：
   - `["field:CS/AI/CV", "model:DL/Transformer"]`
 
-#### Step 0.5：运行时前置校验脚本（必须先执行）
+#### Step 0.5：运行时前置校验脚本（提供 `valid_tags` 时必须先执行）
 
-- 在进入语义规范化前，先调用：
+- 若提供 `valid_tags`，在进入受控词表语义规范化前先调用：
   - `python tag-regulator/scripts/validate_valid_tags.py --valid-tags "{{ input.valid_tags }}" --format "<resolved_valid_tags_format>"`
 - 脚本职责只有两件事：
   - 按允许格式（`yaml|json|auto`）解析 `valid_tags` 文件；
@@ -120,11 +135,12 @@ JSON：
 - 若脚本返回非 0：立即走“失败兜底”，不得进入后续语义流程。
 - 若运行环境无法调用脚本：必须执行等价回退校验（按同样格式规则解析并断言“顶层字符串数组”）；回退失败同样直接兜底。
 - 仅在前置校验成功后，才把解析结果作为 `valid_tags` 进入 Step 1。
+- 若未提供 `valid_tags`，不得调用该脚本，直接进入纯推断模式。
 
-### Step 1：以 `valid_tags` 建立规范化目标集合
+### Step 1：确定运行模式
 
-- 将 `valid_tags` 视为唯一允许写入 `add_tags` 的规范 tag 集合。
-- 在做语义映射时，优先在 `valid_tags` 内寻找最佳匹配。
+- **受控词表模式**（提供 `valid_tags`）：将 `valid_tags` 视为唯一允许写入 `add_tags` 的规范 tag 集合；做语义映射时，优先在 `valid_tags` 内寻找最佳匹配。
+- **纯推断模式**（未提供 `valid_tags`）：不存在可写入 `add_tags` 的规范集合；`input_tags`、`metadata` 与可读非空 `digest_markdown` 只作为生成 `suggest_tags` 的证据；即使 `infer_tag=false` 也不得跳过该模式的推断。
 
 ### Step 2：对 `input_tags` 做语义驱动规范化
 
@@ -150,13 +166,20 @@ JSON：
 4) **作为噪声移除**：
    - 若 `t` 与任务无关、格式异常或冗余，则将其放入 `remove_tags`。
 
+纯推断模式下，对每个 `input_tags` 只作为语义证据处理：
+
+- 不输出 `remove_tags`（保持 `remove_tags=[]`，避免在缺少受控目标时触发下游删除）。
+- 不输出 `add_tags`（保持 `add_tags=[]`）。
+- 若 `t` 可归一化为符合 `references/tag_standard.md` 的相关 tag，则将候选对象放入 `suggest_tags`。
+- 明显无关或无法规范化的 `t` 直接忽略；必要时在 `warnings` 记录不确定性。
+
 约束：
 
 - `remove_tags` 中的元素必须严格从 `input_tags` 原始条目中选择（不得发明新字符串）。
-- `add_tags` 不得重复，且每个元素必须属于 `valid_tags`。
-- `suggest_tags[].tag` 不得重复，且不得包含任何已在 `valid_tags` 中的条目。
+- `add_tags` 不得重复；受控词表模式下每个元素必须属于 `valid_tags`，纯推断模式下必须为空。
+- `suggest_tags[].tag` 不得重复；受控词表模式下不得包含任何已在 `valid_tags` 中的条目。
 
-### Step 3：从 `metadata` 推断 tag（若启用）
+### Step 3：从 `metadata` / `digest_markdown` 推断 tag（若启用）
 
 若启用推断，从以下字段（若存在）提取语义并推断候选 tag，优先级如下：
 
@@ -169,13 +192,15 @@ JSON：
 
 推断规则：
 
-- 受控词表约束最高；`input_tags` 与 `metadata` 为主证据；`digest_markdown` 仅用于补足摘要缺失、细化任务/方法/模型语义与提升 `suggest_tags[].note` 质量。
-- 推断结果必须优先映射到 `valid_tags`（即：只把受控词表支持的 tag 写入 `add_tags`）。
-- `digest_markdown` 不得绕过词表约束直接写入 `add_tags`。
-- 若某个概念很相关但不在 `valid_tags`，则将其归一化后写入 `suggest_tags[].tag`，并生成对应 `suggest_tags[].note`，不得写入 `add_tags`。
+- 受控词表模式下，受控词表约束最高；`input_tags` 与 `metadata` 为主证据；可读非空 `digest_markdown` 可在 metadata 缺失或不足时补充任务/方法/模型语义并提升 `suggest_tags[].note` 质量。
+- 受控词表模式下，推断结果必须优先映射到 `valid_tags`（即：只把受控词表支持的 tag 写入 `add_tags`）。
+- 受控词表模式下，`digest_markdown` 不得绕过词表约束直接写入 `add_tags`。
+- 纯推断模式下，不存在受控写入目标；所有推断候选必须归一化后写入 `suggest_tags`，不得写入 `add_tags`。
+- 若某个概念很相关但不能进入 `add_tags`，则将其归一化后写入 `suggest_tags[].tag`，并生成对应 `suggest_tags[].note`。
 - suggest_tags[].note **必须是简短的，直接的对于 `suggest_tags[].tag` 的语义描述，例如 `目标检测`、`DEtection TRansformer`、`端到端训练` 等，不需要对原因进行说明！不允许加入额外的描述！**
 - suggest_tags[].note 如果是不适合翻译的专有概念（如 `Vision Transformer`、`Ground Truth`等），可以保留原文而不进行翻译。
-- `infer_tag=false` 时，必须忽略 `digest_markdown`，不得触发推断增强。
+- 受控词表模式下 `infer_tag=false` 时，必须忽略 metadata/digest 补充推断，但仍可执行 `input_tags` 规范化。
+- 纯推断模式下 `infer_tag=false` 时，不得跳过基于 `input_tags`、metadata 或 digest 的建议生成。
 - 若不确定，倾向于不添加，并在 `warnings` 中说明不确定性。
 
 ### Step 4：确定性输出整形（稳定排序）
@@ -201,7 +226,7 @@ JSON：
 - `add_tags`：去重后按字典序排序。
 - `suggest_tags`：按 `tag` 去重（保留首个有效 `note`），再按 `tag` 字典序排序。
 
-回退后仍必须满足全部契约：stdout 单 JSON、required keys 完整、`add_tags ⊆ valid_tags`、`remove_tags ⊆ input_tags`。
+回退后仍必须满足全部契约：stdout 单 JSON、required keys 完整、受控词表模式下 `add_tags ⊆ valid_tags`、纯推断模式下 `add_tags=[]`、`remove_tags ⊆ input_tags`。
 
 ### Step 5：输出 JSON
 
@@ -229,7 +254,7 @@ JSON：
 
 ## 示例（锚定示例）
 
-### 示例 A：无变更（已受控；metadata 为空会禁用推断）
+### 示例 A：无变更（已受控；metadata 为空但 input_tags 仍可规范化）
 
 输入 payload：
 
@@ -261,7 +286,7 @@ JSON：
   "add_tags": [],
   "suggest_tags": [],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
-  "warnings": ["metadata 为空；已禁用推断"],
+  "warnings": [],
   "error": null
 }
 ```
@@ -354,14 +379,114 @@ JSON：
 }
 ```
 
-## 失败模式示例（锚定示例）
-
-### 失败 A：`valid_tags` 缺失/非法
+### 示例 D：无 valid_tags 的纯推断模式
 
 输入 payload：
 
 ```json
-{ "metadata": {}, "input_tags": ["status:2-to-read"] }
+{
+  "metadata": {
+    "title": "Accelerating DETR Convergence via Semantic-Aligned Matching",
+    "keywords": ["DETR", "transformer", "object detection"]
+  },
+  "input_tags": ["Transformer", "Object detection", "Training"],
+  "infer_tag": true,
+  "tag_note_language": "zh-CN"
+}
+```
+
+输出：
+
+```json
+{
+  "metadata": {
+    "title": "Accelerating DETR Convergence via Semantic-Aligned Matching",
+    "keywords": ["DETR", "transformer", "object detection"]
+  },
+  "input_tags": ["Transformer", "Object detection", "Training"],
+  "remove_tags": [],
+  "add_tags": [],
+  "suggest_tags": [
+    {
+      "tag": "ai_task:detection",
+      "note": "目标检测"
+    },
+    {
+      "tag": "model:DL/DETR",
+      "note": "DEtection TRansformer"
+    },
+    {
+      "tag": "model:DL/Transformer",
+      "note": "Transformer"
+    }
+  ],
+  "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
+  "warnings": [],
+  "error": null
+}
+```
+
+### 示例 E：无 valid_tags 且 infer_tag=false 仍执行纯推断
+
+输入 payload：
+
+```json
+{
+  "metadata": {
+    "title": "Object detection with DETR"
+  },
+  "input_tags": [],
+  "infer_tag": false,
+  "tag_note_language": "zh-CN"
+}
+```
+
+输出：
+
+```json
+{
+  "metadata": {
+    "title": "Object detection with DETR"
+  },
+  "input_tags": [],
+  "remove_tags": [],
+  "add_tags": [],
+  "suggest_tags": [
+    {
+      "tag": "ai_task:detection",
+      "note": "目标检测"
+    },
+    {
+      "tag": "model:DL/DETR",
+      "note": "DEtection TRansformer"
+    }
+  ],
+  "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
+  "warnings": ["纯推断模式下已忽略 infer_tag=false，以避免无输出"],
+  "error": null
+}
+```
+
+## 失败模式示例（锚定示例）
+
+### 失败 A：已提供 `valid_tags` 但非法
+
+输入 payload：
+
+```json
+{
+  "metadata": {},
+  "input_tags": ["status:2-to-read"],
+  "valid_tags_format": "yaml",
+  "valid_tags": "/abs/path/to/uploads/valid_tags"
+}
+```
+
+- `valid_tags`:
+
+```yaml
+tags:
+  - status:2-to-read
 ```
 
 输出：
@@ -375,27 +500,16 @@ JSON：
   "suggest_tags": [],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
   "warnings": [],
-  "error": { "type": "invalid_input", "message": "`valid_tags` is required and must be a list of strings" }
+  "error": { "type": "invalid_input", "message": "`valid_tags` must parse as a top-level list of strings" }
 }
 ```
 
-### 失败 B：metadata 缺失会禁用推断（即使显式请求推断）
+### 失败 B：没有任何可用输入证据
 
 输入 payload：
 
 ```json
-{
-  "input_tags": [],
-  "infer_tag": true,
-  "valid_tags_format": "yaml",
-  "valid_tags": "/abs/path/to/uploads/valid_tags"
-}
-```
-
-- `valid_tags`:
-
-```yaml
-- field:CE/UG/Tunnel
+{}
 ```
 
 输出：
@@ -408,7 +522,7 @@ JSON：
   "add_tags": [],
   "suggest_tags": [],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
-  "warnings": ["metadata 缺失/为空；已禁用推断"],
-  "error": null
+  "warnings": [],
+  "error": { "type": "insufficient_input", "message": "No metadata, digest_markdown, input_tags, or valid_tags evidence was provided" }
 }
 ```
