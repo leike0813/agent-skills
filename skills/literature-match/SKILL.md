@@ -1,7 +1,7 @@
 ---
 name: literature-match
-description: Match Markdown reference entries/参考文献 to Zotero Better BibTeX items (citekey as SSOT) and output match_result.json with candidates, itemKey, zotero_tags, and pdf_attachments. Use when you need deterministic+retrieval matching (doi/arxiv/url → TF-IDF topK → needs_llm) without modifying the input document.
-compatibility: "Requires local Zotero + Better BibTeX export endpoint (127.0.0.1:23119). Python 3.11; conda env: DataProcessing. Network: localhost."
+description: Match Markdown reference entries/参考文献 to Zotero Better BibTeX items (citekey as SSOT) and output match_result.json with candidates, itemKey, zotero_tags, and pdf_attachments. Use when you need to mapping citations to citeKeys in your local Zotero library.
+compatibility: "Requires local Zotero + Better BibTeX export endpoint (127.0.0.1:23119)."
 metadata:
   author: joshua
   version: "0.1.0"
