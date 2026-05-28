@@ -6,7 +6,7 @@ This repo aggregates skills as git submodules.
 
 | Skill-ID | 说明 |
 |----------|------|
-| greeting-generator | 节日祝福生成器 - 根据用户提供的节日信息、个人画像及发送对象列表，批量生成得体且富有文采的个性化祝福语。 |
+| greeting-generator | Holiday Greeting Generator – Batch-generates personalized, appropriate, and elegantly written greetings based on user-provided holiday information, personal profiles, and recipient lists. Use this skill when users need to generate holiday greeting messages in bulk. |
 | literature-digest | Generate a paper digest (Markdown), structured references (JSON), and citation analysis artifacts from a source literature(.md/.pdf/latex). Use this skill when you need to extract the core content of the literature, extract structured references, and perform citation context analysis. |
 | literature-digest-lite | Generate a paper digest (Markdown) from a source literature(.md/.pdf/latex). Use this skill when you only need to extract the core content of the literature. |
 | literature-explainer | An academic paper analysis and question-answering assistant that supports paper comprehension, Q&A, and study note generation through stateful workflows, evidence constraints, scripted memory, and verification. Use this skill when users want to ask questions about the content of a paper and obtain reliable answers. |
