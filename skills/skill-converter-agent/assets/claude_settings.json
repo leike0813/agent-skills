@@ -1,5 +1,0 @@
-{
-  "env": {
-    "ANTHROPIC_MODEL": "opus[1m]"
-  }
-}
