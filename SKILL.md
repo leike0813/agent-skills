@@ -1,6 +1,6 @@
 ---
 name: greeting-generator
-description: 节日祝福生成器 - 根据用户提供的节日信息、个人画像及发送对象列表，批量生成得体且富有文采的个性化祝福语。
+description: Holiday Greeting Generator – Batch-generates personalized, appropriate, and elegantly written greetings based on user-provided holiday information, personal profiles, and recipient lists. Use this skill when users need to generate holiday greeting messages in bulk.
 version: 1.0.0
 schema: 1.0.0
 ---
