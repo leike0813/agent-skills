@@ -325,7 +325,7 @@ else
   # 1) Try .skills file first
   if [[ -f "${DEV_ROOT}/.skills" ]]; then
     log "Loading packages from .skills..."
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
       # skip empty lines and comments
       [[ -z "$line" ]] && continue
       [[ "$line" =~ ^[[:space:]]*# ]] && continue
