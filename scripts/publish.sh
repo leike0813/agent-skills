@@ -37,6 +37,7 @@ SKILL_BRANCH_PREFIX="${SKILL_BRANCH_PREFIX:-skill/}"
 ONLY_MAIN=0
 ONLY_SKILL_BRANCH=0
 CFG_FILE=""
+SKILL_EXPLICIT=0  # track whether --skill was explicitly provided
 
 usage() {
   cat <<'EOF'
@@ -56,6 +57,15 @@ Options:
   --only-skill-branch       Only update skill/<skill> branch
   --config <file>           Config file (default: <dev-root>/.agent-skills-publish.conf)
   --dry-run                 Print what would happen; no changes.
+
+Auto-discovery:
+  If --pkg-dir is not provided, the script auto-discovers packages to publish:
+    1. If a .skills file exists in DEV_ROOT, read package dirs from it (one per line)
+    2. Otherwise, auto-detect a single SKILL.md; fail if multiple found
+
+.skills file format (one package dir per line, relative to DEV_ROOT):
+  skill-a
+  skill-b
 
 Config file format (KEY=VALUE):
   AGG_URL=...
@@ -115,7 +125,7 @@ extract_skill_info() {
   local skill_dir="$1"
   local skill_md="${skill_dir}/SKILL.md"
   [[ -f "$skill_md" ]] || return 1
-  
+
   local name desc
   name="$(awk '
     BEGIN{in_fm=0}
@@ -127,7 +137,7 @@ extract_skill_info() {
       print $0; exit
     }
   ' "$skill_md")"
-  
+
   desc="$(awk '
     BEGIN{in_fm=0}
     /^---[[:space:]]*$/ {in_fm = 1 - in_fm; next}
@@ -138,10 +148,10 @@ extract_skill_info() {
       print $0; exit
     }
   ' "$skill_md")"
-  
+
   [[ -n "$name" ]] || name="$(basename "$skill_dir")"
   [[ -n "$desc" ]] || desc="No description available."
-  
+
   printf '%s\t%s\n' "$name" "$desc"
 }
 
@@ -149,13 +159,13 @@ sync_readme_skills_table() {
   local agg_wt="$1"
   local skills_dir="$2"
   local readme="${agg_wt}/README.md"
-  
+
   log "Syncing README.md skills table..."
-  
+
   [[ -d "${agg_wt}/${skills_dir}" ]] || return 0
-  
+
   local tmpfile="${TMPDIR}/skills_table.md"
-  
+
   {
     echo "# agent-skills"
     echo ""
@@ -165,7 +175,7 @@ sync_readme_skills_table() {
     echo ""
     echo "| Skill-ID | 说明 |"
     echo "|----------|------|"
-    
+
     local skill_dirs=()
     for entry in "${agg_wt}/${skills_dir}"/*/; do
       [[ -d "$entry" ]] || continue
@@ -173,9 +183,9 @@ sync_readme_skills_table() {
       skill_name="$(basename "$entry")"
       skill_dirs+=("$skill_name")
     done
-    
+
     IFS=$'\n' sorted=($(sort <<<"${skill_dirs[*]}")); unset IFS
-    
+
     for skill_name in "${sorted[@]}"; do
       local skill_path="${agg_wt}/${skills_dir}/${skill_name}"
       local info
@@ -188,12 +198,12 @@ sync_readme_skills_table() {
       fi
     done
   } > "$tmpfile"
-  
+
   if [[ -f "$readme" ]]; then
     cp "$readme" "${readme}.bak"
   fi
   cp "$tmpfile" "$readme"
-  
+
   git -C "${agg_wt}" add "README.md"
   if ! git -C "${agg_wt}" diff --cached --quiet; then
     git -C "${agg_wt}" commit -m "docs: sync skills table in README.md"
@@ -220,6 +230,7 @@ while [[ $# -gt 0 ]]; do
     ;;
   --skill)
     SKILL="${2:-}"
+    SKILL_EXPLICIT=1
     shift 2
     ;;
   --excludes)
@@ -302,26 +313,61 @@ if [[ "$(normalize_git_url "${AGG_URL}")" != "$(normalize_git_url "${LOCAL_ORIGI
   local origin: ${LOCAL_ORIGIN} -> $(normalize_git_url "${LOCAL_ORIGIN}")"
 fi
 
-# detect PKG_DIR
-if [[ -z "${PKG_DIR}" ]]; then
-  mapfile -t candidates < <(find "${DEV_ROOT}" -mindepth 1 -maxdepth 2 -type f -name "SKILL.md" -printf '%h\n' | sort -u)
-  if [[ "${#candidates[@]}" -eq 0 ]]; then
-    die "No SKILL.md found under ${DEV_ROOT} (depth<=2). Use --pkg-dir."
-  elif [[ "${#candidates[@]}" -gt 1 ]]; then
-    echo "Multiple SKILL.md found:" >&2
-    printf '  - %s\n' "${candidates[@]}" >&2
-    die "Ambiguous PKG_DIR. Use --pkg-dir."
+# ==============================================================================
+# Package discovery
+# ==============================================================================
+PKG_DIRS=()
+
+if [[ -n "${PKG_DIR}" ]]; then
+  # --pkg-dir explicitly provided, single package mode
+  PKG_DIRS=("${PKG_DIR}")
+else
+  # 1) Try .skills file first
+  if [[ -f "${DEV_ROOT}/.skills" ]]; then
+    log "Loading packages from .skills..."
+    while IFS= read -r line; do
+      # skip empty lines and comments
+      [[ -z "$line" ]] && continue
+      [[ "$line" =~ ^[[:space:]]*# ]] && continue
+      # trim whitespace
+      line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -z "$line" ]] && continue
+      PKG_DIRS+=("$line")
+    done <"${DEV_ROOT}/.skills"
+    if [[ "${#PKG_DIRS[@]}" -eq 0 ]]; then
+      die ".skills file found but contains no valid package dirs."
+    fi
+    log "Found ${#PKG_DIRS[@]} package(s) in .skills: ${PKG_DIRS[*]}"
   else
-    PKG_DIR="$(basename "${candidates[0]}")"
+    # 2) Fall back to auto-detect
+    mapfile -t candidates < <(find "${DEV_ROOT}" -mindepth 1 -maxdepth 2 -type f -name "SKILL.md" -printf '%h\n' | sort -u)
+    if [[ "${#candidates[@]}" -eq 0 ]]; then
+      die "No SKILL.md found under ${DEV_ROOT} (depth<=2). Use --pkg-dir or create a .skills file."
+    elif [[ "${#candidates[@]}" -gt 1 ]]; then
+      echo "Multiple SKILL.md found:" >&2
+      printf '  - %s\n' "${candidates[@]}" >&2
+      die "Ambiguous PKG_DIR. Use --pkg-dir or create a .skills file."
+    else
+      PKG_DIRS=("$(basename "${candidates[0]}")")
+    fi
   fi
 fi
 
+# Validate all discovered package dirs
+for pkg in "${PKG_DIRS[@]}"; do
+  [[ -d "${DEV_ROOT}/${pkg}" ]] || die "Package dir not found: ${DEV_ROOT}/${pkg}"
+  [[ -f "${DEV_ROOT}/${pkg}/SKILL.md" ]] || die "SKILL.md not found in: ${DEV_ROOT}/${pkg}"
+done
+
+# ==============================================================================
+# Publish each package
+# ==============================================================================
+for PKG_DIR in "${PKG_DIRS[@]}"; do
+
 PKG_PATH="${DEV_ROOT}/${PKG_DIR}"
-[[ -d "${PKG_PATH}" ]] || die "PKG_DIR not found: ${PKG_PATH}"
-[[ -f "${PKG_PATH}/SKILL.md" ]] || die "SKILL.md not found in: ${PKG_PATH}"
 
 # infer SKILL from frontmatter name: (supports " and ', uses \047 for ')
-if [[ -z "${SKILL}" ]]; then
+if [[ "${SKILL_EXPLICIT}" != "1" ]]; then
   SKILL="$(awk '
     BEGIN{in_fm=0}
     /^---[[:space:]]*$/ {in_fm = 1 - in_fm; next}
@@ -445,7 +491,7 @@ fi
 (cd "${PKG_PATH}" && tar -cf "${TARFILE}" -T "${LIST_FINAL}")
 
 # ==============================================================================
-# Step 1: update main IN-PLACE (no worktree add -> avoids your error)
+# Step 1: update main IN-PLACE (no worktree add -> excludes your error)
 # ==============================================================================
 if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
   mkdir -p "${AGG_WT}/${AGG_SKILL_DIR_REL}"
@@ -459,9 +505,6 @@ if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
   else
     log "No changes detected for ${AGG_MAIN}:${AGG_SKILL_DIR_REL}"
   fi
-  
-  # Sync README.md skills table after updating main
-  sync_readme_skills_table "${AGG_WT}" "${AGG_SKILLS_DIR}"
 fi
 
 # ==============================================================================
@@ -519,4 +562,15 @@ if [[ "${ONLY_MAIN}" != "1" ]]; then
   [[ "${lsb2}" == "${rsb2}" ]] || die "Post-check failed: ${SKILL_BRANCH} != origin/${SKILL_BRANCH}"
 fi
 
-log "Done. Publish completed; aggregator local & remote aligned."
+log "Done publishing ${SKILL}."
+
+done  # end for PKG_DIR
+
+# ==============================================================================
+# Sync README once after all packages are published
+# ==============================================================================
+if [[ "${ONLY_SKILL_BRANCH}" != "1" && "${DRY_RUN}" != "1" ]]; then
+  sync_readme_skills_table "${AGG_WT}" "${AGG_SKILLS_DIR}"
+fi
+
+log "All packages published. Aggregator local & remote aligned."
