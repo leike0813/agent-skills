@@ -1,6 +1,6 @@
 ---
 name: paper-condenser
-description: 交互式学术论文凝缩转写 Skill。Use when Codex needs to guide a user through staged manuscript understanding, target-setting, style analysis, condensation planning, and final journal-paper drafting with a SQLite single source of truth and strict gate-driven progression.
+description: Interactive Academic Paper Condensation and Rewriting Skill. Use this skill when you need to distill a draft of a journal paper from a voluminous book, report, or dissertation.
 ---
 
 # Paper Condenser
