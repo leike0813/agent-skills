@@ -7,13 +7,13 @@
 所有 payload 都通过文件传入：
 
 ```bash
-uv run --project="$HOME/.ar" --locked -- python paper-reviewer/scripts/review_runtime.py update --run-root <RUN_ROOT> --payload-file <PAYLOAD_JSON>
+python scripts/review_runtime.py update --run-root <RUN_ROOT> --payload-file <PAYLOAD_JSON>
 ```
 
 需要脚本生成最小模板时：
 
 ```bash
-uv run --project="$HOME/.ar" --locked -- python paper-reviewer/scripts/review_runtime.py template --record-type finding
+python scripts/review_runtime.py template --record-type finding
 ```
 
 ## Enumerations
