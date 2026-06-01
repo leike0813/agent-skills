@@ -1,6 +1,6 @@
 ---
 name: paper-drafter
-description: Guide an agent through rigorous, SQLite-backed interactive academic paper drafting from research intent to chapter-level manuscript sections. Use when the user wants to plan, outline, draft, resume, or progressively refine a scholarly paper through staged research design, evidence checks, style profiling, and section-by-section drafting rather than one-shot text generation.
+description: Guide an agent through rigorous, interactive academic paper drafting from research intent to chapter-level manuscript sections. Use when the user wants to plan, outline, draft, or progressively refine a scholarly paper through staged research design, evidence checks, style profiling, and section-by-section drafting rather than one-shot text generation.
 ---
 
 # paper-drafter
