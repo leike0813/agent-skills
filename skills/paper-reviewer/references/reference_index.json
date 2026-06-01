@@ -1,0 +1,318 @@
+{
+  "schema_version": 2,
+  "references": {
+    "taxonomy": {
+      "label": "论文领域分类",
+      "path": "references/taxonomy.md"
+    },
+    "general": {
+      "label": "通用科研论文写作框架",
+      "path": "references/general_framework.md"
+    },
+    "experimental-observational-natural-science": {
+      "label": "实验 / 观察型自然科学论文",
+      "path": "references/experimental_observational_natural_science_writing_guide.md"
+    },
+    "engineering-system-design": {
+      "label": "工程 / 系统 / 设计型论文",
+      "path": "references/engineering_system_design_writing_guide.md"
+    },
+    "computational-algorithm-data-driven": {
+      "label": "计算 / 算法 / 数据驱动型论文",
+      "path": "references/computational_algorithm_data_driven_writing_guide.md"
+    },
+    "mathematical-theory-proof": {
+      "label": "数学 / 理论 / 证明型论文",
+      "path": "references/mathematical_theory_proof_writing_guide.md"
+    },
+    "medical-clinical-public-health": {
+      "label": "医学 / 临床 / 公共卫生论文",
+      "path": "references/medical_clinical_public_health_writing_guide.md"
+    },
+    "quantitative-social-behavioral-science": {
+      "label": "定量社会科学 / 行为科学论文",
+      "path": "references/quantitative_social_and_behavioral_science_writing_guide.md"
+    },
+    "qualitative-interpretive-social-science": {
+      "label": "定性 / 解释型社会科学论文",
+      "path": "references/qualitative_interpretive_social_science_writing_guide.md"
+    },
+    "humanities-textual-historical": {
+      "label": "人文学科 / 文本解释 / 历史论证型论文",
+      "path": "references/humanities_textual_interpretation_historical_argumentation_writing_guide.md"
+    },
+    "law-normative-policy-analysis": {
+      "label": "法学 / 规范 / 政策分析型论文",
+      "path": "references/law_normative_policy_analysis_writing_guide.md"
+    }
+  },
+  "general": {
+    "ref": "general",
+    "headings": [
+      "1. 适用范围",
+      "3. 知识生产逻辑",
+      "4. 典型论文结构",
+      "5. 各章节写作指南",
+      "7. 证据与论证标准",
+      "11. 审稿人关注点",
+      "12. 常见失败模式"
+    ]
+  },
+  "domains": {
+    "general": {
+      "label": "通用科研论文写作框架",
+      "ref": "general",
+      "stage_headings": {},
+      "section_headings": {}
+    },
+    "experimental-observational-natural-science": {
+      "label": "实验 / 观察型自然科学论文",
+      "ref": "experimental-observational-natural-science",
+      "taxonomy_ref": "taxonomy",
+      "taxonomy_heading": "1. 实验 / 观察型自然科学论文",
+      "stage_headings": {
+        "macro": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"],
+        "micro": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"],
+        "formal": ["7.3 变量、对照、重复、误差和统计的写作标准", "13. Agent 写作辅助策略"]
+      },
+      "section_headings": {
+        "title": ["5.1 标题 Title"],
+        "abstract": ["5.2 摘要 Abstract"],
+        "introduction": ["5.3 Introduction 引言"],
+        "method": ["5.4 Methods / Materials and Methods 方法"],
+        "results": ["5.5 Results 结果"],
+        "discussion": ["5.6 Discussion 讨论"],
+        "conclusion": ["5.7 Conclusion 结论"],
+        "visuals": ["12.7 图表不能自洽"],
+        "references": ["8. 文献综述写法"]
+      }
+    },
+    "engineering-system-design": {
+      "label": "工程 / 系统 / 设计型论文",
+      "ref": "engineering-system-design",
+      "taxonomy_ref": "taxonomy",
+      "taxonomy_heading": "2. 工程 / 系统 / 设计型论文",
+      "stage_headings": {
+        "macro": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"],
+        "micro": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"],
+        "formal": ["7.3 评价主张匹配原则", "13. Agent 写作辅助策略"]
+      },
+      "section_headings": {
+        "title": ["5.1 标题 Title"],
+        "abstract": ["5.2 摘要 Abstract"],
+        "introduction": ["5.3 Problem / Motivation 问题与动机"],
+        "problem": ["5.3 Problem / Motivation 问题与动机"],
+        "method": ["5.5 Design Rationale 设计理据"],
+        "design": ["5.6 System Architecture 系统架构"],
+        "implementation": ["5.7 Implementation 实现"],
+        "experiments": ["5.8 Evaluation 评价"],
+        "results": ["5.8 Evaluation 评价"],
+        "discussion": ["5.9 Discussion 讨论"],
+        "conclusion": ["5.10 Conclusion 结论"],
+        "visuals": ["9.3 图表组织"],
+        "references": ["8. 文献综述写法"]
+      }
+    },
+    "computational-algorithm-data-driven": {
+      "label": "计算 / 算法 / 数据驱动型论文",
+      "ref": "computational-algorithm-data-driven",
+      "taxonomy_ref": "taxonomy",
+      "taxonomy_heading": "3. 计算 / 算法 / 数据驱动型论文",
+      "stage_headings": {
+        "macro": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"],
+        "micro": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"],
+        "formal": ["7.3 baseline 公平性标准", "7.4 数据泄漏检查", "13. Agent 写作辅助策略"]
+      },
+      "section_headings": {
+        "title": ["5.1 标题 Title"],
+        "abstract": ["5.2 摘要 Abstract"],
+        "introduction": ["5.3 Introduction 引言"],
+        "literature": ["5.4 Related Work 相关研究"],
+        "problem": ["5.5 Problem Formulation / Task Definition 问题形式化 / 任务定义"],
+        "method": ["5.6 Method / Model / Algorithm 方法、模型或算法"],
+        "experiments": ["5.7 Experiments 实验设置"],
+        "results": ["5.8 Results 结果"],
+        "analysis": ["5.9 Analysis 分析"],
+        "limitations": ["5.10 Limitations 局限性"],
+        "discussion": ["10.1 Discussion 的功能"],
+        "conclusion": ["5.11 Conclusion 结论"],
+        "reproducibility": ["13.6 Agent 如何检查可复现性"],
+        "references": ["8. 文献综述写法"]
+      }
+    },
+    "mathematical-theory-proof": {
+      "label": "数学 / 理论 / 证明型论文",
+      "ref": "mathematical-theory-proof",
+      "taxonomy_ref": "taxonomy",
+      "taxonomy_heading": "4. 数学 / 理论 / 证明型论文",
+      "stage_headings": {
+        "macro": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"],
+        "micro": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"],
+        "formal": ["7.4 结论强度与证明范围匹配", "13. Agent 写作辅助策略"]
+      },
+      "section_headings": {
+        "title": ["5.1 标题 Title"],
+        "abstract": ["5.2 摘要 Abstract"],
+        "introduction": ["5.3 Introduction 引言"],
+        "literature": ["5.4 Related Work / Background 相关工作与背景"],
+        "method": ["5.6 Problem Setup / Model 问题设定与模型"],
+        "results": ["5.7 Main Results 主结果"],
+        "analysis": ["5.9 Proofs 正式证明"],
+        "discussion": ["5.12 Discussion / Limitations 讨论与局限"],
+        "conclusion": ["10. 讨论与结论写法"],
+        "limitations": ["5.12 Discussion / Limitations 讨论与局限"],
+        "references": ["8. 文献综述写法"]
+      }
+    },
+    "medical-clinical-public-health": {
+      "label": "医学 / 临床 / 公共卫生论文",
+      "ref": "medical-clinical-public-health",
+      "taxonomy_ref": "taxonomy",
+      "taxonomy_heading": "5. 医学 / 临床 / 公共卫生论文",
+      "stage_headings": {
+        "macro": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"],
+        "micro": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"],
+        "formal": ["7.1 强医学证据的特征", "13. Agent 写作辅助策略"]
+      },
+      "section_headings": {
+        "title": ["5.1 标题 Title"],
+        "abstract": ["5.2 摘要 Abstract"],
+        "introduction": ["5.3 Introduction 引言"],
+        "method": ["5.4 Methods 方法"],
+        "results": ["5.5 Results 结果"],
+        "discussion": ["5.6 Discussion 讨论"],
+        "conclusion": ["5.7 Conclusion 结论"],
+        "ethics": ["5.4 Methods 方法"],
+        "references": ["8. 文献综述写法"]
+      }
+    },
+    "quantitative-social-behavioral-science": {
+      "label": "定量社会科学 / 行为科学论文",
+      "ref": "quantitative-social-behavioral-science",
+      "taxonomy_ref": "taxonomy",
+      "taxonomy_heading": "6. 定量社会科学 / 行为科学论文",
+      "stage_headings": {
+        "macro": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"],
+        "micro": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"],
+        "formal": ["7.1 强证据的特征", "13. Agent 写作辅助策略"]
+      },
+      "section_headings": {
+        "title": ["5.1 标题 Title"],
+        "abstract": ["5.2 摘要 Abstract"],
+        "introduction": ["5.3 Introduction 引言"],
+        "literature": ["5.4 Theory / Literature 理论与文献"],
+        "method": ["5.8 Empirical Strategy / Methods 经验策略与模型"],
+        "results": ["5.9 Results 结果"],
+        "analysis": ["5.10 Robustness / Additional Analyses 稳健性与补充分析"],
+        "discussion": ["5.11 Discussion 讨论"],
+        "conclusion": ["5.12 Conclusion 结论"],
+        "references": ["8. 文献综述写法"]
+      }
+    },
+    "qualitative-interpretive-social-science": {
+      "label": "定性 / 解释型社会科学论文",
+      "ref": "qualitative-interpretive-social-science",
+      "taxonomy_ref": "taxonomy",
+      "taxonomy_heading": "7. 定性 / 解释型社会科学论文",
+      "stage_headings": {
+        "macro": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"],
+        "micro": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"],
+        "formal": ["7.3 材料摘录使用标准", "13. Agent 写作辅助策略"]
+      },
+      "section_headings": {
+        "title": ["5.1 标题 Title"],
+        "abstract": ["5.2 摘要 Abstract"],
+        "introduction": ["5.3 Introduction 引言"],
+        "literature": ["5.4 Literature / Theoretical Lens 文献综述与理论视角"],
+        "method": ["5.6 Methodology 方法论"],
+        "results": ["5.9 Findings / Themes 发现与主题"],
+        "analysis": ["5.9 Findings / Themes 发现与主题"],
+        "discussion": ["5.10 Discussion 讨论"],
+        "conclusion": ["5.11 Conclusion 结论"],
+        "ethics": ["5.8 研究者反思性与伦理"],
+        "references": ["8. 文献综述写法"]
+      }
+    },
+    "humanities-textual-historical": {
+      "label": "人文学科 / 文本解释 / 历史论证型论文",
+      "ref": "humanities-textual-historical",
+      "taxonomy_ref": "taxonomy",
+      "taxonomy_heading": "8. 人文学科 / 文本解释 / 历史论证型论文",
+      "stage_headings": {
+        "macro": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"],
+        "micro": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"],
+        "formal": ["7.1 强人文学科证据的特征", "13. Agent 写作辅助策略"]
+      },
+      "section_headings": {
+        "title": ["5.1 标题 Title"],
+        "abstract": ["5.2 摘要 Abstract"],
+        "introduction": ["5.3 Introduction 引言"],
+        "literature": ["5.4 Scholarly Debate / Literature 文献综述与学术争论"],
+        "method": ["5.6 Context / Materials 语境与材料"],
+        "results": ["5.7 Argument Sections 论证主体"],
+        "analysis": ["5.8 文本细读、史料解释、概念分析与语境化"],
+        "discussion": ["5.10 Discussion / Implications 讨论与意义"],
+        "conclusion": ["5.11 Conclusion 结论"],
+        "references": ["8. 文献综述写法"]
+      }
+    },
+    "law-normative-policy-analysis": {
+      "label": "法学 / 规范 / 政策分析型论文",
+      "ref": "law-normative-policy-analysis",
+      "taxonomy_ref": "taxonomy",
+      "taxonomy_heading": "9. 法学 / 规范 / 政策分析型论文",
+      "stage_headings": {
+        "macro": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"],
+        "micro": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"],
+        "formal": ["7.1 强规范 / 政策论证的特征", "13. Agent 写作辅助策略"]
+      },
+      "section_headings": {
+        "title": ["5.1 标题 Title"],
+        "abstract": ["5.2 摘要 Abstract"],
+        "introduction": ["5.3 Introduction 引言"],
+        "problem": ["5.4 Problem 问题界定"],
+        "method": ["5.6 Legal / Normative / Policy Framework 法律、规范或政策框架"],
+        "results": ["5.8 Analysis 分析主体"],
+        "analysis": ["5.8 Analysis 分析主体"],
+        "discussion": ["5.9 Counterarguments 反方观点与回应"],
+        "conclusion": ["5.12 Conclusion 结论"],
+        "references": ["8. 文献综述写法"]
+      }
+    }
+  },
+  "review_stages": {
+    "macro": {
+      "label": "宏观审阅",
+      "general_headings": ["3. 知识生产逻辑", "4. 典型论文结构", "11. 审稿人关注点", "12. 常见失败模式"]
+    },
+    "micro": {
+      "label": "微观审阅",
+      "general_headings": ["5. 各章节写作指南", "7. 证据与论证标准", "9. 结果、分析或论证主体的组织方式"]
+    },
+    "formal": {
+      "label": "形式规范审阅",
+      "general_headings": ["5.10 References 参考文献", "5.11 图表、公式、脚注与附录", "13. Agent 写作辅助策略"]
+    }
+  },
+  "paper_sections": {
+    "title": {"label": "标题", "general_headings": ["5.1 标题 Title"]},
+    "abstract": {"label": "摘要", "general_headings": ["5.2 摘要 Abstract"]},
+    "keywords": {"label": "关键词", "general_headings": ["5.3 关键词 Keywords"]},
+    "introduction": {"label": "引言", "general_headings": ["5.4 Introduction 引言"]},
+    "literature": {"label": "文献综述 / 相关工作", "general_headings": ["5.5 Literature Review / Related Work 文献综述", "8. 文献综述写法"]},
+    "problem": {"label": "问题界定", "general_headings": ["3.2 研究问题、研究目标、研究假设、研究命题、核心论点的区别"]},
+    "method": {"label": "方法 / 理论路径", "general_headings": ["5.6 Method / Materials / Data / Corpus / Theory 方法、材料、数据、语料或理论路径"]},
+    "design": {"label": "设计 / 架构", "general_headings": ["5.6 Method / Materials / Data / Corpus / Theory 方法、材料、数据、语料或理论路径"]},
+    "implementation": {"label": "实现", "general_headings": ["5.6 Method / Materials / Data / Corpus / Theory 方法、材料、数据、语料或理论路径"]},
+    "experiments": {"label": "实验 / 评价设置", "general_headings": ["7. 证据与论证标准"]},
+    "results": {"label": "结果 / 发现", "general_headings": ["5.7 Results / Findings / Analysis / Argument 结果、发现、分析或论证主体"]},
+    "analysis": {"label": "分析 / 论证主体", "general_headings": ["9. 结果、分析或论证主体的组织方式"]},
+    "discussion": {"label": "讨论", "general_headings": ["5.8 Discussion 讨论", "10. 讨论与结论写法"]},
+    "limitations": {"label": "局限性", "general_headings": ["10. 讨论与结论写法"]},
+    "conclusion": {"label": "结论", "general_headings": ["5.9 Conclusion 结论"]},
+    "references": {"label": "参考文献", "general_headings": ["5.10 References 参考文献", "8. 文献综述写法"]},
+    "visuals": {"label": "图表 / 公式 / 附录", "general_headings": ["5.11 图表、公式、脚注与附录"]},
+    "ethics": {"label": "伦理 / 合规", "general_headings": ["7. 证据与论证标准"]},
+    "reproducibility": {"label": "可复现性", "general_headings": ["7. 证据与论证标准"]}
+  }
+}
