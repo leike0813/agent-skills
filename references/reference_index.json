@@ -44,6 +44,18 @@
     "law-normative-policy-analysis": {
       "label": "法学 / 规范 / 政策分析型论文",
       "path": "references/law_normative_policy_analysis_writing_guide.md"
+    },
+    "ai-style-diagnostics": {
+      "label": "AI 风格与通用生成稿痕迹诊断",
+      "path": "references/anti-ai_polishing_guide.md"
+    },
+    "scientific-introduction-related-work": {
+      "label": "理工科 Introduction / Related Work 审阅",
+      "path": "references/scientific_introduction_related_work_writing_guide_zh.md"
+    },
+    "bibliography-format-diagnostics": {
+      "label": "参考文献格式与著录线索诊断",
+      "path": "references/bibliography_formats.md"
     }
   },
   "general": {
@@ -278,6 +290,55 @@
         "conclusion": ["5.12 Conclusion 结论"],
         "references": ["8. 文献综述写法"]
       }
+    }
+  },
+  "topics": {
+    "bibliography-format-diagnostics": {
+      "label": "参考文献格式与著录线索诊断",
+      "ref": "bibliography-format-diagnostics",
+      "review_stages": ["formal"],
+      "paper_sections": ["references"],
+      "headings": [
+        "1) 常见 references 区块标题",
+        "2) 引用体系与风格线索（用于判断切分/抽取策略）",
+        "3) 常见条目编号模式（强信号）",
+        "4) 非编号型（弱信号，需更谨慎）",
+        "5) GB/T 7714‑2015 相关信号（中英混排常见）",
+        "6) MinerU 常见噪声与修复建议",
+        "7) 字段抽取优先级（尽量对齐 Zotero）",
+        "8) 置信度建议（仅供标尺）"
+      ]
+    },
+    "ai-style-diagnostics": {
+      "label": "AI 风格与通用生成稿痕迹诊断",
+      "ref": "ai-style-diagnostics",
+      "review_stages": ["formal"],
+      "paper_sections": ["title", "abstract", "keywords", "introduction", "literature", "problem", "method", "results", "analysis", "discussion", "limitations", "conclusion"],
+      "headings": [
+        "一、基本立场：不要把“去 AI 化”理解成规避检测",
+        "二、AI 写作中常见的“不良习惯”",
+        "三、去 AI 化润色时应重点识别的模式",
+        "七、不建议使用的提示词",
+        "八、不同场景下的去 AI 化重点",
+        "九、去 AI 化润色的检查清单",
+        "十二、最终判断标准"
+      ]
+    },
+    "scientific-introduction-related-work": {
+      "label": "理工科 Introduction / Related Work 审阅",
+      "ref": "scientific-introduction-related-work",
+      "review_stages": ["micro"],
+      "paper_sections": ["introduction", "literature"],
+      "headings": [
+        "执行摘要",
+        "常见结构模式与组织策略",
+        "什么时候单列 Related Work，什么时候放进 Intro",
+        "逐段写作指南与中英模板",
+        "逐段写作时最该注意的细节",
+        "写作注意事项、常见陷阱与伦理边界",
+        "投稿前重点检查清单",
+        "适用边界"
+      ]
     }
   },
   "review_stages": {

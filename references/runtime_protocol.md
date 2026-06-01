@@ -100,6 +100,7 @@ Goal: 按章节或指定范围审阅段落级和章节级问题。
 Required semantic work:
 
 - 对每个章节 pass 运行 `reference_guide.py nav --review-stage micro --paper-section <section>`.
+- 审阅 `introduction` 或 `literature` 时，通过 `nav` 中的 cross-cutting review topics，或 `reference_guide.py topic show --topic scientific-introduction-related-work`，检查问题定位、相关工作组织、研究缺口、引用支撑和作者判断。
 - 定位具体段落、图表、公式、实验设置或论证环节。
 - 每条问题包含位置、论文证据、影响和修订方向。
 
@@ -111,17 +112,20 @@ Allowed records:
 
 Completion: 当前范围内微观检查完成，并写入 S4 `stage_summary`。
 
-Do not: 把语言润色、格式规范问题混入主要微观论证问题，除非它直接影响理解或证据强度。
+Do not: 把语言润色、格式规范问题混入主要微观论证问题，除非它直接影响理解或证据强度；不要把 Introduction / Related Work topic 写成模板套用要求，finding 必须回到论文原文证据。
 
 ### S5_FORMAL_REVIEW
 
-Goal: 审阅形式、语言、图表、参考文献格式线索、伦理/合规和可复现性线索。
+Goal: 审阅形式、语言、图表、参考文献格式线索、伦理/合规、可复现性线索，并做一次 AI-style diagnostics pass。
 
 Required semantic work:
 
 - 只记录可在论文材料中定位的问题。
 - 将外部核验需求写为 `open_question`，不要在基础运行态中假装已经核验。
 - 对领域特定报告规范使用 `reference_guide.py nav --review-stage formal`。
+- 审阅 `references` 时，通过 `reference_guide.py nav --review-stage formal --paper-section references` 中的 cross-cutting review topics，或 `reference_guide.py topic show --topic bibliography-format-diagnostics`，识别可见参考文献条目的格式、著录、切分、一致性和抽取噪声问题。
+- 通过 `reference_guide.py nav --review-stage formal` 中的 cross-cutting review topics，或 `reference_guide.py topic show --topic ai-style-diagnostics`，检查模板化表达、低信息密度、过度圆滑、作者判断不足和 AI 使用合规线索。
+- AI-style diagnostics finding 只能表述为风格、信息密度、作者判断或合规风险问题；不要写成 AI 代写判定。
 
 Allowed records:
 
@@ -131,7 +135,7 @@ Allowed records:
 
 Completion: 写入 S5 `stage_summary` 后，runtime 会加入 `report_export_confirmation` pending item 并进入 S6。
 
-Do not: 对参考文献真实性、DOI、期刊信息做未联网验证的断言。
+Do not: 对参考文献真实性、DOI、期刊信息做未联网验证的断言；不要臆造缺失的参考文献元数据；不要建议降低 AI 率、绕过 AI 检测、加入口语噪声、错别字或随机不流畅。
 
 ### S6_SYNTHESIS_CONFIRMATION
 

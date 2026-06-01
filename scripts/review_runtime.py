@@ -100,16 +100,22 @@ STAGE_INSTRUCTIONS = {
         "purpose": "按章节或指定范围审阅逻辑、方法、证据、结果解释和结论强度。",
         "agent_work": [
             "对每个章节 pass 调用 reference_guide.py nav --review-stage micro --paper-section <section>，并仅在必要时用 show 披露具体 heading 原文。",
+            "审阅 introduction 或 literature 时，通过 nav 中的 cross-cutting review topics 或 reference_guide.py topic show --topic scientific-introduction-related-work 检查问题定位、相关工作组织、研究缺口、引用支撑和作者判断。",
             "定位具体段落、图表、公式或实验设置。",
+            "S4 findings 只写结构、问题意识、研究缺口、相关工作组织、引用支撑或论证强度问题。",
             "避免把本阶段扩展为形式规范检查。",
         ],
         "memory": "写入 finding 和 stage_summary。",
     },
     "S5_FORMAL_REVIEW": {
-        "purpose": "审阅语言、冗余、图表引用、参考文献、伦理/合规和可复现性线索。",
+        "purpose": "审阅语言、冗余、图表引用、参考文献、伦理/合规、可复现性线索和 AI-style diagnostics。",
         "agent_work": [
             "调用 reference_guide.py nav --review-stage formal --paper-section <section>，并仅在必要时用 show 披露具体 heading 原文。",
+            "审阅 references 时，通过 nav 中的 cross-cutting review topics 或 reference_guide.py topic show --topic bibliography-format-diagnostics 识别可见参考文献条目的格式、著录、切分、一致性和抽取噪声问题。",
+            "通过 nav 中的 cross-cutting review topics 或 reference_guide.py topic show --topic ai-style-diagnostics 检查模板化表达、低信息密度、过度圆滑、作者判断不足和 AI 使用合规线索。",
             "只记录论文材料中可定位的形式或规范问题。",
+            "参考文献 finding 只写可证据化的格式、著录或一致性问题；需要外部核验的元数据写为 open_question，不要臆造。",
+            "AI-style diagnostics finding 只能表述为风格、信息密度、作者判断或合规风险问题；不要写成 AI 代写判定。",
             "不做联网参考文献核验，除非后续能力明确支持。",
         ],
         "memory": "写入 finding、open_question 和 stage_summary。",

@@ -55,7 +55,7 @@ python scripts/review_runtime.py instructions --run-root <RUN_ROOT> --stage <STA
 3. `S2_DEEP_UNDERSTANDING`：形成研究问题、贡献、方法、证据链和局限的可执行理解。
 4. `S3_MACRO_REVIEW`：审阅标题、摘要、研究问题、贡献、结构和整体论证。
 5. `S4_MICRO_REVIEW`：逐章节审阅逻辑、方法、证据、结果解释和结论强度。
-6. `S5_FORMAL_REVIEW`：审阅语言、冗余、图表、参考文献格式线索、伦理和可复现性线索。
+6. `S5_FORMAL_REVIEW`：审阅语言、冗余、图表、参考文献格式线索、伦理和可复现性线索，并做一次 AI-style diagnostics pass。
 7. `S6_SYNTHESIS_CONFIRMATION`：汇总发现并在最终导出前获得用户确认。
 8. `S7_REPORT_EXPORT`：运行 export 生成报告草稿。
 9. `S8_DONE`：报告 artifact 路径，除非用户要求，不主动开启新审阅。
@@ -112,17 +112,49 @@ python scripts/reference_guide.py taxonomy --domain <canonical-domain-name>
 python scripts/reference_guide.py nav --domain <canonical-domain-name> --review-stage <stage-id> --paper-section <section-id>
 python scripts/reference_guide.py toc --domain <canonical-domain-name>
 python scripts/reference_guide.py show --domain <canonical-domain-name> --heading "<exact-heading>"
+python scripts/reference_guide.py topic list
+python scripts/reference_guide.py topic toc --topic <topic-id>
+python scripts/reference_guide.py topic show --topic <topic-id> --heading "<exact-heading>"
 ```
 
 Use rules:
 
 - `--domain` 参数始终表示 canonical domain name；`general` 是通用写作框架的合法 canonical domain name，但不是 taxonomy 分类项。
 - `taxonomy` 是独立入口；不要把 `taxonomy` 当作 `nav`、`toc` 或 `show` 的 domain。
+- `topic` 用于横切型 review topic；topic 不属于 paper taxonomy domain，也不属于 canonical domain name。
+- S4 审阅 Introduction / Related Work 时，可通过 `nav` 或 `topic show --topic scientific-introduction-related-work` 使用理工科引言与相关工作审阅标准。
+- S5 审阅参考文献格式时，可通过 `nav` 或 `topic show --topic bibliography-format-diagnostics` 辅助识别格式、著录、切分和抽取线索问题。
+- `ai-style-diagnostics` 只作为 S5 风格、信息密度和合规诊断标准。
 - `nav` 只返回候选 heading，不是审稿结论。
 - `show` 只在当前 blocker 或审稿 pass 需要具体标准时使用。
 - 不要通读整个 `references/` 目录或整篇长指南。
 - 参考指南只能作为审稿标准；每个 finding 的证据必须回到论文原文、图表、公式、实验设置或参考文献条目本身。
 - 更新参考索引或指南后运行 `reference_guide.py check`。
+
+## Topic use in S4 and S5
+
+- `scientific-introduction-related-work` applies to S4 when the current section is `introduction` or `literature`; use it to check problem positioning, related-work organization, gap/claim alignment, citation support, and author judgment.
+- S4 findings from that topic must describe structure, problem awareness, research gap, related-work synthesis, or citation support issues; do not turn them into language-polish or format-only comments.
+- `bibliography-format-diagnostics` applies to S5 when the current section is `references`; use it to identify observable bibliography style, entry segmentation, field completeness, consistency, and extraction-noise issues.
+- S5 bibliography findings must be evidence-grounded in the visible reference entries. If bibliographic metadata requires external verification, write an `open_question` instead of inventing missing fields.
+
+## AI-style diagnostics in S5
+
+S5 必须做一次 AI-style diagnostics pass，用于识别模板化表达、低信息密度、过度圆滑、作者判断不足和 AI 使用合规线索。
+
+Allowed finding issue types include:
+
+- `ai_like_generic_style`
+- `low_information_density`
+- `template_phrasing`
+- `unsupported_polish_claim`
+
+Reporting rules:
+
+- 可以指出文本呈现通用生成稿特征、模板化开头、低信息连接词、空泛价值判断或缺少作者判断。
+- 不要断言“这段是 AI 写的”，除非论文材料或用户提供了明确证据。
+- 不要建议降低 AI 率、绕过 AI 检测、加入口语噪声、错别字或随机不流畅。
+- 所有 finding 必须定位到论文文本，并说明它如何影响问题意识、证据清晰度、论证可信度或学术表达质量。
 
 ## Responsibilities
 
