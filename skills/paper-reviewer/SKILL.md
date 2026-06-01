@@ -1,6 +1,6 @@
 ---
 name: paper-reviewer
-description: 分阶段审阅学术论文并生成结构化审稿意见。Use when 用户要求审稿、评审论文、检查 manuscript / paper / draft、输出 reviewer comments / review report。
+description: Review academic papers in stages and generate structured review comments. Use when the user requests a review, peer review, checking of a manuscript/paper/draft, or output of reviewer comments/review report.
 ---
 
 # Paper Reviewer
