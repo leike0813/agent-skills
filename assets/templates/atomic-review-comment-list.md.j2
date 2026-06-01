@@ -1,0 +1,13 @@
+# {{ msg("view.atomic_comments.title") }}
+
+{{ msg("view.atomic_comments.intro") }}
+
+## {{ msg("view.atomic_comments.table") }}
+
+| `comment_id` | {{ msg("table.source_reviewers") }} | {{ msg("table.source_threads") }} | {{ msg("view.atomic_comments.canonical_summary") }} | {{ msg("view.atomic_comments.required_action") }} |
+| --- | --- | --- | --- | --- |
+{% for row in rows -%}
+| {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.canonical_summary }} | {{ row.required_action }} |
+{% else -%}
+|  |  |  |  |  |
+{% endfor %}

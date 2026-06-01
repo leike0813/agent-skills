@@ -1,0 +1,43 @@
+# {{ msg("view.final_checklist.title") }}
+
+{{ msg("view.final_checklist.intro") }}
+
+## {{ msg("view.final_checklist.atomic_completion_table") }}
+
+| `comment_id` | {{ msg("table.source_reviewers") }} | {{ msg("table.source_threads") }} | `status` | `priority` | `evidence_gap` | {{ msg("table.target_locations") }} | `manuscript_execution_items_done` | `response_draft_done` | `one_to_one_link_checked` | `export_ready` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+{% for row in atomic_rows -%}
+| {{ row.comment_id }} | {{ row.source_reviewers }} | {{ row.source_thread_ids }} | {{ row.status or '' }} | {{ row.priority or '' }} | {{ row.evidence_gap or '' }} | {{ row.target_locations or '' }} | {{ row.manuscript_execution_items_done or '' }} | {{ row.response_draft_done or '' }} | {{ row.one_to_one_link_checked or '' }} | {{ row.export_ready or '' }} |
+{% else -%}
+|  |  |  |  |  |  |  |  |  |  |  |
+{% endfor %}
+
+## {{ msg("view.final_checklist.revision_plan_table") }}
+
+| `plan_action_id` | `comment_id` | `execution_category` | {{ msg("view.revision_graph.title_column") }} | `status` |
+| --- | --- | --- | --- | --- |
+{% for row in plan_rows -%}
+| {{ row.plan_action_id }} | {{ row.comment_id }} | {{ row.execution_category or '' }} | {{ row.title or '' }} | {{ row.status or '' }} |
+{% else -%}
+|  |  |  |  |  |
+{% endfor %}
+
+## {{ msg("view.final_checklist.thread_coverage_table") }}
+
+| `thread_id` | `reviewer_id` | {{ msg("view.raw_threads.linked_atomic_comments") }} | `response_resolution_kind` | `audited_log_present` | {{ msg("view.final_checklist.final_row_ready") }} | {{ msg("view.final_checklist.linked_atomic_export_ready") }} | {{ msg("view.final_checklist.thread_export_ready") }} |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+{% for row in thread_rows -%}
+| {{ row.thread_id }} | {{ row.reviewer_id }} | {{ row.linked_comment_ids or '' }} | {{ row.response_resolution_kind or '' }} | {{ row.audited_log_present }} | {{ row.response_row_ready }} | {{ row.linked_atomic_export_ready }} | {{ row.thread_export_ready }} |
+{% else -%}
+|  |  |  |  |  |  |  |  |
+{% endfor %}
+
+## {{ msg("view.final_checklist.export_artifact_table") }}
+
+| {{ msg("view.final_checklist.artifact") }} | {{ msg("view.final_checklist.status") }} | {{ msg("view.final_checklist.output_path") }} |
+| --- | --- | --- |
+{% for row in export_rows -%}
+| {{ row.artifact_name }} | {{ row.artifact_status }} | {{ row.output_path or '' }} |
+{% else -%}
+|  |  |  |
+{% endfor %}
