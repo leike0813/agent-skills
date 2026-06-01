@@ -1,0 +1,45 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\title{ {{ msg("view.response_table_preview.tex.title", target="document") }} }
+\author{ {{ msg("view.response_table_preview.tex.author", target="document") }} }
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{ {{ msg("view.response_table_preview.tex.section_title", target="document") }} }
+% This LaTeX preview is rendered from revision-master.db.
+
+{% for group in reviewer_groups -%}
+\subsection*{ {{ group.heading_tex }} }
+\begin{longtable}{|p{0.22\textwidth}|p{0.20\textwidth}|p{0.24\textwidth}|p{0.24\textwidth}|}
+\hline
+\textbf{ {{ msg("view.response_table_preview.column.original_comment", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.modification_scope", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.key_revision_excerpt", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.response_explanation", target="document") }} } \\
+\hline
+\endfirsthead
+\hline
+\textbf{ {{ msg("view.response_table_preview.column.original_comment", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.modification_scope", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.key_revision_excerpt", target="document") }} } & \textbf{ {{ msg("view.response_table_preview.column.response_explanation", target="document") }} } \\
+\hline
+\endhead
+{% for row in group.rows -%}
+\textbf{ {{ msg("view.response_table_preview.tex.comment_prefix", target="document") }} } {{ row.original_comment_tex }} & \texttt{ {{ row.modification_scope_tex }} } & {\color{blue}\ttfamily {{ row.key_revision_excerpt_tex }}} & {{ row.response_explanation_tex }} \\
+\hline
+{% else -%}
+ &  &  &  \\
+\hline
+{% endfor -%}
+\end{longtable}
+
+{% else -%}
+\textit{ {{ msg("view.response_table_preview.no_row_data", target="document") }} }
+{% endfor %}
+
+\end{document}

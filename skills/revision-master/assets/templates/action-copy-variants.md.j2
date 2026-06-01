@@ -1,0 +1,31 @@
+# {{ msg("view.action_variants.title") }}
+
+{{ msg("view.action_variants.intro") }}
+
+{% for item in items -%}
+## {{ item.comment_id }} / action {{ item.action_order }}
+
+- {{ msg("view.action_variants.manuscript_change") }}: {{ item.manuscript_change }}
+- {{ msg("view.action_variants.expected_response_effect") }}: {{ item.expected_response_letter_effect }}
+
+{% for location in item.locations -%}
+### {{ msg("view.action_variants.location_heading", location_order=location.location_order) }}
+
+- {{ msg("view.action_variants.target_location") }}: {{ location.target_location }}
+
+#### {{ msg("view.action_variants.manuscript_final_copy") }}
+
+| {{ msg("view.action_variants.variant") }} | {{ msg("view.action_variants.selected") }} | {{ msg("view.action_variants.variant_text") }} | {{ msg("view.action_variants.rationale") }} |
+| --- | --- | --- | --- |
+{% for row in location.manuscript_variants -%}
+| {{ row.variant_label }} | {{ row.selected }} | {{ row.variant_text }} | {{ row.rationale }} |
+{% else -%}
+|  |  |  |  |
+{% endfor %}
+
+{% endfor -%}
+{% else -%}
+## {{ msg("view.action_variants.no_variants") }}
+
+{{ msg("view.action_variants.no_variant_data") }}
+{% endfor %}
