@@ -143,6 +143,13 @@ def _domains(index: dict[str, Any]) -> dict[str, Any]:
     return _require_mapping(index, "domains")
 
 
+def _topics(index: dict[str, Any]) -> dict[str, Any]:
+    value = index.get("topics", {})
+    if not isinstance(value, dict):
+        raise GuideError("index field 'topics' must be an object when present")
+    return value
+
+
 def _candidate_block(index: dict[str, Any]) -> dict[str, list[str]]:
     stages = _require_mapping(index, "review_stages")
     sections = _require_mapping(index, "paper_sections")
@@ -194,6 +201,45 @@ def _domain_meta(index: dict[str, Any], domain_name: str) -> dict[str, Any]:
 
 def _domain_reference_file(index: dict[str, Any], domain_name: str) -> Path:
     return _reference_file(index, str(_domain_meta(index, domain_name)["ref"]))
+
+
+def _topic_meta(index: dict[str, Any], topic_id: str) -> dict[str, Any]:
+    topics = _topics(index)
+    topic = topics.get(topic_id)
+    if not isinstance(topic, dict):
+        raise GuideError(f"invalid topic: {topic_id}", {"topic": sorted(topics)})
+    if not isinstance(topic.get("ref"), str) or not str(topic["ref"]).strip():
+        raise GuideError(f"topic '{topic_id}' must define a non-empty ref")
+    return topic
+
+
+def _topic_file(index: dict[str, Any], topic_id: str) -> Path:
+    return _reference_file(index, str(_topic_meta(index, topic_id)["ref"]))
+
+
+def _topic_applies(topic: dict[str, Any], stage_id: str, section_id: str) -> bool:
+    stages = _as_str_list(topic.get("review_stages", []), "topic.review_stages")
+    sections = _as_str_list(topic.get("paper_sections", []), "topic.paper_sections")
+    return stage_id in stages and section_id in sections
+
+
+def _topic_records(index: dict[str, Any], stage_id: str, section_id: str) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for topic_id, topic in sorted(_topics(index).items()):
+        if not isinstance(topic, dict) or not _topic_applies(topic, stage_id, section_id):
+            continue
+        ref_id = str(topic["ref"])
+        path = _reference_file(index, ref_id)
+        for heading in _as_str_list(topic.get("headings", []), f"topics.{topic_id}.headings"):
+            records.append(
+                {
+                    "topic": topic_id,
+                    "label": str(topic.get("label", topic_id)),
+                    "path": _display_path(path),
+                    "heading": heading,
+                }
+            )
+    return records
 
 
 def _validate_route(index: dict[str, Any], domain_name: str | None, stage_id: str | None, section_id: str | None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -314,6 +360,21 @@ def command_nav(index: dict[str, Any], domain_name: str | None, stage_id: str | 
             ]
         )
 
+    topic_records = _topic_records(index, stage_id, section_id)
+    if topic_records:
+        lines.extend(["", "## Cross-cutting review topics"])
+        for record in topic_records:
+            show_command = f"uv run --project=\"$HOME/.ar\" --locked -- python paper-reviewer/scripts/reference_guide.py topic show --topic {record['topic']} --heading \"{record['heading']}\""
+            lines.extend(
+                [
+                    f"- topic: `{record['topic']}`",
+                    f"  label: {record['label']}",
+                    f"  document: `{record['path']}`",
+                    f"  heading: `{record['heading']}`",
+                    f"  show: `{show_command}`",
+                ]
+            )
+
     lines.extend(
         [
             "",
@@ -406,6 +467,59 @@ def command_taxonomy(index: dict[str, Any], domain_name: str | None = None) -> s
     return command_show(index, None, str(domain.get("taxonomy_ref", "taxonomy")), str(domain["taxonomy_heading"]))
 
 
+def command_topic_list(index: dict[str, Any]) -> str:
+    lines = ["# Cross-cutting review topics", "", "## Topics"]
+    for topic_id, topic in sorted(_topics(index).items()):
+        if not isinstance(topic, dict):
+            raise GuideError(f"topics.{topic_id} must be an object")
+        lines.append(f"- `{topic_id}`: {topic.get('label', topic_id)}")
+    return "\n".join(lines)
+
+
+def command_topic_toc(index: dict[str, Any], topic_id: str) -> str:
+    topic = _topic_meta(index, topic_id)
+    path = _topic_file(index, topic_id)
+    headings = _parse_headings(path)
+    lines = [
+        "# Topic table of contents",
+        "",
+        f"- topic: `{topic_id}`",
+        f"- label: {topic.get('label', topic_id)}",
+        f"- path: `{_display_path(path)}`",
+        "",
+        "## Headings",
+    ]
+    for heading in headings:
+        indent = "  " * max(heading.level - 1, 0)
+        lines.append(f"{indent}- L{heading.line_no} H{heading.level} `{heading.text}`")
+    return "\n".join(lines)
+
+
+def command_topic_show(index: dict[str, Any], topic_id: str, exact_heading: str) -> str:
+    path = _topic_file(index, topic_id)
+    lines = _read_raw_lines(path)
+    headings = _parse_headings(path)
+    matches = [heading for heading in headings if heading.text == exact_heading]
+
+    if not matches:
+        nearby = [heading.text for heading in headings if exact_heading in heading.text or heading.text in exact_heading]
+        fallback = nearby[:20] or [heading.text for heading in headings[:20]]
+        raise GuideError(f"heading not found for topic '{topic_id}': {exact_heading}", {"heading": fallback})
+    if len(matches) > 1:
+        locations = [f"L{heading.line_no} {heading.text}" for heading in matches]
+        raise GuideError(f"heading is not unique for topic '{topic_id}': {exact_heading}", {"matching-locations": locations})
+
+    selected = matches[0]
+    end_index = len(lines)
+    for heading in headings:
+        if heading.line_index <= selected.line_index:
+            continue
+        if heading.level <= selected.level:
+            end_index = heading.line_index
+            break
+    return "".join(lines[selected.line_index:end_index])
+
+
 def _collect_index_headings(index: dict[str, Any]) -> dict[str, set[str]]:
     refs_to_headings: dict[str, set[str]] = {}
 
@@ -434,6 +548,14 @@ def _collect_index_headings(index: dict[str, Any]) -> dict[str, set[str]]:
             add(domain_ref, _as_str_list(headings, f"domains.{domain_id}.stage_headings.{stage_id}"))
         for section_id, headings in _require_mapping(domain, "section_headings").items():
             add(domain_ref, _as_str_list(headings, f"domains.{domain_id}.section_headings.{section_id}"))
+
+    for topic_id, topic in _topics(index).items():
+        if not isinstance(topic, dict):
+            raise GuideError(f"topics.{topic_id} must be an object")
+        topic_ref = str(topic.get("ref", topic_id))
+        _as_str_list(topic.get("review_stages", []), f"topics.{topic_id}.review_stages")
+        _as_str_list(topic.get("paper_sections", []), f"topics.{topic_id}.paper_sections")
+        add(topic_ref, _as_str_list(topic.get("headings", []), f"topics.{topic_id}.headings"))
 
     return refs_to_headings
 
@@ -505,6 +627,9 @@ def command_guide_deprecated() -> str:
             "- `list`: inspect valid identifiers.",
             "- `taxonomy`: inspect taxonomy canonical domain names.",
             "- `taxonomy --domain <canonical-domain-name>`: reveal one taxonomy section.",
+            "- `topic list`: inspect cross-cutting review topics.",
+            "- `topic toc --topic <topic-id>`: inspect one topic document's heading tree.",
+            "- `topic show --topic <topic-id> --heading \"<exact-heading>\"`: reveal one topic section.",
             "- `nav --domain <canonical-domain-name> --review-stage <stage-id> --paper-section <section-id>`: find candidate reference headings.",
             "- `toc --domain <canonical-domain-name>`: inspect one guide document's heading tree.",
             "- `show --domain <canonical-domain-name> --heading \"<exact-heading>\"`: reveal one original Markdown section.",
@@ -521,6 +646,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     taxonomy = subparsers.add_parser("taxonomy", help="List taxonomy entries or reveal one taxonomy section by canonical domain name.")
     taxonomy.add_argument("--domain", help="Canonical domain name for one taxonomy section.")
+
+    topic = subparsers.add_parser("topic", help="List or reveal cross-cutting review topics.")
+    topic_subparsers = topic.add_subparsers(dest="topic_command", required=True)
+    topic_subparsers.add_parser("list", help="List cross-cutting review topics.")
+    topic_toc = topic_subparsers.add_parser("toc", help="Return the heading table of contents for one topic document.")
+    topic_toc.add_argument("--topic", required=True)
+    topic_show = topic_subparsers.add_parser("show", help="Return the original Markdown under one exact topic heading.")
+    topic_show.add_argument("--topic", required=True)
+    topic_show.add_argument("--heading", required=True)
 
     guide = subparsers.add_parser("guide", help="Deprecated compatibility entry; use nav/toc/show instead.")
     guide.add_argument("--domain")
@@ -555,6 +689,16 @@ def main(argv: list[str] | None = None) -> int:
             output = command_check(index)
         elif args.command == "taxonomy":
             output = command_taxonomy(index, args.domain)
+        elif args.command == "topic":
+            if args.topic_command == "list":
+                output = command_topic_list(index)
+            elif args.topic_command == "toc":
+                output = command_topic_toc(index, args.topic)
+            elif args.topic_command == "show":
+                output = command_topic_show(index, args.topic, args.heading)
+            else:
+                parser.error(f"unknown topic command: {args.topic_command}")
+                return 2
         elif args.command == "guide":
             output = command_guide_deprecated()
         elif args.command == "nav":
