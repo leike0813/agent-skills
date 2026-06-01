@@ -347,9 +347,9 @@ def command_nav(index: dict[str, Any], domain_name: str | None, stage_id: str | 
     ]
     for record in records:
         if record["source"] == "taxonomy":
-            show_command = f"uv run --project=\"$HOME/.ar\" --locked -- python paper-reviewer/scripts/reference_guide.py taxonomy --domain {record['show_domain']}"
+            show_command = f"python scripts/reference_guide.py taxonomy --domain {record['show_domain']}"
         else:
-            show_command = f"uv run --project=\"$HOME/.ar\" --locked -- python paper-reviewer/scripts/reference_guide.py show --domain {record['show_domain']} --heading \"{record['heading']}\""
+            show_command = f"python scripts/reference_guide.py show --domain {record['show_domain']} --heading \"{record['heading']}\""
         lines.extend(
             [
                 f"- source: {record['source']}",
@@ -364,7 +364,7 @@ def command_nav(index: dict[str, Any], domain_name: str | None, stage_id: str | 
     if topic_records:
         lines.extend(["", "## Cross-cutting review topics"])
         for record in topic_records:
-            show_command = f"uv run --project=\"$HOME/.ar\" --locked -- python paper-reviewer/scripts/reference_guide.py topic show --topic {record['topic']} --heading \"{record['heading']}\""
+            show_command = f"python scripts/reference_guide.py topic show --topic {record['topic']} --heading \"{record['heading']}\""
             lines.extend(
                 [
                     f"- topic: `{record['topic']}`",
