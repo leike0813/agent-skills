@@ -205,6 +205,21 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS reference_quality_issues (
+            issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_index INTEGER NOT NULL,
+            ref_index INTEGER,
+            severity TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            field TEXT NOT NULL,
+            current_value TEXT NOT NULL,
+            raw_excerpt TEXT NOT NULL,
+            recommendation TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS reference_parse_candidates (
             entry_index INTEGER NOT NULL,
             candidate_index INTEGER NOT NULL,
@@ -1184,6 +1199,93 @@ def fetch_citation_mention_links(connection: sqlite3.Connection) -> list[dict[st
         }
         for row in rows
     ]
+
+
+def replace_reference_quality_issues(connection: sqlite3.Connection, issues: list[dict[str, Any]]) -> None:
+    resolve_reference_quality_issues(connection)
+    now = utc_now_iso()
+    for issue in issues:
+        connection.execute(
+            """
+            INSERT INTO reference_quality_issues (
+                entry_index, ref_index, severity, reason_code, field, current_value,
+                raw_excerpt, recommendation, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+            """,
+            (
+                int(issue["entry_index"]),
+                int(issue["ref_index"]) if issue.get("ref_index") is not None else None,
+                str(issue["severity"]),
+                str(issue["reason_code"]),
+                str(issue.get("field", "")),
+                str(issue.get("current_value", "")),
+                str(issue.get("raw_excerpt", "")),
+                str(issue.get("recommendation", "")),
+                now,
+            ),
+        )
+    touch_runtime(connection)
+
+
+def fetch_active_reference_quality_issues(
+    connection: sqlite3.Connection,
+    *,
+    severity: str | None = None,
+) -> list[dict[str, Any]]:
+    sql = """
+        SELECT issue_id, entry_index, ref_index, severity, reason_code, field, current_value,
+               raw_excerpt, recommendation, status, created_at, resolved_at
+        FROM reference_quality_issues
+        WHERE status = 'active'
+    """
+    params: list[str] = []
+    if severity is not None:
+        sql += " AND severity = ?"
+        params.append(severity)
+    sql += " ORDER BY issue_id ASC"
+    rows = connection.execute(sql, params).fetchall()
+    return [
+        {
+            "issue_id": int(row["issue_id"]),
+            "entry_index": int(row["entry_index"]),
+            "ref_index": int(row["ref_index"]) if row["ref_index"] is not None else None,
+            "severity": str(row["severity"]),
+            "reason_code": str(row["reason_code"]),
+            "field": str(row["field"]),
+            "current_value": str(row["current_value"]),
+            "raw_excerpt": str(row["raw_excerpt"]),
+            "recommendation": str(row["recommendation"]),
+            "status": str(row["status"]),
+            "created_at": str(row["created_at"]),
+            "resolved_at": str(row["resolved_at"]) if row["resolved_at"] is not None else None,
+        }
+        for row in rows
+    ]
+
+
+def resolve_reference_quality_issues(
+    connection: sqlite3.Connection,
+    *,
+    issue_ids: list[int] | None = None,
+    status: str = "resolved",
+) -> int:
+    resolved_at = utc_now_iso()
+    if issue_ids is None:
+        cursor = connection.execute(
+            "UPDATE reference_quality_issues SET status = ?, resolved_at = ? WHERE status = 'active'",
+            (status, resolved_at),
+        )
+    elif not issue_ids:
+        return 0
+    else:
+        placeholders = ",".join("?" for _ in issue_ids)
+        cursor = connection.execute(
+            f"UPDATE reference_quality_issues SET status = ?, resolved_at = ? WHERE status = 'active' AND issue_id IN ({placeholders})",
+            [status, resolved_at, *issue_ids],
+        )
+    if cursor.rowcount:
+        touch_runtime(connection)
+    return int(cursor.rowcount)
 
 
 def store_citation_workset_items(connection: sqlite3.Connection, items: list[dict[str, Any]]) -> None:

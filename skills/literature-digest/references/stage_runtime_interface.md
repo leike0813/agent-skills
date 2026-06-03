@@ -41,6 +41,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
 - `prepare_references_workset`
 - `persist_reference_entry_splits`
 - `persist_references`
+- `review_reference_quality`
 - `prepare_citation_workset`
 - `persist_citation_semantics`
 - `persist_citation_timeline`
@@ -780,10 +781,36 @@ python scripts/stage_runtime.py persist_references \
 ```json
 {
   "stored_reference_items": 1,
+  "quality_issues": [],
   "warnings": [],
   "error": null
 }
 ```
+
+仅有 soft quality warnings 时，成功输出会包含 active issue 列表，并且 gate 的下一动作会变成 `review_reference_quality`：
+
+```json
+{
+  "stored_reference_items": 1,
+  "quality_issues": [
+    {
+      "issue_id": 1,
+      "entry_index": 0,
+      "ref_index": 0,
+      "severity": "warning",
+      "reason_code": "short_title_requires_context",
+      "field": "title",
+      "current_value": "Paper A",
+      "raw_excerpt": "[1] Smith. Paper A. 2020.",
+      "recommendation": "Verify the short title against raw/candidates; correct it if it is only a fragment, otherwise explicitly accept the warning."
+    }
+  ],
+  "warnings": ["short_title_requires_context"],
+  "error": null
+}
+```
+
+存在 hard quality issues 时，脚本返回 exit code `2`，不写入 `reference_items`，并返回 `quality_issues`。随后 gate 仍返回 `persist_references`，但会通过 `quality_directives` 指明需修复的条目。
 
 ### 常见失败原因
 
@@ -791,6 +818,54 @@ python scripts/stage_runtime.py persist_references \
 - `selected_pattern` 缺失或与 prepared candidate 不匹配
 - `title` 以前导标点开头
 - 把 arXiv 标识中的数字前缀误判成出版年
+
+## `review_reference_quality`
+
+### 命令
+
+```bash
+python scripts/stage_runtime.py review_reference_quality \
+  [--db-path PATH] \
+  [--payload-file FILE]
+```
+
+### Payload 顶层结构
+
+```json
+{
+  "resolutions": [
+    {"issue_id": 1, "resolution": "accept_warning"}
+  ]
+}
+```
+
+### 字段说明
+
+- `resolutions`
+  - 必填。必须覆盖每个 active `reference_quality_issues.issue_id`，且每个 issue 只能出现一次。
+- `resolution="accept_warning"`
+  - 仅允许用于 `severity="warning"`。
+- `resolution="corrected"`
+  - 必须附带 `reference` object。
+  - 可包含 `author`、`title`、`year`、`raw`、`confidence`、`metadata` 等字段。
+  - corrected 后若仍有 hard quality issue，脚本失败；仍有 soft warning 时，可由同一 payload 中其它 issue 的 `accept_warning` 明确接受。
+- `resolution="omit"`
+  - 仅允许用于 hard issue。
+  - hard block 的推荐主路径仍是重新提交 `persist_references`，从完整 `items[]` payload 中省略不可恢复行。
+
+### 成功输出
+
+```json
+{
+  "resolved_issue_ids": [],
+  "accepted_issue_ids": [1],
+  "omitted_issue_ids": [],
+  "remaining_quality_issues": [],
+  "error": null
+}
+```
+
+成功后 gate 推进到 `prepare_citation_workset`。
 
 ## `prepare_citation_workset`
 

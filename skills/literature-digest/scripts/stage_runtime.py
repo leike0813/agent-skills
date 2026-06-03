@@ -7,6 +7,7 @@ import math
 import os
 import re
 import sys
+import unicodedata
 import zlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -46,6 +47,7 @@ from runtime_db import (  # noqa: E402
     fetch_citation_unmapped_mentions,
     fetch_citation_workset_items,
     fetch_latest_error,
+    fetch_active_reference_quality_issues,
     fetch_reference_entries,
     fetch_reference_items,
     fetch_reference_parse_candidates,
@@ -57,6 +59,8 @@ from runtime_db import (  # noqa: E402
     delete_action_receipts,
     has_action_receipt,
     register_artifact,
+    replace_reference_quality_issues,
+    resolve_reference_quality_issues,
     resolve_runtime_errors,
     set_runtime_error,
     set_runtime_input,
@@ -165,6 +169,80 @@ WARNING_CITATION_FALSE_POSITIVE_FILTERED = "citation_false_positive_filtered"
 WARNING_CITATION_TIMELINE_MISSING_YEAR = "citation_timeline_missing_year"
 WARNING_SCOPE_FALLBACK_USED = "scope_fallback_used"
 WARNING_DIGEST_UNDERCOVERAGE = "digest_undercoverage"
+REFERENCE_QUALITY_HARD_BLOCK = "hard_block"
+REFERENCE_QUALITY_WARNING = "warning"
+REFERENCE_QUALITY_HARD_REASON_CODES = {
+    "empty_title",
+    "bare_identifier_or_url_title",
+    "publication_metadata_only_title",
+    "author_only_title",
+    "no_usable_title_tokens",
+}
+REFERENCE_QUALITY_WARNING_REASON_CODES = {
+    "bibliographic_suffix_in_title",
+    "possible_author_prefix_noise",
+    "very_long_title",
+    "short_title_requires_context",
+    "missing_year",
+    "missing_authors",
+}
+REFERENCE_QUALITY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "for",
+    "in",
+    "of",
+    "on",
+    "the",
+    "to",
+    "with",
+    "vol",
+    "volume",
+    "no",
+    "issue",
+    "pp",
+    "pages",
+    "proceedings",
+    "conference",
+    "journal",
+    "preprint",
+    "arxiv",
+    "doi",
+}
+REFERENCE_QUALITY_BIBLIOGRAPHIC_MARKERS = (
+    "arxiv preprint",
+    "preprint",
+    "in proceedings",
+    "proceedings of",
+    "conference on",
+    "journal of",
+    "transactions on",
+    "vol",
+    "volume",
+    "no",
+    "issue",
+    "pp",
+    "pages",
+    "publisher",
+    "press",
+    "springer",
+    "ieee",
+    "acm",
+    "pmlr",
+)
+REFERENCE_QUALITY_LONG_TITLE_CHARS = 180
+REFERENCE_IDENTIFIER_TITLE_RE = re.compile(
+    r"^\s*(?:"
+    r"https?://\S+|www\.\S+|"
+    r"(?:doi\s*:\s*)?10\.\d{4,9}/\S+|"
+    r"https?://(?:dx\.)?doi\.org/10\.\d{4,9}/\S+|"
+    r"arxiv\s*:\s*\d{4}\.\d{4,5}(?:v\d+)?|"
+    r"\d{4}\.\d{4,5}(?:v\d+)?"
+    r")\s*$",
+    re.IGNORECASE,
+)
+REFERENCE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 LITERAL_STRING_RE = re.compile(r"\((?:\\.|[^\\)])*\)")
 TJ_ARRAY_RE = re.compile(r"\[(.*?)\]\s*TJ", re.DOTALL)
 TJ_SINGLE_RE = re.compile(r"(\((?:\\.|[^\\)])*\))\s*Tj")
@@ -254,6 +332,13 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "render_and_validate",
     ],
     "persist_references": [
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "review_reference_quality": [
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -3168,6 +3253,254 @@ def _validate_error_obj(error_val: object) -> list[str]:
     return errors
 
 
+def _quality_first_string(item: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _quality_title(item: dict[str, Any]) -> str:
+    return _quality_first_string(item, ("title", "parsed_title", "parsedTitle", "paper_title"))
+
+
+def _quality_raw(item: dict[str, Any]) -> str:
+    return _quality_first_string(item, ("raw", "raw_reference", "reference"))
+
+
+def _quality_authors(item: dict[str, Any]) -> list[str]:
+    if "authors" in item:
+        return [author.strip() for author in _as_str_list(item.get("authors")) if author.strip()]
+    return [author.strip() for author in _as_str_list(item.get("author")) if author.strip()]
+
+
+def _quality_year(item: dict[str, Any], raw: str) -> int | None:
+    explicit = _as_int_or_none(item.get("year"))
+    if explicit is not None:
+        return explicit
+    match = YEAR_RE.search(raw)
+    return int(match.group(1)) if match is not None else None
+
+
+def _normalize_reference_quality_title(title: str) -> str:
+    collapsed = re.sub(r"\s+", " ", str(title)).strip()
+    normalized = unicodedata.normalize("NFKC", collapsed).lower()
+    chars: list[str] = []
+    for char in normalized:
+        category = unicodedata.category(char)
+        chars.append(" " if category.startswith(("P", "S")) else char)
+    return re.sub(r"\s+", " ", "".join(chars)).strip()
+
+
+def _reference_quality_content_tokens(normalized_title: str) -> list[str]:
+    tokens: list[str] = []
+    for token in REFERENCE_TOKEN_RE.findall(normalized_title):
+        if len(token) < 2:
+            continue
+        if token.isdigit():
+            continue
+        if token in REFERENCE_QUALITY_STOPWORDS:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _reference_quality_bibliographic_marker(normalized_title: str) -> str | None:
+    padded = f" {normalized_title} "
+    for marker in REFERENCE_QUALITY_BIBLIOGRAPHIC_MARKERS:
+        normalized_marker = _normalize_reference_quality_title(marker)
+        if f" {normalized_marker} " in padded:
+            return marker
+    return None
+
+
+def _reference_quality_is_bare_identifier_or_url(title: str, normalized_title: str) -> bool:
+    stripped = title.strip()
+    if REFERENCE_IDENTIFIER_TITLE_RE.match(stripped):
+        return True
+    compact = normalized_title.replace(" ", "")
+    if re.fullmatch(r"(?:doi)?10\d{4,9}\S+", compact):
+        return True
+    if re.fullmatch(r"arxiv\d{4}\d{4,5}v?\d*", compact):
+        return True
+    return False
+
+
+def _reference_quality_is_publication_metadata_only(normalized_title: str, content_tokens: list[str]) -> bool:
+    marker = _reference_quality_bibliographic_marker(normalized_title)
+    if marker is None:
+        return False
+    if len(content_tokens) <= 1:
+        return True
+    metadata_tokens = {
+        "cvpr",
+        "iccv",
+        "eccv",
+        "neurips",
+        "nips",
+        "icml",
+        "iclr",
+        "aaai",
+        "ijcai",
+        "acl",
+        "emnlp",
+        "naacl",
+        "sigir",
+        "kdd",
+        "www",
+        "jmlr",
+        "tmlr",
+    }
+    return bool(content_tokens) and all(token in metadata_tokens for token in content_tokens)
+
+
+def _reference_quality_is_author_only(title: str, normalized_title: str, authors: list[str]) -> bool:
+    if not authors:
+        return False
+    author_tokens: set[str] = set()
+    for author in authors:
+        author_tokens.update(_reference_quality_content_tokens(_normalize_reference_quality_title(author)))
+    title_tokens = set(_reference_quality_content_tokens(normalized_title))
+    if title_tokens and title_tokens.issubset(author_tokens):
+        return True
+    stripped = title.strip()
+    if len(stripped) <= 80 and re.fullmatch(r"[A-Z][A-Za-z'`-]+(?:,\s*[A-Z](?:\.)?)*(?:\s+(?:and|&)\s+[A-Z][A-Za-z'`-]+(?:,\s*[A-Z](?:\.)?)*)?", stripped):
+        return True
+    return False
+
+
+def _reference_quality_has_bibliographic_suffix(title: str, normalized_title: str, content_tokens: list[str]) -> bool:
+    if len(content_tokens) < 2:
+        return False
+    marker = _reference_quality_bibliographic_marker(normalized_title)
+    if marker is None:
+        return False
+    marker_index = normalized_title.find(_normalize_reference_quality_title(marker))
+    return marker_index > 0 and any(separator in title for separator in (". ", ", In ", " In ", "; "))
+
+
+def _reference_quality_has_author_prefix_noise(title: str, authors: list[str]) -> bool:
+    stripped = title.strip()
+    if re.match(r"^[A-Z][A-Za-z'`-]+,\s*(?:[A-Z](?:\.)?\s*){1,4}[:.;]\s+\S", stripped):
+        return True
+    for author in authors:
+        author_text = str(author).strip()
+        if len(author_text) >= 3 and stripped.lower().startswith(author_text.lower()):
+            remainder = stripped[len(author_text) :].lstrip()
+            if remainder.startswith((".", ":", ";", ",")):
+                return True
+    return False
+
+
+def _classify_reference_quality(item: dict[str, Any]) -> list[dict[str, Any]]:
+    title = _quality_title(item)
+    raw = _quality_raw(item)
+    authors = _quality_authors(item)
+    year = _quality_year(item, raw)
+    normalized_title = _normalize_reference_quality_title(title)
+    content_tokens = _reference_quality_content_tokens(normalized_title)
+
+    reasons: list[tuple[str, str, str]] = []
+    if not title:
+        reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "empty_title", "title"))
+    else:
+        if _reference_quality_is_bare_identifier_or_url(title, normalized_title):
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "bare_identifier_or_url_title", "title"))
+        if _reference_quality_is_publication_metadata_only(normalized_title, content_tokens):
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "publication_metadata_only_title", "title"))
+        if _reference_quality_is_author_only(title, normalized_title, authors):
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "author_only_title", "title"))
+        if not content_tokens:
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "no_usable_title_tokens", "title"))
+
+    if title:
+        if _reference_quality_has_bibliographic_suffix(title, normalized_title, content_tokens):
+            reasons.append((REFERENCE_QUALITY_WARNING, "bibliographic_suffix_in_title", "title"))
+        if _reference_quality_has_author_prefix_noise(title, authors):
+            reasons.append((REFERENCE_QUALITY_WARNING, "possible_author_prefix_noise", "title"))
+        if len(title) > REFERENCE_QUALITY_LONG_TITLE_CHARS:
+            reasons.append((REFERENCE_QUALITY_WARNING, "very_long_title", "title"))
+        if 0 < len(content_tokens) < 2:
+            reasons.append((REFERENCE_QUALITY_WARNING, "short_title_requires_context", "title"))
+    if year is None:
+        reasons.append((REFERENCE_QUALITY_WARNING, "missing_year", "year"))
+    if not authors:
+        reasons.append((REFERENCE_QUALITY_WARNING, "missing_authors", "authors"))
+
+    seen: set[tuple[str, str]] = set()
+    issues: list[dict[str, Any]] = []
+    for severity, reason_code, field in reasons:
+        key = (severity, reason_code)
+        if key in seen:
+            continue
+        seen.add(key)
+        issues.append(
+            _build_reference_quality_issue(
+                item,
+                severity=severity,
+                reason_code=reason_code,
+                field=field,
+                title=title,
+                raw=raw,
+                authors=authors,
+                year=year,
+            )
+        )
+    return issues
+
+
+def _reference_quality_recommendation(reason_code: str) -> str:
+    recommendations = {
+        "empty_title": "Recover the actual work title from the raw reference or prepared candidates; if impossible, omit this row from the next persist_references payload.",
+        "bare_identifier_or_url_title": "Use the raw reference and prepared candidates to recover the actual work title; keep DOI/URL only as metadata, or omit this row if unrecoverable.",
+        "publication_metadata_only_title": "Replace venue, publisher, page, or proceedings text with the cited work title from the raw reference.",
+        "author_only_title": "Move author text to author[] and recover the cited work title from raw/candidates.",
+        "no_usable_title_tokens": "Replace the title with a phrase containing the cited work title, not only punctuation, numbers, or generic bibliography terms.",
+        "bibliographic_suffix_in_title": "Inspect whether the title accidentally includes venue/proceedings/page suffix; strip suffix when the actual title is clear.",
+        "possible_author_prefix_noise": "Inspect whether author text was included at the start of title; move it to author[] and keep only the work title.",
+        "very_long_title": "Inspect the title boundary; split away venue, abstract, or neighboring reference text if included.",
+        "short_title_requires_context": "Verify the short title against raw/candidates; correct it if it is only a fragment, otherwise explicitly accept the warning.",
+        "missing_year": "Recover the publication year from raw/candidates when available; otherwise explicitly accept the warning.",
+        "missing_authors": "Recover authors from raw/candidates when available; otherwise explicitly accept the warning.",
+    }
+    return recommendations.get(reason_code, "Inspect the raw reference and prepared candidates, then correct or explicitly accept according to severity.")
+
+
+def _build_reference_quality_issue(
+    item: dict[str, Any],
+    *,
+    severity: str,
+    reason_code: str,
+    field: str,
+    title: str,
+    raw: str,
+    authors: list[str],
+    year: int | None,
+) -> dict[str, Any]:
+    entry_index = item.get("entry_index", item.get("ref_index", 0))
+    ref_index = item.get("ref_index", entry_index)
+    if field == "year":
+        current_value = "" if year is None else str(year)
+    elif field == "authors":
+        current_value = json.dumps(authors, ensure_ascii=False)
+    else:
+        current_value = title
+    return {
+        "entry_index": int(entry_index),
+        "ref_index": int(ref_index) if ref_index is not None else None,
+        "severity": severity,
+        "reason_code": reason_code,
+        "field": field,
+        "current_value": current_value,
+        "raw_excerpt": raw.strip()[:320],
+        "recommendation": _reference_quality_recommendation(reason_code),
+    }
+
+
 def _normalize_reference_item(item: object, warnings: list[str]) -> dict[str, Any]:
     out = dict(item) if isinstance(item, dict) else {"raw": str(item)}
     if "doi" in out and "DOI" not in out:
@@ -4656,12 +4989,6 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
                 return 2
 
             title = str(item.get("title", "")).strip()
-            if not title:
-                message = f"items[{index}].title must be non-empty"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
-                connection.commit()
-                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
-                return 2
             if LEADING_PUNCTUATION_RE.match(title):
                 message = f"items[{index}].title has suspicious leading punctuation"
                 set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
@@ -4742,7 +5069,90 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
             normalized_item["metadata"] = normalized_metadata
             normalized_items.append(normalized_item)
 
+        quality_issues: list[dict[str, Any]] = []
+        for normalized_item in normalized_items:
+            item_issues = _classify_reference_quality(normalized_item)
+            warning_flags = [issue["reason_code"] for issue in item_issues if issue["severity"] == REFERENCE_QUALITY_WARNING]
+            if warning_flags:
+                normalized_metadata = dict(normalized_item.get("metadata", {}))
+                normalized_metadata["title_quality"] = {
+                    "status": "warning",
+                    "flags": warning_flags,
+                }
+                normalized_item["metadata"] = normalized_metadata
+                warnings.extend(warning_flags)
+            quality_issues.extend(item_issues)
+
+        hard_issues = [issue for issue in quality_issues if issue["severity"] == REFERENCE_QUALITY_HARD_BLOCK]
+        if hard_issues:
+            replace_reference_quality_issues(connection, quality_issues)
+            active_issues = fetch_active_reference_quality_issues(connection)
+            set_runtime_error(
+                connection,
+                "reference_quality_hard_block",
+                "Stage 4 reference quality hard block; repair quality_directives.issues before continuing.",
+                "stage_4_references",
+            )
+            set_workflow_state(
+                connection,
+                current_stage="stage_4_references",
+                current_substep="persist_references",
+                stage_gate="ready",
+                next_action="persist_references",
+                status_summary="reference quality hard blocks require corrected persist_references payload",
+                last_error_code="reference_quality_hard_block",
+            )
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "stored_reference_items": 0,
+                        "quality_issues": active_issues,
+                        "warnings": list(dict.fromkeys(warnings)),
+                        "error": {
+                            "code": "reference_quality_hard_block",
+                            "message": "Repair the listed reference rows before continuing.",
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
         store_reference_items(connection, normalized_items)
+        if quality_issues:
+            replace_reference_quality_issues(connection, quality_issues)
+            active_issues = fetch_active_reference_quality_issues(connection)
+            for warning in list(dict.fromkeys(warnings)):
+                add_runtime_warning_once(connection, warning)
+            _set_success_state(
+                connection,
+                stage="stage_4_references",
+                substep="review_reference_quality",
+                next_action="review_reference_quality",
+                status="reference quality warnings require explicit review",
+            )
+            _record_action_receipt(
+                connection,
+                action_name="persist_references",
+                stage="stage_4_references",
+                metadata={"stored_reference_items": len(normalized_items), "quality_issue_count": len(active_issues)},
+            )
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "stored_reference_items": len(normalized_items),
+                        "quality_issues": active_issues,
+                        "warnings": list(dict.fromkeys(warnings)),
+                        "error": None,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+
+        resolve_reference_quality_issues(connection)
         for warning in list(dict.fromkeys(warnings)):
             add_runtime_warning_once(connection, warning)
         _set_success_state(connection, stage="stage_5_citation", substep="prepare_citation_workset", next_action="prepare_citation_workset", status="references persisted")
@@ -4754,6 +5164,242 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
         )
         connection.commit()
     print(json.dumps({"stored_reference_items": len(normalized_items), "warnings": list(dict.fromkeys(warnings)), "error": None}, ensure_ascii=False))
+    return 0
+
+
+def _handle_review_reference_quality(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    resolutions = payload.get("resolutions", [])
+    with connect_db(db_path) as connection:
+        active_issues = fetch_active_reference_quality_issues(connection)
+        if not active_issues:
+            _set_success_state(
+                connection,
+                stage="stage_5_citation",
+                substep="prepare_citation_workset",
+                next_action="prepare_citation_workset",
+                status="reference quality review already complete",
+            )
+            _record_action_receipt(connection, action_name="review_reference_quality", stage="stage_4_references")
+            connection.commit()
+            print(json.dumps({"resolved_issue_ids": [], "remaining_quality_issues": [], "error": None}, ensure_ascii=False))
+            return 0
+        if not isinstance(resolutions, list) or not resolutions:
+            message = "resolutions must be a non-empty array"
+            set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+            return 2
+
+        issue_by_id = {int(issue["issue_id"]): issue for issue in active_issues}
+        submitted_ids: set[int] = set()
+        reference_items = fetch_reference_items(connection)
+        reference_by_index = {int(item["ref_index"]): item for item in reference_items}
+        resolved_issue_ids: list[int] = []
+        accepted_issue_ids: list[int] = []
+        omitted_issue_ids: list[int] = []
+
+        for index, resolution_obj in enumerate(resolutions):
+            if not isinstance(resolution_obj, dict):
+                message = f"resolutions[{index}] must be object"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            issue_id = resolution_obj.get("issue_id")
+            if not isinstance(issue_id, int) or issue_id not in issue_by_id:
+                message = f"resolutions[{index}].issue_id must refer to an active quality issue"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            if issue_id in submitted_ids:
+                message = f"resolutions[{index}].issue_id is duplicated"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            submitted_ids.add(issue_id)
+            issue = issue_by_id[issue_id]
+            resolution = str(resolution_obj.get("resolution", "")).strip()
+            if resolution == "accept_warning":
+                if issue["severity"] != REFERENCE_QUALITY_WARNING:
+                    message = f"issue_id {issue_id} is hard_block and cannot be accept_warning"
+                    set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                    connection.commit()
+                    print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                    return 2
+                accepted_issue_ids.append(issue_id)
+                continue
+
+            if resolution == "omit":
+                if issue["severity"] != REFERENCE_QUALITY_HARD_BLOCK:
+                    message = f"issue_id {issue_id} is warning and cannot be omit"
+                    set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                    connection.commit()
+                    print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                    return 2
+                ref_index = issue.get("ref_index")
+                if ref_index is not None and int(ref_index) in reference_by_index:
+                    reference_items = [item for item in reference_items if int(item["ref_index"]) != int(ref_index)]
+                    reference_by_index.pop(int(ref_index), None)
+                    store_reference_items(connection, reference_items)
+                omitted_issue_ids.append(issue_id)
+                continue
+
+            if resolution != "corrected":
+                message = f"resolutions[{index}].resolution must be corrected, accept_warning, or omit"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+
+            corrected = resolution_obj.get("reference")
+            if corrected is None:
+                corrected = resolution_obj.get("corrected_reference")
+            if not isinstance(corrected, dict):
+                message = f"resolutions[{index}].reference must be object for corrected"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            ref_index = issue.get("ref_index")
+            if ref_index is None or int(ref_index) not in reference_by_index:
+                message = f"issue_id {issue_id} has no persisted reference item to correct; resubmit persist_references instead"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            current_item = dict(reference_by_index[int(ref_index)])
+            metadata = dict(current_item.get("metadata", {}))
+            corrected_item = dict(current_item)
+            for key in ("author", "authors", "title", "parsed_title", "parsedTitle", "paper_title", "year", "raw", "raw_reference", "reference", "confidence"):
+                if key in corrected:
+                    corrected_item[key] = corrected[key]
+            if "metadata" in corrected and isinstance(corrected["metadata"], dict):
+                metadata.update(dict(corrected["metadata"]))
+            corrected_item["metadata"] = metadata
+            normalized = _normalize_reference_item(corrected_item, [])
+            normalized["ref_index"] = int(ref_index)
+            normalized_metadata = dict(normalized.get("metadata", {}))
+            normalized_metadata.pop("title_quality", None)
+            normalized["metadata"] = normalized_metadata
+            remaining_issues = _classify_reference_quality(normalized)
+            remaining_hard_issues = [item for item in remaining_issues if item["severity"] == REFERENCE_QUALITY_HARD_BLOCK]
+            if remaining_hard_issues:
+                message = f"corrected reference for issue_id {issue_id} still has hard quality issues: {[issue['reason_code'] for issue in remaining_hard_issues]}"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            remaining_warning_flags = [item["reason_code"] for item in remaining_issues if item["severity"] == REFERENCE_QUALITY_WARNING]
+            if remaining_warning_flags:
+                normalized_metadata = dict(normalized.get("metadata", {}))
+                normalized_metadata["title_quality"] = {
+                    "status": "warning",
+                    "flags": remaining_warning_flags,
+                }
+                normalized["metadata"] = normalized_metadata
+            reference_by_index[int(ref_index)] = normalized
+            reference_items = [reference_by_index[int(item["ref_index"])] for item in reference_items if int(item["ref_index"]) in reference_by_index]
+            store_reference_items(connection, reference_items)
+            resolved_issue_ids.append(issue_id)
+
+        missing_issue_ids = sorted(set(issue_by_id) - submitted_ids)
+        if missing_issue_ids:
+            message = f"resolutions must cover every active quality issue exactly once; missing issue_ids: {missing_issue_ids}"
+            set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+            return 2
+
+        if resolved_issue_ids:
+            resolve_reference_quality_issues(connection, issue_ids=resolved_issue_ids, status="resolved")
+        if accepted_issue_ids:
+            resolve_reference_quality_issues(connection, issue_ids=accepted_issue_ids, status="accepted")
+        if omitted_issue_ids:
+            resolve_reference_quality_issues(connection, issue_ids=omitted_issue_ids, status="omitted")
+
+        remaining_issues = fetch_active_reference_quality_issues(connection)
+        if remaining_issues:
+            _set_success_state(
+                connection,
+                stage="stage_4_references",
+                substep="review_reference_quality",
+                next_action="review_reference_quality",
+                status="reference quality warnings remain active",
+            )
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "resolved_issue_ids": resolved_issue_ids,
+                        "accepted_issue_ids": accepted_issue_ids,
+                        "omitted_issue_ids": omitted_issue_ids,
+                        "remaining_quality_issues": remaining_issues,
+                        "error": {"code": "reference_quality_review_incomplete", "message": "Resolve every active quality issue before continuing."},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
+        if not fetch_reference_items(connection):
+            set_workflow_state(
+                connection,
+                current_stage="stage_4_references",
+                current_substep="persist_references",
+                stage_gate="ready",
+                next_action="persist_references",
+                status_summary="reference quality review omitted all rows; resubmit persist_references with recoverable references",
+                last_error_code="reference_quality_review_failed",
+            )
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "resolved_issue_ids": resolved_issue_ids,
+                        "accepted_issue_ids": accepted_issue_ids,
+                        "omitted_issue_ids": omitted_issue_ids,
+                        "remaining_quality_issues": [],
+                        "error": {"code": "reference_quality_review_failed", "message": "No reference_items remain; resubmit persist_references with at least one recoverable reference."},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
+        _set_success_state(
+            connection,
+            stage="stage_5_citation",
+            substep="prepare_citation_workset",
+            next_action="prepare_citation_workset",
+            status="reference quality review complete",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="review_reference_quality",
+            stage="stage_4_references",
+            metadata={
+                "resolved_issue_ids": resolved_issue_ids,
+                "accepted_issue_ids": accepted_issue_ids,
+                "omitted_issue_ids": omitted_issue_ids,
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "resolved_issue_ids": resolved_issue_ids,
+                "accepted_issue_ids": accepted_issue_ids,
+                "omitted_issue_ids": omitted_issue_ids,
+                "remaining_quality_issues": [],
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -5394,6 +6040,11 @@ def build_parser() -> argparse.ArgumentParser:
     references.add_argument("--db-path", default="")
     references.add_argument("--payload-file", default="")
     references.set_defaults(handler=_handle_persist_references)
+
+    reference_quality = subparsers.add_parser("review_reference_quality")
+    reference_quality.add_argument("--db-path", default="")
+    reference_quality.add_argument("--payload-file", default="")
+    reference_quality.set_defaults(handler=_handle_review_reference_quality)
 
     mentions = subparsers.add_parser("prepare_citation_workset")
     mentions.add_argument("--db-path", default="")

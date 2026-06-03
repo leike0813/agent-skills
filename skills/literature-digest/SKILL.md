@@ -135,6 +135,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
 - 只能执行 gate 返回的 `next_action`
 - 若 gate 返回 blocker 或 repair 路径，必须先修复 DB 状态再继续
 - 正常主路径下，gate 输出中的 `instruction_refs`、`core_instruction`、`execution_note` 和 `command_example` 是当前动作的显式参考，不得跳过
+- Stage 4 若 gate 返回 `quality_directives`，必须按其中列出的 `issue_id`、`entry_index/ref_index`、`reason_code`、当前证据和 `recommendation` 处理；hard block 重新提交 corrected/omitted 后的 `persist_references` payload，soft warning 必须进入 `review_reference_quality` 并逐条 corrected 或 `accept_warning`
 - 只有当 gate 进入 repair 路径时，才额外参考 `sql_examples`
 
 ## LLM 与脚本职责边界
@@ -660,8 +661,49 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - 合法：`["Al-Rfou, R.", "Choe, D.", "Constant, N.", "Guo, M.", "Jones, L."]`
   - 非法：`["Al-Rfou", "R.", "Choe", "D.", "Constant", "N.", "Guo", "M.", "Jones", "L."]`
 - 完成后应该看到的 gate 结果：
+  - 无质量问题时，`next_action` 应推进为 `prepare_citation_workset`
+  - 仅有 soft quality warnings 时，`next_action` 应推进为 `review_reference_quality`
+  - 存在 hard quality issues 时，不写入 `reference_items`，gate 仍返回 `persist_references` 并通过 `quality_directives` 指明需修复或从下一次完整 payload 省略的条目
+
+### 10. `review_reference_quality`
+
+- 何时执行：
+  - `persist_references` 成功写入 `reference_items`，但 gate 返回 `next_action=review_reference_quality`
+- 调用命令：
+```bash
+python scripts/stage_runtime.py review_reference_quality --payload-file /tmp/reference_quality_review.json
+```
+- 最小合法示例：
+```json
+{
+  "resolutions": [
+    {"issue_id": 1, "resolution": "accept_warning"}
+  ]
+}
+```
+- 修正示例：
+```json
+{
+  "resolutions": [
+    {
+      "issue_id": 1,
+      "resolution": "corrected",
+      "reference": {
+        "author": ["Recovered Author"],
+        "title": "Recovered actual work title",
+        "year": 2020,
+        "raw": "Recovered Author. Recovered actual work title. 2020.",
+        "confidence": 0.9
+      }
+    }
+  ]
+}
+```
+- 完成后应该看到的 gate 结果：
+  - 所有 active soft issue 必须被 corrected 或 `accept_warning`
   - `next_action` 应推进为 `prepare_citation_workset`
-### 10. `prepare_citation_workset`
+
+### 11. `prepare_citation_workset`
 
 - 何时执行：
   - `persist_references` 成功后，且 gate 返回 `prepare_citation_workset`
@@ -688,7 +730,7 @@ python scripts/stage_runtime.py prepare_citation_workset --out /tmp/workset.json
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_semantics`
 
-### 11. `persist_citation_semantics`
+### 12. `persist_citation_semantics`
 
 - 何时执行：
   - `prepare_citation_workset` 成功后，且 gate 返回 `persist_citation_semantics`
@@ -727,7 +769,7 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_timeline`
 
-### 12. `persist_citation_timeline`
+### 13. `persist_citation_timeline`
 
 - 何时执行：
   - `persist_citation_semantics` 成功后，且 gate 返回 `persist_citation_timeline`
@@ -763,7 +805,7 @@ python scripts/stage_runtime.py persist_citation_timeline --payload-file /tmp/ci
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_summary`
 
-### 13. `persist_citation_summary`
+### 14. `persist_citation_summary`
 
 - 何时执行：
   - `persist_citation_timeline` 成功后，且 gate 返回 `persist_citation_summary`
@@ -800,7 +842,7 @@ python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/cit
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `render_and_validate`
 
-### 14. `render_and_validate --mode render`
+### 15. `render_and_validate --mode render`
 
 - 何时执行：
   - `persist_citation_summary` 成功后，且 gate 返回 `render_and_validate`

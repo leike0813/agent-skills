@@ -340,6 +340,114 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 - 一句话硬规则：已经稳定的单个作者边界，最终 `author[]` 不得再次拆成多个数组元素
 - 脚本会拦截明显的二次误拆，并以 `reference_author_refinement_invalid` 失败，而不是静默自动修正
 
+### Reference quality gate
+
+`persist_references` 在写入 `reference_items` 前后会运行 reference quality classifier。这个 classifier 只判断“当前 row 是否足以作为 citation / discovery 的结构化 reference”，不替代 agent 对原文的语义判断。
+
+输入字段优先级：
+
+- title：`title || parsed_title || parsedTitle || paper_title`
+- raw：`raw || raw_reference || reference`
+- authors：`authors || author`
+- year：显式 `year`，否则从 raw 中取第一个 `19xx/20xx`
+
+`normalizedTitle` 规则：
+
+- trim 并 collapse whitespace
+- NFKC normalize
+- English lowercase
+- punctuation / symbol 替换为空格
+- 再次 collapse whitespace
+
+`contentTokens` 会排除 stopwords、长度小于 2 的 token 和纯数字 token。stopwords 固定包含：`a`、`an`、`and`、`for`、`in`、`of`、`on`、`the`、`to`、`with`、`vol`、`volume`、`no`、`issue`、`pp`、`pages`、`proceedings`、`conference`、`journal`、`preprint`、`arxiv`、`doi`。
+
+Hard block reason codes：
+
+- `empty_title`
+- `bare_identifier_or_url_title`
+- `publication_metadata_only_title`
+- `author_only_title`
+- `no_usable_title_tokens`
+
+若存在任一 hard block：
+
+- `persist_references` 不写入 `reference_items`
+- runtime 写入 active `reference_quality_issues`
+- workflow 保持在 `stage_4_references / persist_references`
+- gate 返回 `quality_directives`，逐条列出 `issue_id`、`entry_index/ref_index`、`reason_code`、`field`、`current_value`、`raw_excerpt` 和 `recommendation`
+- agent 必须重新提交完整 `persist_references` payload；能修复则写 corrected row，无法可靠修复则从下一次完整 `items[]` payload 中省略该 hard row
+
+Soft warning reason codes：
+
+- `bibliographic_suffix_in_title`
+- `possible_author_prefix_noise`
+- `very_long_title`
+- `short_title_requires_context`
+- `missing_year`
+- `missing_authors`
+
+若只有 soft warning：
+
+- `persist_references` 会写入 `reference_items`
+- 受影响 item 写入 `metadata.title_quality = {"status": "warning", "flags": [...]}`
+- workflow 推进到 `review_reference_quality`
+- gate 返回 `quality_directives` 要求逐条 inspect，能修则 corrected，不能修且可接受时显式 `accept_warning`
+
+Hard block gate 示例：
+
+```json
+{
+  "quality_directives": {
+    "kind": "stage4_reference_quality",
+    "severity": "hard_block",
+    "instruction": "Repair the listed reference rows before continuing. Resubmit persist_references with corrected rows; omit unrecoverable hard rows from that full payload.",
+    "issues": [
+      {
+        "issue_id": 1,
+        "entry_index": 3,
+        "ref_index": 3,
+        "severity": "hard_block",
+        "reason_code": "bare_identifier_or_url_title",
+        "field": "title",
+        "current_value": "https://doi.org/10.1000/xyz",
+        "raw_excerpt": "Doe. Actual Work Title. 2020. https://doi.org/10.1000/xyz",
+        "recommendation": "Use the raw reference and prepared candidates to recover the actual work title; keep DOI/URL only as metadata, or omit this row if unrecoverable."
+      }
+    ]
+  }
+}
+```
+
+Soft warning review payload 示例：
+
+```json
+{
+  "resolutions": [
+    {"issue_id": 1, "resolution": "accept_warning"}
+  ]
+}
+```
+
+Soft warning corrected payload 示例：
+
+```json
+{
+  "resolutions": [
+    {
+      "issue_id": 1,
+      "resolution": "corrected",
+      "reference": {
+        "author": ["Doe, J."],
+        "title": "Actual Work Title",
+        "year": 2020,
+        "raw": "Doe, J. Actual Work Title. 2020.",
+        "confidence": 0.9
+      }
+    }
+  ]
+}
+```
+
 ### 编号质量检查
 
 在写入 `reference_entries` / `reference_items` 前，脚本必须额外检查：

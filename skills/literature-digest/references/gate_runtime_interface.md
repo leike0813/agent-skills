@@ -106,6 +106,13 @@ stdout 只输出一个 JSON 对象，字段固定为：
     - `notes: string`
   - 非 repair 阶段返回最小 `scripts/stage_runtime.py <next_action>` 调用方式。
   - repair 阶段固定返回 `null`。
+- `quality_directives: object|null`
+  - 仅在 Stage 4 存在 active `reference_quality_issues` 时返回。
+  - `kind` 固定为 `stage4_reference_quality`。
+  - `severity` 为 `hard_block` 或 `warning`。
+  - `issues[]` 是 agent 下一步必须处理的条目清单，每项包含 `issue_id`、`entry_index`、`ref_index`、`severity`、`reason_code`、`field`、`current_value`、`raw_excerpt`、`recommendation`。
+  - hard block 时仍可返回 `next_action=persist_references`，agent 必须按 `quality_directives.issues` 修正后重新提交完整 payload。
+  - soft warning 时返回或指向 `review_reference_quality`，agent 必须逐条 corrected 或 `accept_warning`。
 - `sql_examples: object[]`
   - repair 阶段对应的最小 SQL 示例列表。
   - 每项结构：
@@ -135,6 +142,7 @@ stdout 只输出一个 JSON 对象，字段固定为：
 - `prepare_references_workset`
 - `persist_reference_entry_splits`
 - `persist_references`
+- `review_reference_quality`
 - `prepare_citation_workset`
 - `persist_citation_semantics`
 - `persist_citation_timeline`
@@ -190,6 +198,7 @@ stdout 只输出一个 JSON 对象，字段固定为：
 - 当 `next_action = bootstrap_runtime_db` 时，`execution_note` 会提示目录已经由 `confirm_runtime_paths` 固化，本步不再决定任何目录
 - 并提示 `language` 必须先用用户显式指定值，否则从 prompt 主要语言推断，仅在无法稳定判断时回退 `zh-CN`
 - 当 `next_action = persist_render_templates` 时，`execution_note` 会提示先把本次 run 要使用的 digest / citation 运行时模板写入 `<tmp_dir>/templates/`
+- 当 Stage 4 gate payload 包含 `quality_directives` 时，`execution_note` 会提示必须先处理这些 issue：hard block 重新提交 `persist_references`，soft warning 通过 `review_reference_quality` corrected 或 `accept_warning`
 - 当 `next_action = render_and_validate` 时，`execution_note` 会提示当前已经进入最终发布前一步
 - 并提示最终 assistant 输出应直接采用 render 脚本 stdout 返回的 JSON
 - 并说明 render 会读取 DB 中的 `output_dir` 与 `result_json_path`

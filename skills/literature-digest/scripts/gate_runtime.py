@@ -19,6 +19,7 @@ from runtime_db import (  # noqa: E402
     ALLOWED_STAGES,
     connect_db,
     default_db_path,
+    fetch_active_reference_quality_issues,
     fetch_artifact_registry,
     fetch_action_receipts,
     fetch_runtime_inputs,
@@ -54,7 +55,7 @@ STAGE_RULES: dict[str, dict[str, Any]] = {
     },
     "stage_4_references": {
         "required_reads": ["source_documents.normalized_source", "section_scopes.references_scope"],
-        "required_writes": ["reference_entries", "reference_batches", "reference_parse_candidates", "reference_items"],
+        "required_writes": ["reference_entries", "reference_batches", "reference_parse_candidates", "reference_items", "reference_quality_issues"],
     },
     "stage_5_citation": {
         "required_reads": ["source_documents.normalized_source", "section_scopes.citation_scope"],
@@ -363,7 +364,38 @@ def _sql_examples(stage: str, next_action: str) -> list[dict[str, str]]:
     ]
 
 
-def _command_example(next_action: str, db_path: Path) -> dict[str, Any] | None:
+def _quality_directives(connection) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
+    active_issues = fetch_active_reference_quality_issues(connection)
+    if not active_issues:
+        return None
+    severity = "hard_block" if any(str(issue.get("severity")) == "hard_block" for issue in active_issues) else "warning"
+    instruction = (
+        "Repair the listed reference rows before continuing. Resubmit persist_references with corrected rows; omit unrecoverable hard rows from that full payload."
+        if severity == "hard_block"
+        else "Review every listed reference warning. Correct rows when possible; otherwise explicitly accept the warning with review_reference_quality."
+    )
+    return {
+        "kind": "stage4_reference_quality",
+        "severity": severity,
+        "instruction": instruction,
+        "issues": [
+            {
+                "issue_id": int(issue["issue_id"]),
+                "entry_index": int(issue["entry_index"]),
+                "ref_index": int(issue["ref_index"]) if issue.get("ref_index") is not None else None,
+                "severity": str(issue["severity"]),
+                "reason_code": str(issue["reason_code"]),
+                "field": str(issue["field"]),
+                "current_value": str(issue["current_value"]),
+                "raw_excerpt": str(issue["raw_excerpt"]),
+                "recommendation": str(issue["recommendation"]),
+            }
+            for issue in active_issues
+        ],
+    }
+
+
+def _command_example(next_action: str, db_path: Path, quality_directives: dict[str, Any] | None = None) -> dict[str, Any] | None:
     if next_action == "repair_db_state":
         return {
             "command": f'python scripts/stage_runtime.py repair_db_state --db-path "{db_path}"',
@@ -484,6 +516,26 @@ def _command_example(next_action: str, db_path: Path) -> dict[str, Any] | None:
             "notes": "Review only suspect block boundaries here. Keep original text and order; do not extract author/title/year in this step.",
         }
     if next_action == "persist_references":
+        if quality_directives and quality_directives.get("severity") == "hard_block":
+            first_issue = dict(list(quality_directives.get("issues", [{}]))[0])
+            entry_index = int(first_issue.get("entry_index", 0))
+            return {
+                "command": f"python scripts/stage_runtime.py persist_references {db_arg} {payload_arg}",
+                "payload_example": {
+                    "items": [
+                        {
+                            "entry_index": entry_index,
+                            "selected_pattern": "<SELECTED_PATTERN_FROM_CURRENT_WORKSET>",
+                            "author": ["Recovered Author"],
+                            "title": "Recovered actual work title",
+                            "year": 2020,
+                            "raw": str(first_issue.get("raw_excerpt", "")),
+                            "confidence": 0.8,
+                        }
+                    ]
+                },
+                "notes": "quality_directives contains hard_block rows. Rebuild the full persist_references payload from prepared candidates, correcting listed rows. If a hard row is unrecoverable, omit that row from the new full items[] payload instead of writing a placeholder title.",
+            }
         return {
             "command": f"python scripts/stage_runtime.py persist_references {db_arg} {payload_arg}",
             "payload_example": {
@@ -500,6 +552,22 @@ def _command_example(next_action: str, db_path: Path) -> dict[str, Any] | None:
                 ]
             },
             "notes": "Select one prepared pattern per entry and refine the final structured reference items.",
+        }
+    if next_action == "review_reference_quality":
+        first_issue = dict(list((quality_directives or {}).get("issues", [{}]))[0])
+        issue_id = int(first_issue.get("issue_id", 1))
+        ref_index = first_issue.get("ref_index", 0)
+        return {
+            "command": f"python scripts/stage_runtime.py review_reference_quality {db_arg} {payload_arg}",
+            "payload_example": {
+                "resolutions": [
+                    {
+                        "issue_id": issue_id,
+                        "resolution": "accept_warning",
+                    },
+                ]
+            },
+            "notes": f"Submit exactly one resolution per active quality_directives issue. Use accept_warning only for acceptable soft warnings. To correct instead, use resolution=corrected with reference fields such as ref_index={ref_index}, author, title, year, raw, and confidence.",
         }
     if next_action == "prepare_citation_workset":
         return {
@@ -582,7 +650,9 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
     if next_action == "persist_reference_entry_splits":
         return "The prepared references still have suspect blocks. Review only those block boundaries with split/keep/merge decisions; do not extract author, title, or year in this step."
     if next_action == "persist_references":
-        return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries."
+        return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries. If quality_directives is present, repair the listed rows first and resubmit the full persist_references payload; omit unrecoverable hard rows rather than writing placeholders."
+    if next_action == "review_reference_quality":
+        return "Review the active quality_directives issues. Correct rows when reliable; otherwise use accept_warning for soft warnings after inspection. Every active issue must have exactly one resolution before Stage 5 can proceed."
     if next_action == "prepare_citation_workset":
         return "Prepare the citation workset from stored citation_scope and reference_items. Do not rebuild scope or reference mapping by hand."
     if next_action == "persist_citation_semantics":
@@ -658,6 +728,11 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
                 missing.append("reference_entries")
             if count("reference_parse_candidates") == 0:
                 missing.append("reference_parse_candidates")
+        if next_action == "review_reference_quality":
+            if count("reference_items") == 0:
+                missing.append("reference_items")
+            if connection.execute("SELECT 1 FROM reference_quality_issues WHERE status = 'active' LIMIT 1").fetchone() is None:
+                missing.append("reference_quality_issues.active")
     elif stage == "stage_5_citation":
         row = connection.execute("SELECT 1 FROM source_documents WHERE doc_key = 'normalized_source' LIMIT 1").fetchone()
         if row is None:
@@ -721,8 +796,9 @@ def _payload(
     active_batch_kind: Any = None,
     active_batch_index: Any = None,
     last_error_code: Any = None,
+    quality_directives: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "current_stage": current_stage,
         "current_substep": current_substep,
         "stage_gate": stage_gate,
@@ -733,7 +809,7 @@ def _payload(
         "instruction_refs": _instruction_refs(current_stage, next_action),
         "core_instruction": _core_instruction(),
         "execution_note": _execution_note(current_stage, next_action, stage_gate),
-        "command_example": _command_example(next_action, db_path),
+        "command_example": _command_example(next_action, db_path, quality_directives),
         "sql_examples": _sql_examples(current_stage, next_action),
         "resume_packet": {
             "db_path": str(db_path),
@@ -743,6 +819,9 @@ def _payload(
             "why_paused": status_summary,
         },
     }
+    if quality_directives is not None:
+        payload["quality_directives"] = quality_directives
+    return payload
 
 
 def main() -> int:
@@ -803,11 +882,13 @@ def main() -> int:
         next_action = str(state["next_action"])
         status_summary = str(state["status_summary"])
         missing = _missing_prerequisites(connection, current_stage, next_action)
+        quality_directives = _quality_directives(connection) if current_stage == "stage_4_references" else None
 
         if missing:
             stage_gate = "blocked"
             next_action = "repair_db_state"
             status_summary = f"missing prerequisites: {', '.join(missing)}"
+            quality_directives = None
 
         return _emit(
             _payload(
@@ -821,6 +902,7 @@ def main() -> int:
                 active_batch_kind=state["active_batch_kind"],
                 active_batch_index=state["active_batch_index"],
                 last_error_code=state["last_error_code"],
+                quality_directives=quality_directives,
             ),
             exit_code=0 if stage_gate == "ready" else 2,
         )
