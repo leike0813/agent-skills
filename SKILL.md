@@ -118,6 +118,7 @@ description: Create, update, review, and architect high-quality agent skills by 
    - `SKILL.md` 放运行时必须知道的步骤、约束、模式分流、职责边界和 reference 路由。
    - 详细字段、长示例、schema、stage playbook、失败恢复放 references。
    - 不写对 agent 显然的常识；写它容易错、容易忘、必须稳定遵守的规则。
+   - 更新已有 skill 时，直接改成当前有效协议；不要追加历史演进、旧字段兼容、fallback 提醒或版本对比。
 
 6. **设计 references**
    - 每个 reference 必须有明确读取时机。
@@ -161,6 +162,7 @@ description: Create, update, review, and architect high-quality agent skills by 
    - 完成前读 [quality-gates.md](references/quality-gates.md)。
    - 至少检查触发、厚度、reference 路由、LLM/脚本边界、I/O 契约、示例/反例、失败恢复。
    - 公开、共享、迁移到他人环境，或包含脚本/外部服务/产品特定 metadata 时，必须检查脱敏、安全副作用、依赖和无惊讶原则。
+   - 最终 skill 只能呈现当前有效行为；发现历史协议说明、迁移说明、fallback、旧版字段或版本对比时必须删除或改写为当前契约。
 
 ## Writing Rules
 
@@ -174,6 +176,8 @@ description: Create, update, review, and architect high-quality agent skills by 
 - 如果输出被机器消费，成功和失败都必须有稳定 shape。
 - 不创建无运行价值的辅助文档或资源目录。
 - 如果是公开或共享 skill，必须考虑脱敏、安全扫描、许可证、内部路径泄露和无惊讶原则。
+- 最终 skill 必须 current-state only：不得保留历史协议、旧字段兼容、fallback 提醒、版本对比，或“以前/曾经/旧版如何处理”的说明。
+- 如果用户要求兼容旧调用方，把兼容逻辑设计为外部 adapter、上游转换或单独迁移任务；不要把兼容 fallback 写进 skill 运行时说明。
 
 ## LLM And Script Responsibilities
 
@@ -262,6 +266,7 @@ description: Create, update, review, and architect high-quality agent skills by 
 
 ## 必改项
 - ...
+- 删除历史协议说明、迁移说明、fallback、旧字段兼容或版本对比。
 
 ## 可选改进
 - ...
@@ -313,6 +318,7 @@ description: Create, update, review, and architect high-quality agent skills by 
 - 当设计依赖外部资料、已有 skill、失败记录或第三方工具时，来源是否足够支撑当前设计，缺口是否已声明。
 - 产品特定字段是否与可移植核心隔离，且没有隐藏运行时能力、权限或依赖。
 - 如果是第三方工具 wrapper，是否已做 adopt / extend / build 判断，而不是默认新建重型 skill。
+- 最终 skill 是否只呈现当前有效协议，且没有历史说明、旧字段兼容、fallback 提醒或版本对比。
 
 详细审查见 [quality-gates.md](references/quality-gates.md)。
 
