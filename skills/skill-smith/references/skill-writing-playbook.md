@@ -63,6 +63,21 @@ description: Capability summary. Use when ...
 
 这不是默认的重型 research 流程。简单、低风险、单一契约 skill 可以只记录“来源足够，按轻量设计继续”。但如果来源不足，不要用模板填空伪装确定性。
 
+## Current-state Only Writing
+
+最终 `SKILL.md` 只呈现当前有效协议。更新 skill 时，直接重写字段、流程、脚本入口和输出契约，不保留历史演进说明。
+
+必须删除或改写：
+
+- 旧字段、旧命令、旧目录、旧流程仍可继续使用的说明。
+- 兼容 fallback、legacy fallback、deprecated path、previous version behavior。
+- “不要使用以前的 X”“曾经如何处理”“旧版如何处理”这类历史提醒。
+- changelog、版本对比、迁移说明、过渡期说明。
+
+如果旧调用方仍需要支持，把它设计成外部 adapter、上游转换或单独迁移任务。skill 运行时指令本身只描述当前入口和当前契约。
+
+允许保留的是 runtime 概念，例如 state machine 的状态迁移、gate 的状态推进、恢复协议、发布到他人环境前的安全检查。这些不是历史协议说明。
+
 ## Template Selection
 
 模板是写作支架，不是架构判断的替代品。先完成复杂度判断，再读取最少数量的模板。
@@ -211,6 +226,7 @@ description: Capability summary. Use when ...
 - 只写 Codex 不会自然知道、且对稳定完成任务有帮助的信息。
 - 产品特定元数据如 `agents/openai.yaml` 只在目标环境需要时设计，不写进通用 frontmatter。
 - 产品特定 metadata、hooks、tool permissions 或默认 prompt 不能替代 `SKILL.md` 的核心运行时指令。
+- 只写当前有效协议；更新 skill 时删除历史说明、旧字段兼容、fallback 提醒、版本对比和迁移说明。
 
 ## Template Cleanup
 
@@ -243,6 +259,8 @@ description: Capability summary. Use when ...
 - 把 `agents/openai.yaml` 当作所有 skill 的必备文件，或让它与 `SKILL.md` 描述的能力不一致。
 - 在来源不足时直接套模板，把上游文档、失败记录或第三方工具限制留给未来 agent 猜。
 - 把产品特定字段写成通用规范，导致 skill 在其它 agent 环境中不可移植。
+- 在最终 skill 中保留 legacy、deprecated、old field、previous version、fallback、兼容、旧字段、以前、曾经等历史协议痕迹。
+- 用“不要使用旧流程”替代删除旧流程，导致 agent 仍把旧协议加载进上下文。
 
 ## Final Pass
 
@@ -256,3 +274,4 @@ description: Capability summary. Use when ...
 - 它的输出是否可被用户或下游系统验收？
 - 它的关键设计结论是否有来源支撑，缺口是否显式记录？
 - 公开或共享时，是否已经语义脱敏并暴露权限、依赖和副作用？
+- 它是否只呈现当前有效协议，没有历史兼容、fallback、迁移说明或版本对比？

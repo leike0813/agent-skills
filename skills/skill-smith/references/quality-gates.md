@@ -62,7 +62,23 @@
 - 没有失败处理。
 - 残留 `<<...>>` 占位符、authoring hints、空表格或空示例。
 
-## Gate 5: Progressive Disclosure
+## Gate 5: Current-state Only Protocol
+
+- 最终 skill 是否只描述当前有效字段、命令、脚本入口、目录协议和输出契约？
+- 更新已有 skill 时，是否删除了历史演进说明，而不是追加“旧方式不要用”的提醒？
+- 是否没有 legacy、deprecated、old field、previous version、fallback、兼容、旧字段、以前、曾经等历史协议痕迹？
+- 如果旧调用方需要支持，是否把兼容处理放到外部 adapter、上游转换或单独迁移任务，而不是写进 skill runtime？
+- 是否区分了被禁止的历史协议迁移说明和允许的 runtime state transition？
+
+失败信号：
+
+- “旧字段仍可继续使用”。
+- “兼容 fallback 到旧路径”。
+- “不要使用以前的 X”。
+- “上一版/旧版/曾经如何处理”。
+- 在最终 `SKILL.md` 中保留 changelog、版本对比、过渡期说明或协议迁移说明。
+
+## Gate 6: Progressive Disclosure
 
 - `SKILL.md` 是否只保留运行时高频规则？
 - references 是否按主题拆分？
@@ -83,7 +99,7 @@
 - `SKILL.md` 过长且没有拆分，或 reference 很大但没有导航。
 - 创建了与运行无关的辅助文档。
 
-## Gate 6: LLM / Script Boundary
+## Gate 7: LLM / Script Boundary
 
 - 语义任务是否明确归 LLM？
 - 确定性任务是否归脚本？
@@ -96,7 +112,7 @@
 - LLM 直接写最终机器消费 JSON。
 - 有脚本但没有调用示例。
 
-## Gate 7: I/O And Schema
+## Gate 8: I/O And Schema
 
 适用于 automation-facing 或 machine-facing skill。
 
@@ -112,7 +128,7 @@
 - 失败时自由发挥。
 - 文件名/目录不固定。
 
-## Gate 8: Examples And Failure Modes
+## Gate 9: Examples And Failure Modes
 
 - 是否至少有 happy path？
 - 是否至少有 near-miss 或失败模式？
@@ -125,7 +141,7 @@
 - 只展示成功，不展示失败。
 - 没有说明哪些方案已经失败过。
 
-## Gate 9: Evaluation And Iteration
+## Gate 10: Evaluation And Iteration
 
 - 是否区分轻量验收和正式评估反馈迭代？
 - 是否默认先给轻量 prompts、expectations 或人工 review checklist？
@@ -145,7 +161,7 @@
 - 只测 happy path，没有 near-miss。
 - 用户反馈只导致过拟合式补丁，没有抽象为通用 skill 规则。
 
-## Gate 10: Product Metadata
+## Gate 11: Product Metadata
 
 - 是否真的需要 `agents/openai.yaml` 或其它产品特定配置？
 - 若存在 `agents/openai.yaml`，其 `display_name`、`short_description`、`default_prompt` 是否与 `SKILL.md` 能力一致？
@@ -158,7 +174,7 @@
 - UI 元数据夸大能力，或与 `description` 冲突。
 - 产品元数据里隐藏了 `SKILL.md` 中没有说明的关键约束或依赖。
 
-## Gate 11: Safety, Privacy, Distribution
+## Gate 12: Safety, Privacy, Distribution
 
 公开或共享 skill 需要检查：
 
@@ -201,5 +217,6 @@
 - Evaluation:
 - Product metadata:
 - Source coverage:
+- Current-state protocol:
 - Safety:
 ```

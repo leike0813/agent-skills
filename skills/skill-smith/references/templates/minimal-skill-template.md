@@ -10,6 +10,7 @@
 - 不要为了填满章节而编造内容；不适用的章节应删掉或合并。
 - `description` 必须写英文触发说明，正文可以按用户项目语言撰写。
 - 简单 skill 不要引入 gate、SQLite、resume、renderer 等重型机制。
+- 最终 `SKILL.md` 必须只描述当前有效协议；删除历史协议、迁移说明、旧字段兼容、fallback 提醒和版本对比。
 
 ## Template
 
