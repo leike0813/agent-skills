@@ -175,6 +175,20 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS reference_preprocess_quality (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            content_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS reference_extraction_decision (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            status TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            quality_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS reference_entries (
             entry_index INTEGER PRIMARY KEY,
             raw TEXT NOT NULL,
@@ -1016,6 +1030,77 @@ def fetch_reference_parse_candidates(connection: sqlite3.Connection) -> list[dic
     return candidates
 
 
+def store_reference_preprocess_quality(connection: sqlite3.Connection, quality: dict[str, Any]) -> None:
+    now = utc_now_iso()
+    connection.execute(
+        """
+        INSERT INTO reference_preprocess_quality (id, content_json, updated_at)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            content_json = excluded.content_json,
+            updated_at = excluded.updated_at
+        """,
+        (_json_dump(quality), now),
+    )
+    touch_runtime(connection)
+
+
+def fetch_reference_preprocess_quality(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    row = connection.execute("SELECT content_json FROM reference_preprocess_quality WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    return json.loads(str(row["content_json"]))
+
+
+def store_reference_extraction_decision(
+    connection: sqlite3.Connection,
+    *,
+    status: str,
+    reason: str,
+    quality: dict[str, Any],
+) -> None:
+    if status not in {"continue", "abandoned"}:
+        raise ValueError(f"invalid reference extraction decision status: {status}")
+    now = utc_now_iso()
+    connection.execute(
+        """
+        INSERT INTO reference_extraction_decision (id, status, reason, quality_json, updated_at)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            status = excluded.status,
+            reason = excluded.reason,
+            quality_json = excluded.quality_json,
+            updated_at = excluded.updated_at
+        """,
+        (status, reason, _json_dump(quality), now),
+    )
+    touch_runtime(connection)
+
+
+def fetch_reference_extraction_decision(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    row = connection.execute("SELECT status, reason, quality_json, updated_at FROM reference_extraction_decision WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    return {
+        "status": str(row["status"]),
+        "reason": str(row["reason"]),
+        "quality": json.loads(str(row["quality_json"])),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
+def is_reference_extraction_abandoned(connection: sqlite3.Connection) -> bool:
+    decision = fetch_reference_extraction_decision(connection)
+    if decision is None or decision.get("status") != "abandoned":
+        return False
+    quality = dict(decision.get("quality", {}))
+    return (
+        quality.get("schema") == "reference_preprocess_quality.v1"
+        and quality.get("preprocess_version") == "line-first-v171"
+        and bool(quality.get("file_quality_low"))
+    )
+
+
 def store_reference_items(connection: sqlite3.Connection, items: list[dict[str, Any]]) -> None:
     connection.execute("DELETE FROM reference_items")
     now = utc_now_iso()
@@ -1528,6 +1613,19 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
         "mid": {"summary": "", "ref_indexes": []},
         "recent": {"summary": "", "ref_indexes": []},
     }
+    extraction_decision = fetch_reference_extraction_decision(connection)
+    if extraction_decision is not None and extraction_decision.get("status") == "abandoned":
+        decision_quality = dict(extraction_decision.get("quality", {}))
+        reference_extraction = {
+            "status": "abandoned",
+            "reason": str(extraction_decision.get("reason", "")),
+            "file_quality_low": bool(decision_quality.get("file_quality_low")),
+            "triggered_signals": list(decision_quality.get("triggered_signals", []))
+            if isinstance(decision_quality.get("triggered_signals"), list)
+            else [],
+        }
+    else:
+        reference_extraction = {"status": "completed"}
 
     items: list[dict[str, Any]] = []
     for workset in workset_items:
@@ -1585,6 +1683,7 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
                 if int(reference_numbering_anomalies["count"]) > 0 and int(numeric_mentions["count"]) > 0
                 else "normal"
             ),
+            "reference_extraction": reference_extraction,
         },
         "summary": "" if summary_row is None else str(summary_row["summary"]),
         "timeline": timeline_row,

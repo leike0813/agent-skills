@@ -23,7 +23,9 @@ from runtime_db import (  # noqa: E402
     fetch_artifact_registry,
     fetch_action_receipts,
     fetch_runtime_inputs,
+    fetch_reference_preprocess_quality,
     fetch_workflow_state,
+    is_reference_extraction_abandoned,
 )
 
 ASSETS_DIR = SCRIPT_DIR.parent / "assets"
@@ -34,6 +36,14 @@ REQUIRED_STAGE5_RECEIPTS = (
     "persist_citation_timeline",
     "persist_citation_summary",
 )
+
+
+def _public_reference_preprocess_quality(quality: dict[str, Any] | None) -> dict[str, Any]:
+    if not quality:
+        return {}
+    public_quality = dict(quality)
+    public_quality.pop("preprocess_version", None)
+    return public_quality
 
 
 STAGE_RULES: dict[str, dict[str, Any]] = {
@@ -55,7 +65,15 @@ STAGE_RULES: dict[str, dict[str, Any]] = {
     },
     "stage_4_references": {
         "required_reads": ["source_documents.normalized_source", "section_scopes.references_scope"],
-        "required_writes": ["reference_entries", "reference_batches", "reference_parse_candidates", "reference_items", "reference_quality_issues"],
+        "required_writes": [
+            "reference_entries",
+            "reference_batches",
+            "reference_parse_candidates",
+            "reference_preprocess_quality",
+            "reference_extraction_decision",
+            "reference_items",
+            "reference_quality_issues",
+        ],
     },
     "stage_5_citation": {
         "required_reads": ["source_documents.normalized_source", "section_scopes.citation_scope"],
@@ -326,7 +344,7 @@ def _instruction_refs(stage: str, next_action: str) -> list[dict[str, str]]:
         refs[0]["section"] = "Outline and scope extraction"
     elif next_action == "persist_digest":
         refs[0]["section"] = "Digest generation"
-    elif next_action in {"prepare_references_workset", "persist_reference_entry_splits", "persist_references"}:
+    elif next_action in {"prepare_references_workset", "persist_reference_entry_splits", "decide_reference_extraction", "persist_references"}:
         refs[0]["section"] = "References extraction"
     elif next_action in {"prepare_citation_workset", "persist_citation_semantics", "persist_citation_timeline", "persist_citation_summary"}:
         refs[0]["section"] = "Citation pipeline"
@@ -515,6 +533,23 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
             },
             "notes": "Review only suspect block boundaries here. Keep original text and order; do not extract author/title/year in this step.",
         }
+    if next_action == "decide_reference_extraction":
+        return {
+            "command": f"python scripts/stage_runtime.py decide_reference_extraction {db_arg} {payload_arg}",
+            "payload_example": {
+                "continue": {
+                    "decision": "continue",
+                    "reason": "The prepared candidates are still usable after inspection.",
+                    "acknowledged_file_quality_low": True,
+                },
+                "abandon": {
+                    "decision": "abandon",
+                    "reason": "The reference section is too noisy to recover reliable reference rows.",
+                    "acknowledged_file_quality_low": True,
+                },
+            },
+            "notes": "Deterministic preprocessing reported file_quality_low. Choose continue to keep the strict reference extraction path, or abandon to proceed with reference-free citation analysis. The stage script will verify the DB-backed quality snapshot; payload claims cannot enable abandonment.",
+        }
     if next_action == "persist_references":
         if quality_directives and quality_directives.get("severity") == "hard_block":
             first_issue = dict(list(quality_directives.get("issues", [{}]))[0])
@@ -527,14 +562,14 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
                             "entry_index": entry_index,
                             "selected_pattern": "<SELECTED_PATTERN_FROM_CURRENT_WORKSET>",
                             "author": ["Recovered Author"],
-                            "title": "Recovered actual work title",
+                            "title": "<RECOVERED_TITLE_IN_ORIGINAL_LANGUAGE_OR_SCRIPT>",
                             "year": 2020,
                             "raw": str(first_issue.get("raw_excerpt", "")),
                             "confidence": 0.8,
                         }
                     ]
                 },
-                "notes": "quality_directives contains hard_block rows. Rebuild the full persist_references payload from prepared candidates, correcting listed rows. If a hard row is unrecoverable, omit that row from the new full items[] payload instead of writing a placeholder title.",
+                "notes": "quality_directives contains hard_block rows. Rebuild the full persist_references payload from prepared candidates, correcting listed rows by recovering the cited title in the raw reference's original language/script. Do not translate, Anglicize, or romanize a title to satisfy the gate. If a hard row is unrecoverable, omit that row from the new full items[] payload instead of writing a placeholder title.",
             }
         return {
             "command": f"python scripts/stage_runtime.py persist_references {db_arg} {payload_arg}",
@@ -551,7 +586,7 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
                     }
                 ]
             },
-            "notes": "Select one prepared pattern per entry and refine the final structured reference items.",
+            "notes": "Select one prepared pattern per entry and refine the final structured reference items. Preserve each cited title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles.",
         }
     if next_action == "review_reference_quality":
         first_issue = dict(list((quality_directives or {}).get("issues", [{}]))[0])
@@ -567,7 +602,7 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
                     },
                 ]
             },
-            "notes": f"Submit exactly one resolution per active quality_directives issue. Use accept_warning only for acceptable soft warnings. To correct instead, use resolution=corrected with reference fields such as ref_index={ref_index}, author, title, year, raw, and confidence.",
+            "notes": f"Submit exactly one resolution per active quality_directives issue. Use accept_warning only for acceptable soft warnings. To correct instead, use resolution=corrected with reference fields such as ref_index={ref_index}, author, title, year, raw, and confidence, preserving the title's original language/script.",
         }
     if next_action == "prepare_citation_workset":
         return {
@@ -649,10 +684,12 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
         return "Prepare the references workset from the stored references_scope first; let the script build entries, batches, and parse candidates."
     if next_action == "persist_reference_entry_splits":
         return "The prepared references still have suspect blocks. Review only those block boundaries with split/keep/merge decisions; do not extract author, title, or year in this step."
+    if next_action == "decide_reference_extraction":
+        return "Deterministic reference preprocessing reported file-level quality too low. Inspect the prepared workset, then explicitly choose continue or abandon. Abandonment is only accepted when the DB contains a deterministic file_quality_low signal; do not fabricate this in the payload."
     if next_action == "persist_references":
-        return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries. If quality_directives is present, repair the listed rows first and resubmit the full persist_references payload; omit unrecoverable hard rows rather than writing placeholders."
+        return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries. Preserve each title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles to satisfy the quality gate. If quality_directives is present, repair the listed rows first and resubmit the full persist_references payload; omit unrecoverable hard rows rather than writing placeholders."
     if next_action == "review_reference_quality":
-        return "Review the active quality_directives issues. Correct rows when reliable; otherwise use accept_warning for soft warnings after inspection. Every active issue must have exactly one resolution before Stage 5 can proceed."
+        return "Review the active quality_directives issues. Correct rows by recovering titles in their raw reference's original language/script when reliable; do not translate, Anglicize, or romanize titles. Otherwise use accept_warning for soft warnings after inspection. Every active issue must have exactly one resolution before Stage 5 can proceed."
     if next_action == "prepare_citation_workset":
         return "Prepare the citation workset from stored citation_scope and reference_items. Do not rebuild scope or reference mapping by hand."
     if next_action == "persist_citation_semantics":
@@ -728,6 +765,16 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
                 missing.append("reference_entries")
             if count("reference_parse_candidates") == 0:
                 missing.append("reference_parse_candidates")
+        if next_action == "decide_reference_extraction":
+            if count("reference_entries") == 0:
+                missing.append("reference_entries")
+            if count("reference_parse_candidates") == 0:
+                missing.append("reference_parse_candidates")
+            quality = fetch_reference_preprocess_quality(connection)
+            if quality is None:
+                missing.append("reference_preprocess_quality")
+            elif not bool(quality.get("file_quality_low")):
+                missing.append("reference_preprocess_quality.file_quality_low")
         if next_action == "review_reference_quality":
             if count("reference_items") == 0:
                 missing.append("reference_items")
@@ -739,33 +786,35 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
             missing.append("source_documents.normalized_source")
         if connection.execute("SELECT 1 FROM section_scopes WHERE scope_key = 'citation_scope' LIMIT 1").fetchone() is None:
             missing.append("section_scopes.citation_scope")
-        if count("reference_items") == 0:
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if count("reference_items") == 0 and not reference_free_mode:
             missing.append("reference_items")
-        if next_action == "persist_citation_semantics" and count("citation_workset_items") == 0:
+        if next_action == "persist_citation_semantics" and count("citation_workset_items") == 0 and not reference_free_mode:
             missing.append("citation_workset_items")
         if next_action == "persist_citation_semantics" and "prepare_citation_workset" not in receipts:
             missing.append("action_receipts.prepare_citation_workset")
-        if next_action == "persist_citation_timeline" and count("citation_items") == 0:
+        if next_action == "persist_citation_timeline" and count("citation_items") == 0 and not reference_free_mode:
             missing.append("citation_items")
         if next_action == "persist_citation_timeline" and "persist_citation_semantics" not in receipts:
             missing.append("action_receipts.persist_citation_semantics")
         if next_action == "persist_citation_summary":
-            if count("citation_items") == 0:
+            if count("citation_items") == 0 and not reference_free_mode:
                 missing.append("citation_items")
             if count("citation_timeline") == 0:
                 missing.append("citation_timeline")
             if "persist_citation_timeline" not in receipts:
                 missing.append("action_receipts.persist_citation_timeline")
     elif stage == "stage_6_render_and_validate":
+        reference_free_mode = is_reference_extraction_abandoned(connection)
         if count("digest_slots") == 0:
             missing.append("digest_slots")
-        if count("reference_items") == 0:
+        if count("reference_items") == 0 and not reference_free_mode:
             missing.append("reference_items")
         if connection.execute("SELECT 1 FROM section_scopes WHERE scope_key = 'citation_scope' LIMIT 1").fetchone() is None:
             missing.append("section_scopes.citation_scope")
-        if count("citation_workset_items") == 0:
+        if count("citation_workset_items") == 0 and not reference_free_mode:
             missing.append("citation_workset_items")
-        if count("citation_items") == 0:
+        if count("citation_items") == 0 and not reference_free_mode:
             missing.append("citation_items")
         if count("citation_timeline") == 0:
             missing.append("citation_timeline")
@@ -797,6 +846,7 @@ def _payload(
     active_batch_index: Any = None,
     last_error_code: Any = None,
     quality_directives: dict[str, Any] | None = None,
+    reference_preprocess_quality: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "current_stage": current_stage,
@@ -821,6 +871,8 @@ def _payload(
     }
     if quality_directives is not None:
         payload["quality_directives"] = quality_directives
+    if reference_preprocess_quality is not None:
+        payload["reference_preprocess_quality"] = _public_reference_preprocess_quality(reference_preprocess_quality)
     return payload
 
 
@@ -883,12 +935,18 @@ def main() -> int:
         status_summary = str(state["status_summary"])
         missing = _missing_prerequisites(connection, current_stage, next_action)
         quality_directives = _quality_directives(connection) if current_stage == "stage_4_references" else None
+        reference_preprocess_quality = (
+            fetch_reference_preprocess_quality(connection)
+            if current_stage == "stage_4_references" and next_action == "decide_reference_extraction"
+            else None
+        )
 
         if missing:
             stage_gate = "blocked"
             next_action = "repair_db_state"
             status_summary = f"missing prerequisites: {', '.join(missing)}"
             quality_directives = None
+            reference_preprocess_quality = None
 
         return _emit(
             _payload(
@@ -903,6 +961,7 @@ def main() -> int:
                 active_batch_index=state["active_batch_index"],
                 last_error_code=state["last_error_code"],
                 quality_directives=quality_directives,
+                reference_preprocess_quality=reference_preprocess_quality,
             ),
             exit_code=0 if stage_gate == "ready" else 2,
         )

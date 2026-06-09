@@ -40,6 +40,7 @@ python scripts/stage_runtime.py <subcommand> [args...]
 - `persist_digest`
 - `prepare_references_workset`
 - `persist_reference_entry_splits`
+- `decide_reference_extraction`
 - `persist_references`
 - `review_reference_quality`
 - `prepare_citation_workset`
@@ -561,6 +562,10 @@ python scripts/stage_runtime.py prepare_references_workset \
   - 当前 deterministic splitting 策略；固定为 `line-first`
 - `requires_split_review`
   - 若为 `true`，说明 deterministic splitting 之后仍存在边界存疑的 block，下一步必须先执行 `persist_reference_entry_splits`
+- `file_quality`
+  - 文件级质量快照，来自 DB 表 `reference_preprocess_quality`
+- `file_quality_low`
+  - 若为 `true`，gate 下一步进入 `decide_reference_extraction`
 - `suspect_blocks`
   - 仍需要边界复核的 block 及原因说明
   - 每个 block 至少带 `block_index`、`source_text`、`line_start`、`line_end`、`reasons`、`proposed_entries`、`suspicion_kind`
@@ -593,6 +598,12 @@ python scripts/stage_runtime.py prepare_references_workset --payload-file /tmp/r
   "split_mode": "line-first",
   "grouping_suspect_count": 0,
   "requires_split_review": false,
+  "file_quality_low": false,
+  "file_quality": {
+    "schema": "reference_preprocess_quality.v1",
+    "triggered_signals": [],
+    "file_quality_low": false
+  },
   "suspect_blocks": [],
   "error": null
 }
@@ -705,6 +716,67 @@ python scripts/stage_runtime.py persist_reference_entry_splits \
 - 复核后仍把多条著录 grouped 在一个 `raw` 里
 - 在这一步就开始抽 `author` / `title` / `year`
 
+## `decide_reference_extraction`
+
+### 命令
+
+```bash
+python scripts/stage_runtime.py decide_reference_extraction \
+  [--db-path PATH] \
+  [--payload-file FILE]
+```
+
+### 支持的输入方式
+
+- `--payload-file FILE`
+- stdin JSON
+
+### Payload 顶层结构
+
+```json
+{
+  "decision": "continue",
+  "reason": "The prepared candidates are still usable after inspection.",
+  "acknowledged_file_quality_low": true
+}
+```
+
+### 字段说明
+
+- `decision`
+  - 必填。只允许 `continue` 或 `abandon`。
+- `reason`
+  - 必填。非空字符串。
+- `acknowledged_file_quality_low`
+  - 必填。必须为 `true`，表示 agent 已检查 gate 返回的文件级低质量信号。
+
+### 运行时校验
+
+- 本动作只在 DB 中存在由 deterministic preprocess 写入的 `reference_preprocess_quality.schema = "reference_preprocess_quality.v1"` 快照时有效。
+- `decision=abandon` 只有在 DB 中 `file_quality_low=true` 时被接受；payload 自报不能开启放弃分支。
+- `decision=continue` 会回到正常严格路径：如果当前 workset 仍需 split review，则下一步为 `persist_reference_entry_splits`；否则为 `persist_references`。
+- `decision=abandon` 会写入 `reference_extraction_decision.status="abandoned"`，清空旧的 reference/citation mapping 表，并推进到 `prepare_citation_workset`。
+
+### 成功输出
+
+```json
+{
+  "decision": "abandon",
+  "file_quality": {
+    "schema": "reference_preprocess_quality.v1",
+    "file_quality_low": true
+  },
+  "next_action": "prepare_citation_workset",
+  "error": null
+}
+```
+
+### 常见失败原因
+
+- 未先运行 `prepare_references_workset`
+- payload 中缺少 `reason` 或 `acknowledged_file_quality_low`
+- DB 中没有 deterministic `file_quality_low=true`，却提交 `decision=abandon`
+
 ## `persist_references`
 
 ### 命令
@@ -737,6 +809,7 @@ python scripts/stage_runtime.py persist_references \
   - 若所选 `pattern_candidate.author_candidates` 已给出稳定作者边界，则 `author` 必须保持同级边界；脚本只允许轻微规范化，不允许再次拆开单个作者。
   - `ref_index` 由脚本按 `entry_index` 稳定生成，不需要 agent 单独填写。
   - `year` 优先取条目末尾出版年份，不要误取 arXiv 编号前缀。
+  - `title` 必须保持 raw reference 中的原始语言和文字系统；不得为了通过质量门禁而翻译、英文化或罗马化题名。
 
 ### 最小合法示例
 
@@ -812,6 +885,8 @@ python scripts/stage_runtime.py persist_references \
 
 存在 hard quality issues 时，脚本返回 exit code `2`，不写入 `reference_items`，并返回 `quality_issues`。随后 gate 仍返回 `persist_references`，但会通过 `quality_directives` 指明需修复的条目。
 
+CJK / 非拉丁文字标题由 Unicode-aware content token 检测支持。正常中文题名不会因为缺少 ASCII token 而触发 `no_usable_title_tokens`；纯数字、纯符号、裸 DOI/URL/arXiv、作者名冒充标题仍会按现有 hard reason 拒绝。
+
 ### 常见失败原因
 
 - 把 `pattern_candidate.author_candidates` 再次拆成“姓 + 缩写”碎片
@@ -848,6 +923,7 @@ python scripts/stage_runtime.py review_reference_quality \
 - `resolution="corrected"`
   - 必须附带 `reference` object。
   - 可包含 `author`、`title`、`year`、`raw`、`confidence`、`metadata` 等字段。
+  - `title` 修正必须保留 raw reference 的原始语言/文字系统，不得翻译、英文化或罗马化。
   - corrected 后若仍有 hard quality issue，脚本失败；仍有 soft warning 时，可由同一 payload 中其它 issue 的 `accept_warning` 明确接受。
 - `resolution="omit"`
   - 仅允许用于 hard issue。
@@ -885,6 +961,7 @@ python scripts/stage_runtime.py prepare_citation_workset \
 - 本步只接受 `--out` 与 `--persist-db-only` 这两个可选 CLI 参数
 - 对 LaTeX 输入，额外识别 `\cite{...}`、`\citep{...}`、`\citet{...}` 与多 key 形式
 - 若 `reference_items` 元数据里存在 `citekey` 或 `bibitem_key`，映射优先按这些 key 进行
+- 若 DB 中存在 verified abandoned reference extraction decision，本步进入 reference-free mode：仍抽取 citation mentions，但不要求生成 `citation_workset_items`，unmapped reason 固定为 `references_abandoned_file_quality_low`
 
 ### 输出字段说明
 
@@ -905,7 +982,8 @@ python scripts/stage_runtime.py prepare_citation_workset \
 - `review_path`
   - 轻量审阅视图路径，只保留 `ref_index`、`title`、`mention_count`、`snippets`。
 - review-like scope 或 citation-shaped 文本中若最终得到 `0` mentions / `0` workset_items`
-  - 直接失败，不继续 stage 5 后续动作。
+  - 正常模式直接失败，不继续 stage 5 后续动作。
+  - reference-free mode 例外：允许没有 workset items，但仍会保留 mention accounting 与 action receipt。
 
 ### 最小合法示例
 
@@ -995,6 +1073,7 @@ python scripts/stage_runtime.py persist_citation_semantics \
 - `items[*].confidence`
   - 必填。0~1 置信度。
 - 本步必须由 `prepare_citation_workset` 之后的脚本主路径写入，不能靠手工写 SQLite 表跳过。
+- reference-free mode 例外：顶层 `items` 可以为空数组；该例外只在 verified abandoned decision 下生效，正常模式仍必须覆盖所有 `citation_workset_items.ref_index`。
 
 ### 最小合法示例
 
@@ -1086,6 +1165,7 @@ python scripts/stage_runtime.py persist_citation_timeline \
   - 必填。该时段在当前综述范围内的研究脉络总结。
 - `timeline.*.ref_indexes`
   - 必填。落入该时间段的 `ref_index` 数组；每个值都必须已经存在于 `citation_items`。
+  - reference-free mode 例外：三段 `ref_indexes` 可以全部为空；正常模式仍必须引用已存在的 `citation_items`。
 - bucket 边界由 agent 判断，不使用固定年份阈值。
 - 所有有稳定年份的 citation items 必须恰好进入一个 bucket。
 - 无稳定年份的条目允许不进入 timeline；脚本会记录 `citation_timeline_missing_year` warning。
@@ -1176,8 +1256,9 @@ python scripts/stage_runtime.py persist_citation_summary \
     - 必填。2 条及以上原文组织这些文献的叙述动作。
   - `basis.key_ref_indexes`
     - 必填。非空整数数组；每个 `ref_index` 都必须能在当前 `citation_items` 中找到。
+    - reference-free mode 例外：可以为空数组；正常模式仍必须非空且引用已存在的 `citation_items`。
 - `persist_citation_summary` 只能在 `persist_citation_timeline` 之后执行。
-- `persist_citation_timeline` 与 `persist_citation_summary` 都必须建立在已持久化的 `citation_items` 之上，不能通过手工写 SQLite 绕过脚本动作链。
+- `persist_citation_timeline` 与 `persist_citation_summary` 都必须建立在已持久化的 `citation_items` 之上；reference-free mode 下则必须建立在已验证的 abandoned decision 与 Stage 5 action receipt 链之上，不能通过手工写 SQLite 绕过脚本动作链。
 
 ### 最小合法示例
 

@@ -39,6 +39,7 @@ from runtime_db import (  # noqa: E402
     count_citation_mentions,
     default_db_path,
     fetch_artifact_registry,
+    fetch_action_receipts,
     fetch_citation_items,
     fetch_citation_mention_links,
     fetch_citation_mentions,
@@ -49,8 +50,10 @@ from runtime_db import (  # noqa: E402
     fetch_latest_error,
     fetch_active_reference_quality_issues,
     fetch_reference_entries,
+    fetch_reference_extraction_decision,
     fetch_reference_items,
     fetch_reference_parse_candidates,
+    fetch_reference_preprocess_quality,
     fetch_runtime_inputs,
     fetch_section_scope,
     fetch_source_document,
@@ -79,12 +82,15 @@ from runtime_db import (  # noqa: E402
     store_literature_matching_metadata,
     store_representative_image,
     store_outline_nodes,
+    store_reference_extraction_decision,
     store_reference_batch,
     store_reference_entries,
     store_reference_items,
     store_reference_parse_candidates,
+    store_reference_preprocess_quality,
     store_section_scope,
     store_source_document,
+    is_reference_extraction_abandoned,
 )
 
 
@@ -136,6 +142,47 @@ LEADING_PUNCTUATION_RE = re.compile(r"^[,.;:]\s*")
 YEAR_WITH_TAIL_RE = re.compile(r"(?:\((?:19|20)\d{2}[a-z]?\)|(?:19|20)\d{2}[a-z]?)\.\s+")
 REFERENCE_SENTENCE_BREAK_RE = re.compile(r"\.\s+")
 LIKELY_AUTHOR_PREFIX_SEPARATOR_RE = re.compile(r"(?:;|,\s| and | & )", re.IGNORECASE)
+NON_REFERENCE_LINE_RE = re.compile(
+    r"^\s*(?:!\[|<table\b|figure\s+\d+|table\s+\d+|#{1,6}\s+(?:appendix|附录)\b)",
+    re.IGNORECASE,
+)
+TRAILING_PAGE_MARKER_RE = re.compile(r"\s+(?:[-–—]\s*)?\d{1,4}\s*$")
+AUTHOR_INITIAL_PROTECT_RE = re.compile(r"\b([A-Z])\.\s+(?=[A-Z][A-Za-z'`-])")
+AUTHOR_INITIAL_SENTINEL = "\x00"
+CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+FULLWIDTH_TO_HALFWIDTH = str.maketrans(
+    {
+        "［": "[",
+        "］": "]",
+        "，": ",",
+        "．": ".",
+        "。": ".",
+        "：": ":",
+        "（": "(",
+        "）": ")",
+        "；": ";",
+        "／": "/",
+        "－": "-",
+        "‘": "'",
+        "’": "'",
+        "“": '"',
+        "”": '"',
+        "∥": "/",
+    }
+)
+CJK_TYPE_MARKER_ENTRY_RE = re.compile(
+    r"^(?P<authors_and_title>.+?)\s*"
+    r"[\[\uff3b](?:J|C|D|M|N|S|P|EB/OL)[\]\uff3d]\s*"
+    r"[.]\s*"
+    r"(?P<container>[^,]*?)\s*,\s*"
+    r"\(?(?P<year>(?:19|20)\d{2})"
+)
+ENGLISH_AUTHOR_START_RE = re.compile(r"^[A-Z][A-Za-z]{1,20}\s+[A-Z][,\.\s]")
+TRAILING_CLOSE_RE = re.compile(r"[\)\]\uff09\uff3d]?\s*[\.。．]\s*$")
+REFERENCE_PREPROCESS_QUALITY_SCHEMA = "reference_preprocess_quality.v1"
+REFERENCE_PREPROCESS_VERSION = "line-first-v171"
+REFERENCE_FILE_QUALITY_LOW_WARNING = "reference_file_quality_low"
+REFERENCE_FREE_UNMAPPED_REASON = "references_abandoned_file_quality_low"
 
 OUTLINE_NODE_REQUIRED_KEYS = (
     "node_id",
@@ -242,7 +289,6 @@ REFERENCE_IDENTIFIER_TITLE_RE = re.compile(
     r")\s*$",
     re.IGNORECASE,
 )
-REFERENCE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 LITERAL_STRING_RE = re.compile(r"\((?:\\.|[^\\)])*\)")
 TJ_ARRAY_RE = re.compile(r"\[(.*?)\]\s*TJ", re.DOTALL)
 TJ_SINGLE_RE = re.compile(r"(\((?:\\.|[^\\)])*\))\s*Tj")
@@ -256,6 +302,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_digest",
         "prepare_references_workset",
         "persist_reference_entry_splits",
+        "decide_reference_extraction",
         "persist_references",
         "prepare_citation_workset",
         "persist_citation_semantics",
@@ -270,6 +317,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_digest",
         "prepare_references_workset",
         "persist_reference_entry_splits",
+        "decide_reference_extraction",
         "persist_references",
         "prepare_citation_workset",
         "persist_citation_semantics",
@@ -283,6 +331,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_digest",
         "prepare_references_workset",
         "persist_reference_entry_splits",
+        "decide_reference_extraction",
         "persist_references",
         "prepare_citation_workset",
         "persist_citation_semantics",
@@ -295,6 +344,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_digest",
         "prepare_references_workset",
         "persist_reference_entry_splits",
+        "decide_reference_extraction",
         "persist_references",
         "prepare_citation_workset",
         "persist_citation_semantics",
@@ -306,6 +356,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_digest",
         "prepare_references_workset",
         "persist_reference_entry_splits",
+        "decide_reference_extraction",
         "persist_references",
         "prepare_citation_workset",
         "persist_citation_semantics",
@@ -316,6 +367,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
     "persist_digest": ["render_and_validate"],
     "prepare_references_workset": [
         "persist_reference_entry_splits",
+        "decide_reference_extraction",
         "persist_references",
         "prepare_citation_workset",
         "persist_citation_semantics",
@@ -324,6 +376,15 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "render_and_validate",
     ],
     "persist_reference_entry_splits": [
+        "decide_reference_extraction",
+        "persist_references",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "decide_reference_extraction": [
         "persist_references",
         "prepare_citation_workset",
         "persist_citation_semantics",
@@ -380,6 +441,7 @@ LITERATURE_MATCHING_METADATA_FILENAME = "literature_matching_metadata.json"
 STAGE_ERROR_CODES = {
     "digest_stage_failed",
     "references_stage_failed",
+    "reference_extraction_decision_failed",
     "references_merge_failed",
     "citation_scope_failed",
     "citation_semantics_failed",
@@ -1522,6 +1584,98 @@ def _normalize_reference_entry_text(raw: str) -> str:
     return re.sub(r"\s+", " ", raw.strip())
 
 
+def _is_valid_publication_year(year: object) -> bool:
+    try:
+        year_int = int(year)
+    except (TypeError, ValueError):
+        return False
+    return 1800 <= year_int <= datetime.now(UTC).year + 1
+
+
+def _strip_trailing_page_markers(raw: str) -> str:
+    text = raw.rstrip()
+    if len(text) < 40:
+        return text
+    return TRAILING_PAGE_MARKER_RE.sub("", text)
+
+
+def _protect_author_initials(raw: str) -> str:
+    return AUTHOR_INITIAL_PROTECT_RE.sub(lambda match: f"{match.group(1)}.{AUTHOR_INITIAL_SENTINEL}", raw)
+
+
+def _restore_initials(raw: str) -> str:
+    return raw.replace(AUTHOR_INITIAL_SENTINEL, " ")
+
+
+def _has_cjk(text: str, threshold: float = 0.1) -> bool:
+    if not text:
+        return False
+    cjk_count = sum(1 for char in text if CJK_RE.match(char))
+    return cjk_count / max(len(text), 1) >= threshold
+
+
+def _is_cjk_entry(raw: str) -> bool:
+    text = re.sub(r"^[\[\uff08\uff3b]?\s*\d{1,3}\s*[\]\uff09\uff3d]?\s*", "", raw.strip(), count=1)
+    return _has_cjk(text, threshold=0.1) or bool(re.search(r"[\uff3b\uff3d\uff0c\uff0e\uff1a\uff08\uff09]", raw))
+
+
+def _normalize_fullwidth_reference_text(raw: str) -> str:
+    text = raw.translate(FULLWIDTH_TO_HALFWIDTH)
+    return re.sub(r"\[(\d{1,3})\s+\]", r"[\1]", text)
+
+
+def _split_cjk_authors(author_text: str) -> list[str]:
+    authors = [
+        item.strip().rstrip(",\u3001")
+        for item in re.split(r"[,\u3001]\s*", author_text)
+        if item.strip().rstrip(",\u3001")
+    ]
+    return authors or _split_author_candidates(author_text)
+
+
+def _split_type_marker_authors_title(text: str) -> tuple[str, str]:
+    index = text.rfind(".")
+    if index > 0:
+        return text[:index].strip(), text[index + 1 :].strip()
+    if ":" in text:
+        author_text, title = text.split(":", 1)
+        return author_text.strip(), title.strip()
+    return text.strip(), ""
+
+
+def _merge_bilingual_reference_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    index = 0
+    while index < len(entries):
+        current = dict(entries[index])
+        raw_current = str(current.get("raw", ""))
+        if index + 1 < len(entries):
+            next_entry = dict(entries[index + 1])
+            raw_next = str(next_entry.get("raw", ""))
+            if (
+                _has_cjk(raw_current)
+                and not _has_cjk(raw_next)
+                and ENGLISH_AUTHOR_START_RE.match(raw_next)
+                and TRAILING_CLOSE_RE.search(raw_current)
+            ):
+                current["raw"] = _normalize_reference_entry_text(f"{raw_current} {raw_next}")
+                metadata = dict(current.get("metadata", {}))
+                next_metadata = dict(next_entry.get("metadata", {}))
+                if isinstance(next_metadata.get("line_end"), int):
+                    metadata["line_end"] = next_metadata["line_end"]
+                metadata["bilingual_merged"] = True
+                current["metadata"] = metadata
+                index += 2
+                merged.append(current)
+                continue
+        merged.append(current)
+        index += 1
+
+    for entry_index, entry in enumerate(merged):
+        entry["entry_index"] = entry_index
+    return merged
+
+
 def _extract_scope_lines(lines: list[str], scope: Scope) -> list[tuple[int, str]]:
     scoped_lines, scoped_line_start = _scope_lines_without_heading(lines, scope)
     return list(enumerate(scoped_lines, start=scoped_line_start))
@@ -1660,7 +1814,9 @@ def _split_reference_blocks(lines: list[str], scope: Scope) -> list[dict[str, An
         stripped = line.strip()
         if not stripped:
             continue
-        source_text = _normalize_reference_entry_text(stripped)
+        if NON_REFERENCE_LINE_RE.match(stripped):
+            continue
+        source_text = _normalize_reference_entry_text(_strip_trailing_page_markers(stripped))
         if not source_text:
             continue
         blocks.append(
@@ -1804,6 +1960,52 @@ def _make_reference_candidate(
             "split_basis": split_basis,
         },
     }
+
+
+def _candidate_ieee_quote_title(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<authors>.+?),\s*[\"“](?P<title>.+?)[,，]?[\"”]\s*(?P<after>.+)$",
+        text,
+    )
+    if match is None:
+        return None
+    after = match.group("after").strip()
+    container = re.sub(r"^(?:in|In:?)\s+", "", after).strip(" ,.")
+    year_match = YEAR_RE.search(after)
+    year = int(year_match.group(1)) if year_match is not None else terminal_year
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="ieee_quote_title",
+        author_text=match.group("authors"),
+        title_candidate=match.group("title"),
+        container_candidate=container,
+        year_candidate=year,
+        confidence=0.9 if year is not None else 0.82,
+        split_basis="IEEE quoted title between author block and venue tail",
+    )
+
+
+def _candidate_venue_marker(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<head>.+?)\.\s+(?P<title>.+?)\.\s+(?P<marker>In:|in|Proceedings of)\s+(?P<container>.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    container = match.group("container").strip()
+    year_match = YEAR_RE.search(container)
+    year = int(year_match.group(1)) if year_match is not None else terminal_year
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="venue_marker",
+        author_text=match.group("head"),
+        title_candidate=match.group("title"),
+        container_candidate=f"{match.group('marker')} {container}".strip(),
+        year_candidate=year,
+        confidence=0.84 if year is not None else 0.74,
+        split_basis="venue marker separates title and container",
+    )
 
 
 def _candidate_authors_colon_title_in_year(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
@@ -2013,6 +2215,8 @@ def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]
             candidate["candidate_index"] = 0
             return [candidate]
     candidate_builders = [
+        _candidate_ieee_quote_title,
+        _candidate_venue_marker,
         _candidate_authors_period_title_period_venue_year,
         _candidate_authors_colon_title_in_year,
         _candidate_authors_year_paren_title_venue,
@@ -2050,6 +2254,56 @@ def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]
         fallback["candidate_index"] = len(candidates)
         candidates.append(fallback)
     return candidates
+
+
+def _generate_reference_candidates_v16(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = str(entry.get("raw", ""))
+    entry_copy = dict(entry)
+    entry_copy["raw"] = _protect_author_initials(_strip_trailing_page_markers(raw))
+    candidates = _generate_reference_candidates(entry_copy)
+    for candidate in candidates:
+        for key in ("author_text", "title_candidate", "container_candidate"):
+            value = candidate.get(key)
+            if isinstance(value, str):
+                candidate[key] = _restore_initials(value)
+    return candidates
+
+
+def _candidate_cjk_type_marker_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    raw = str(entry.get("raw", ""))
+    entry_index = int(entry.get("entry_index", 0))
+    normalized = _normalize_fullwidth_reference_text(raw)
+    text, _ = _strip_reference_number_prefix(normalized)
+    text = _normalize_reference_entry_text(text)
+    match = CJK_TYPE_MARKER_ENTRY_RE.match(text)
+    if match is None:
+        return None
+    author_text, title = _split_type_marker_authors_title(match.group("authors_and_title"))
+    candidate = _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="cjk_type_marker_entry",
+        author_text=author_text,
+        title_candidate=title,
+        container_candidate=match.group("container"),
+        year_candidate=int(match.group("year")) if match.group("year") else None,
+        confidence=0.75,
+        split_basis="type-marker [J/C/D/...] delimits title and container",
+    )
+    if _has_cjk(author_text):
+        candidate["author_candidates"] = _split_cjk_authors(author_text)
+    candidate["candidate_index"] = 0
+    return candidate
+
+
+def _generate_reference_candidates_v171(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    if _is_cjk_entry(str(entry.get("raw", ""))):
+        cjk_candidate = _candidate_cjk_type_marker_entry(entry)
+        if cjk_candidate is not None:
+            return [cjk_candidate]
+        normalized_entry = dict(entry)
+        normalized_entry["raw"] = _normalize_fullwidth_reference_text(str(entry.get("raw", "")))
+        return _generate_reference_candidates_v16(normalized_entry)
+    return _generate_reference_candidates_v16(entry)
 
 
 def _detect_reference_entry_style(entries: list[dict[str, Any]]) -> str:
@@ -2207,6 +2461,84 @@ def _replace_reference_workset(
     store_reference_parse_candidates(connection, candidates)
 
 
+def _validate_reference_candidate_years(candidates: list[dict[str, Any]]) -> None:
+    for candidate in candidates:
+        year_candidate = candidate.get("year_candidate")
+        if year_candidate is not None and not _is_valid_publication_year(year_candidate):
+            candidate["year_candidate"] = None
+
+
+def _detect_reference_file_quality(
+    *,
+    entries: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    has_numbering_anomaly: bool,
+    warnings: list[str],
+) -> dict[str, Any]:
+    entry_count = len(entries) or 1
+    best_by_entry: dict[int, dict[str, Any]] = {}
+    for candidate in candidates:
+        entry_index = int(candidate["entry_index"])
+        if entry_index not in best_by_entry:
+            best_by_entry[entry_index] = candidate
+    best_candidates = list(best_by_entry.values())
+    best_count = len(best_candidates) or 1
+
+    fallback_best_ratio = sum(
+        1 for candidate in best_candidates if str(candidate.get("pattern", "")) == "fallback_raw_split"
+    ) / best_count
+    year_ratio = sum(1 for candidate in best_candidates if candidate.get("year_candidate") is not None) / best_count
+    warning_density = len(warnings) / entry_count
+    empty_title_ratio = sum(
+        1 for candidate in best_candidates if not str(candidate.get("title_candidate", "")).strip()
+    ) / best_count
+
+    metrics = {
+        "fallback_best_ratio": fallback_best_ratio,
+        "year_ratio": year_ratio,
+        "warning_density": warning_density,
+        "numbering_anomaly": 1.0 if has_numbering_anomaly else 0.0,
+        "empty_title_ratio": empty_title_ratio,
+    }
+    thresholds = {
+        "fallback_best_ratio": {"operator": ">", "threshold": 0.50},
+        "year_ratio": {"operator": "<", "threshold": 0.20},
+        "warning_density": {"operator": ">", "threshold": 1.0},
+        "numbering_anomaly": {"operator": "==", "threshold": 1.0},
+        "empty_title_ratio": {"operator": ">", "threshold": 0.30},
+    }
+    triggered_signals: list[str] = []
+    if fallback_best_ratio > 0.50:
+        triggered_signals.append("fallback_best_ratio")
+    if year_ratio < 0.20:
+        triggered_signals.append("year_ratio")
+    if warning_density > 1.0:
+        triggered_signals.append("warning_density")
+    if has_numbering_anomaly:
+        triggered_signals.append("numbering_anomaly")
+    if empty_title_ratio > 0.30:
+        triggered_signals.append("empty_title_ratio")
+
+    return {
+        "schema": REFERENCE_PREPROCESS_QUALITY_SCHEMA,
+        "preprocess_version": REFERENCE_PREPROCESS_VERSION,
+        "metrics": metrics,
+        "thresholds": thresholds,
+        "triggered_signals": triggered_signals,
+        "trigger_count": len(triggered_signals),
+        "trigger_min": 4,
+        "file_quality_low": len(triggered_signals) >= 4,
+    }
+
+
+def _public_reference_preprocess_quality(quality: dict[str, Any] | None) -> dict[str, Any]:
+    if not quality:
+        return {}
+    public_quality = dict(quality)
+    public_quality.pop("preprocess_version", None)
+    return public_quality
+
+
 def _prepare_reference_workset_state(
     *,
     lines: list[str],
@@ -2230,11 +2562,13 @@ def _prepare_reference_workset_state(
         ]
         entries = _build_reference_entries_from_blocks(blocks)
     normalized_entries, numbering_warnings, has_numbering_anomaly = _detect_reference_numbering(entries)
+    normalized_entries = _merge_bilingual_reference_entries(normalized_entries)
     candidates: list[dict[str, Any]] = []
     ambiguity_warnings: list[str] = []
     boundary_warnings: list[str] = []
     for entry in normalized_entries:
-        entry_candidates = _generate_reference_candidates(entry)
+        entry_candidates = _generate_reference_candidates_v171(entry)
+        _validate_reference_candidate_years(entry_candidates)
         if len(entry_candidates) > 1:
             ambiguity_warnings.append(f"{WARNING_REFERENCE_PATTERN_AMBIGUOUS}: entry_index={entry['entry_index']}")
         for candidate in entry_candidates:
@@ -2251,6 +2585,19 @@ def _prepare_reference_workset_state(
         for block in suspect_blocks
     ]
     batches = _build_reference_batches(normalized_entries)
+    warnings = list(dict.fromkeys([*numbering_warnings, *ambiguity_warnings, *boundary_warnings, *grouping_warnings]))
+    file_quality = _detect_reference_file_quality(
+        entries=normalized_entries,
+        candidates=candidates,
+        has_numbering_anomaly=has_numbering_anomaly,
+        warnings=warnings,
+    )
+    if file_quality["file_quality_low"]:
+        warnings.append(
+            f"{REFERENCE_FILE_QUALITY_LOW_WARNING}: {file_quality['trigger_count']}/5 signals crossed thresholds "
+            f"({', '.join(file_quality['triggered_signals'])})"
+        )
+    warnings = list(dict.fromkeys(warnings))
     return {
         "blocks": blocks,
         "entries": normalized_entries,
@@ -2261,7 +2608,9 @@ def _prepare_reference_workset_state(
         "requires_split_review": bool(suspect_blocks),
         "numbering_warnings": numbering_warnings,
         "has_numbering_anomaly": has_numbering_anomaly,
-        "warnings": list(dict.fromkeys([*numbering_warnings, *ambiguity_warnings, *boundary_warnings, *grouping_warnings])),
+        "warnings": warnings,
+        "file_quality": file_quality,
+        "file_quality_low": bool(file_quality["file_quality_low"]),
     }
 
 
@@ -2274,6 +2623,7 @@ def _build_reference_workset_export(
     entry_style: str,
     suspect_blocks: list[dict[str, Any]],
     requires_split_review: bool,
+    file_quality: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidates_by_entry: dict[int, list[dict[str, Any]]] = {}
     for candidate in candidates:
@@ -2303,6 +2653,8 @@ def _build_reference_workset_export(
             "requires_split_review": requires_split_review,
             "review_generation_id": _reference_review_generation_id(suspect_blocks) if suspect_blocks else "",
         },
+        "file_quality": _public_reference_preprocess_quality(file_quality),
+        "file_quality_low": bool((file_quality or {}).get("file_quality_low")),
         "blocks": [
             {
                 "block_index": int(block["block_index"]),
@@ -3041,6 +3393,8 @@ def _normalize_function_value(function_value: object) -> tuple[str, str | None]:
 def _validate_citation_semantics_payload(
     payload: dict[str, Any],
     workset_items: list[dict[str, Any]],
+    *,
+    reference_free_mode: bool = False,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     if "report_md" in payload:
         return None, "deprecated payload key 'report_md' is not supported; report_md is renderer-derived"
@@ -3050,6 +3404,8 @@ def _validate_citation_semantics_payload(
     items = payload.get("items", [])
     if not isinstance(items, list):
         return None, "items must be array"
+    if reference_free_mode and not items:
+        return [], None
 
     expected_ref_indexes = {int(item["ref_index"]) for item in workset_items}
     normalized_items: list[dict[str, Any]] = []
@@ -3102,6 +3458,8 @@ def _validate_citation_semantics_payload(
 def _validate_citation_summary_basis(
     basis: object,
     citation_items: list[dict[str, Any]],
+    *,
+    reference_free_mode: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(basis, dict):
         return None, "basis must be object"
@@ -3121,7 +3479,7 @@ def _validate_citation_summary_basis(
         return None, "basis.argument_shape must contain at least 2 non-empty strings"
 
     key_ref_indexes_raw = basis.get("key_ref_indexes")
-    if not isinstance(key_ref_indexes_raw, list) or not key_ref_indexes_raw:
+    if not isinstance(key_ref_indexes_raw, list) or (not key_ref_indexes_raw and not reference_free_mode):
         return None, "basis.key_ref_indexes must be non-empty integer array"
     key_ref_indexes: list[int] = []
     for item in key_ref_indexes_raw:
@@ -3296,14 +3654,37 @@ def _normalize_reference_quality_title(title: str) -> str:
     return re.sub(r"\s+", " ", "".join(chars)).strip()
 
 
+def _reference_quality_token_runs(normalized_title: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in normalized_title:
+        category = unicodedata.category(char)
+        if category.startswith("L") or category.startswith("N"):
+            current.append(char)
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _reference_quality_has_letter(token: str) -> bool:
+    return any(unicodedata.category(char).startswith("L") for char in token)
+
+
+def _reference_quality_non_ascii_letter_count(text: str) -> int:
+    return sum(1 for char in text if ord(char) > 127 and unicodedata.category(char).startswith("L"))
+
+
 def _reference_quality_content_tokens(normalized_title: str) -> list[str]:
     tokens: list[str] = []
-    for token in REFERENCE_TOKEN_RE.findall(normalized_title):
-        if len(token) < 2:
+    for token in _reference_quality_token_runs(normalized_title):
+        if not _reference_quality_has_letter(token):
             continue
-        if token.isdigit():
+        if token.isascii() and len(token) < 2:
             continue
-        if token in REFERENCE_QUALITY_STOPWORDS:
+        if token.isascii() and token in REFERENCE_QUALITY_STOPWORDS:
             continue
         tokens.append(token)
     return tokens
@@ -3424,7 +3805,7 @@ def _classify_reference_quality(item: dict[str, Any]) -> list[dict[str, Any]]:
             reasons.append((REFERENCE_QUALITY_WARNING, "possible_author_prefix_noise", "title"))
         if len(title) > REFERENCE_QUALITY_LONG_TITLE_CHARS:
             reasons.append((REFERENCE_QUALITY_WARNING, "very_long_title", "title"))
-        if 0 < len(content_tokens) < 2:
+        if 0 < len(content_tokens) < 2 and _reference_quality_non_ascii_letter_count(normalized_title) < 4:
             reasons.append((REFERENCE_QUALITY_WARNING, "short_title_requires_context", "title"))
     if year is None:
         reasons.append((REFERENCE_QUALITY_WARNING, "missing_year", "year"))
@@ -3455,15 +3836,15 @@ def _classify_reference_quality(item: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _reference_quality_recommendation(reason_code: str) -> str:
     recommendations = {
-        "empty_title": "Recover the actual work title from the raw reference or prepared candidates; if impossible, omit this row from the next persist_references payload.",
-        "bare_identifier_or_url_title": "Use the raw reference and prepared candidates to recover the actual work title; keep DOI/URL only as metadata, or omit this row if unrecoverable.",
-        "publication_metadata_only_title": "Replace venue, publisher, page, or proceedings text with the cited work title from the raw reference.",
-        "author_only_title": "Move author text to author[] and recover the cited work title from raw/candidates.",
-        "no_usable_title_tokens": "Replace the title with a phrase containing the cited work title, not only punctuation, numbers, or generic bibliography terms.",
+        "empty_title": "Recover the cited work title from the raw reference or prepared candidates in its original language/script; if impossible, omit this row from the next persist_references payload.",
+        "bare_identifier_or_url_title": "Use the raw reference and prepared candidates to recover the cited work title in its original language/script; keep DOI/URL only as metadata, or omit this row if unrecoverable.",
+        "publication_metadata_only_title": "Replace venue, publisher, page, or proceedings text with the cited work title from the raw reference, preserving the original language/script.",
+        "author_only_title": "Move author text to author[] and recover the cited work title from raw/candidates in its original language/script.",
+        "no_usable_title_tokens": "Recover the cited work title in its original language/script, not only punctuation, numbers, or generic bibliography terms.",
         "bibliographic_suffix_in_title": "Inspect whether the title accidentally includes venue/proceedings/page suffix; strip suffix when the actual title is clear.",
         "possible_author_prefix_noise": "Inspect whether author text was included at the start of title; move it to author[] and keep only the work title.",
         "very_long_title": "Inspect the title boundary; split away venue, abstract, or neighboring reference text if included.",
-        "short_title_requires_context": "Verify the short title against raw/candidates; correct it if it is only a fragment, otherwise explicitly accept the warning.",
+        "short_title_requires_context": "Verify the short title against raw/candidates; correct it if it is only a fragment, preserving the original language/script, otherwise explicitly accept the warning.",
         "missing_year": "Recover the publication year from raw/candidates when available; otherwise explicitly accept the warning.",
         "missing_authors": "Recover authors from raw/candidates when available; otherwise explicitly accept the warning.",
     }
@@ -4553,19 +4934,27 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
         blocks = list(prepared["blocks"])
         suspect_blocks = list(prepared["suspect_blocks"])
         requires_split_review = bool(prepared["requires_split_review"])
+        file_quality = dict(prepared["file_quality"])
+        file_quality_low = bool(prepared["file_quality_low"])
         review_generation_id = _reference_review_generation_id(suspect_blocks) if suspect_blocks else ""
         _replace_reference_workset(connection, entries=normalized_entries, candidates=candidates, batches=batches)
+        store_reference_preprocess_quality(connection, file_quality)
         for warning in warnings:
             add_runtime_warning_once(connection, warning)
         metadata = dict(source_doc.get("metadata", {}))
         metadata["reference_numbering_reliability"] = "low" if prepared["has_numbering_anomaly"] else "high"
         store_source_document(connection, doc_key="normalized_source", content=str(source_doc["content"]), metadata=metadata)
+        next_action = "decide_reference_extraction" if file_quality_low else ("persist_reference_entry_splits" if requires_split_review else "persist_references")
         _set_success_state(
             connection,
             stage="stage_4_references",
-            substep="persist_reference_entry_splits" if requires_split_review else "persist_references",
-            next_action="persist_reference_entry_splits" if requires_split_review else "persist_references",
-            status="reference entry split review required" if requires_split_review else "reference workset prepared",
+            substep=next_action,
+            next_action=next_action,
+            status=(
+                "reference preprocess quality is low; choose whether to continue or abandon"
+                if file_quality_low
+                else ("reference entry split review required" if requires_split_review else "reference workset prepared")
+            ),
         )
         _record_action_receipt(
             connection,
@@ -4576,6 +4965,8 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
                 "entry_style": str(prepared["entry_style"]),
                 "grouping_suspect_count": len(suspect_blocks),
                 "review_generation_id": review_generation_id,
+                "file_quality_low": file_quality_low,
+                "triggered_signals": list(file_quality.get("triggered_signals", [])),
             },
         )
         connection.commit()
@@ -4588,6 +4979,7 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
         blocks=blocks,
         suspect_blocks=suspect_blocks,
         requires_split_review=requires_split_review,
+        file_quality=file_quality,
     )
     review_payload = _build_reference_review_view(workset_payload)
     if not args.persist_db_only:
@@ -4606,6 +4998,8 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
                 "split_mode": "line-first",
                 "grouping_suspect_count": len(suspect_blocks),
                 "requires_split_review": requires_split_review,
+                "file_quality": _public_reference_preprocess_quality(file_quality),
+                "file_quality_low": file_quality_low,
                 "review_generation_id": review_generation_id,
                 "suspect_blocks": [
                     {
@@ -4861,21 +5255,34 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
         normalized_entries = list(prepared["entries"])
         candidates = list(prepared["candidates"])
         batches = list(prepared["batches"])
+        file_quality = dict(prepared["file_quality"])
+        file_quality_low = bool(prepared["file_quality_low"])
         _replace_reference_workset(connection, entries=normalized_entries, candidates=candidates, batches=batches)
+        store_reference_preprocess_quality(connection, file_quality)
         for warning in prepared["warnings"]:
             add_runtime_warning_once(connection, warning)
+        existing_decision = fetch_reference_extraction_decision(connection)
+        next_action = "decide_reference_extraction" if file_quality_low and existing_decision is None else "persist_references"
         _set_success_state(
             connection,
             stage="stage_4_references",
-            substep="persist_references",
-            next_action="persist_references",
-            status="reference entries re-split and candidates regenerated",
+            substep=next_action,
+            next_action=next_action,
+            status=(
+                "reference preprocess quality is low; choose whether to continue or abandon"
+                if next_action == "decide_reference_extraction"
+                else "reference entries re-split and candidates regenerated"
+            ),
         )
         _record_action_receipt(
             connection,
             action_name="persist_reference_entry_splits",
             stage="stage_4_references",
-            metadata={"stored_reference_entries": len(normalized_entries)},
+            metadata={
+                "stored_reference_entries": len(normalized_entries),
+                "file_quality_low": file_quality_low,
+                "triggered_signals": list(file_quality.get("triggered_signals", [])),
+            },
         )
         connection.commit()
 
@@ -4887,6 +5294,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
         blocks=list(prepared["blocks"]),
         suspect_blocks=[],
         requires_split_review=False,
+        file_quality=file_quality,
     )
     review_payload = _build_reference_review_view(workset_payload)
     if not args.persist_db_only:
@@ -4904,7 +5312,116 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
                 "split_mode": "line-first",
                 "grouping_suspect_count": 0,
                 "requires_split_review": False,
+                "file_quality": _public_reference_preprocess_quality(file_quality),
+                "file_quality_low": file_quality_low,
                 "review_generation_id": "",
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_decide_reference_extraction(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    decision = str(payload.get("decision", "")).strip()
+    reason = str(payload.get("reason", "")).strip()
+    acknowledged = payload.get("acknowledged_file_quality_low")
+
+    with connect_db(db_path) as connection:
+        quality = fetch_reference_preprocess_quality(connection)
+        if quality is None:
+            message = "reference preprocess quality missing; run prepare_references_workset first"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        if (
+            quality.get("schema") != REFERENCE_PREPROCESS_QUALITY_SCHEMA
+            or quality.get("preprocess_version") != REFERENCE_PREPROCESS_VERSION
+        ):
+            message = "reference preprocess quality was not produced by the deterministic preprocess"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+        if decision not in {"continue", "abandon"}:
+            message = "decision must be continue or abandon"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+        if acknowledged is not True:
+            message = "acknowledged_file_quality_low must be true"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+        if not reason:
+            message = "reason must be a non-empty string"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+        if not bool(quality.get("file_quality_low")):
+            message = "reference extraction can only be decided here when deterministic file_quality_low is true"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+
+        receipts = fetch_action_receipts(connection)
+        prepare_receipt = receipts.get("prepare_references_workset", {})
+        prepare_metadata = dict(prepare_receipt.get("metadata", {}))
+        requires_split_review = bool(prepare_metadata.get("requires_split_review")) and not has_action_receipt(connection, "persist_reference_entry_splits")
+
+        if decision == "abandon":
+            store_reference_extraction_decision(connection, status="abandoned", reason=reason, quality=quality)
+            store_reference_items(connection, [])
+            replace_reference_quality_issues(connection, [])
+            connection.execute("DELETE FROM citation_mentions")
+            connection.execute("DELETE FROM citation_mention_links")
+            connection.execute("DELETE FROM citation_workset_items")
+            connection.execute("DELETE FROM citation_unmapped_mentions")
+            connection.execute("DELETE FROM citation_batches")
+            connection.execute("DELETE FROM citation_items")
+            connection.execute("DELETE FROM citation_timeline")
+            connection.execute("DELETE FROM citation_summary")
+            _set_success_state(
+                connection,
+                stage="stage_5_citation",
+                substep="prepare_citation_workset",
+                next_action="prepare_citation_workset",
+                status="reference extraction abandoned after deterministic low-quality preprocess signal",
+            )
+        else:
+            store_reference_extraction_decision(connection, status="continue", reason=reason, quality=quality)
+            _set_success_state(
+                connection,
+                stage="stage_4_references",
+                substep="persist_reference_entry_splits" if requires_split_review else "persist_references",
+                next_action="persist_reference_entry_splits" if requires_split_review else "persist_references",
+                status="reference extraction will continue despite low file-quality signal",
+            )
+        _record_action_receipt(
+            connection,
+            action_name="decide_reference_extraction",
+            stage="stage_4_references",
+            metadata={
+                "decision": decision,
+                "file_quality_low": bool(quality.get("file_quality_low")),
+                "triggered_signals": list(quality.get("triggered_signals", [])),
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "decision": decision,
+                "file_quality": _public_reference_preprocess_quality(quality),
+                "next_action": "prepare_citation_workset" if decision == "abandon" else ("persist_reference_entry_splits" if requires_split_review else "persist_references"),
                 "error": None,
             },
             ensure_ascii=False,
@@ -5415,6 +5932,7 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         source_doc = fetch_source_document(connection, "normalized_source")
         scope_row = fetch_section_scope(connection, "citation_scope")
         reference_items = fetch_reference_items(connection)
+        reference_free_mode = is_reference_extraction_abandoned(connection)
         if source_doc is None:
             set_runtime_error(connection, "citation_scope_failed", "normalized source missing", "stage_5_citation")
             connection.commit()
@@ -5439,6 +5957,7 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
             "scope": None,
             "scope_source": "",
             "scope_decision": {},
+            "reference_free_mode": reference_free_mode,
         },
         "mentions": [],
         "mention_links": [],
@@ -5477,6 +5996,12 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
             "fallback_from": scope_metadata.get("fallback_from"),
             "fallback_reason": str(scope_metadata.get("fallback_reason", "")),
         }
+        if reference_free_mode:
+            for mention in workset["unresolved_mentions"]:
+                mention["reason"] = REFERENCE_FREE_UNMAPPED_REASON
+            for link in workset["mention_links"]:
+                if link.get("status") == "unmapped":
+                    link.setdefault("evidence", {})["reason"] = REFERENCE_FREE_UNMAPPED_REASON
         workset_payload.update(
             {
                 "mentions": workset["mentions"],
@@ -5497,7 +6022,7 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         if (
             not workset_payload["mentions"]
             or not workset_payload["workset_items"]
-        ) and (_is_review_like_scope(scope) or _scope_contains_citation_signals(lines, scope)):
+        ) and not reference_free_mode and (_is_review_like_scope(scope) or _scope_contains_citation_signals(lines, scope)):
             workset_payload["error"] = {
                 "code": "citation_mentions_not_found",
                 "message": "citation scope contains citation-like signals but prepare_citation_workset produced no stable mentions/workset items",
@@ -5594,6 +6119,7 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
                 "resolved_items": workset_payload["stats"]["resolved_items"],
                 "unresolved_mentions": workset_payload["stats"]["unresolved_mentions"],
                 "filtered_false_positive_mentions": workset_payload["stats"].get("filtered_false_positive_mentions", 0),
+                "reference_free_mode": reference_free_mode,
                 "error": None,
             },
             ensure_ascii=False,
@@ -5612,7 +6138,8 @@ def _handle_export_citation_workset(args: argparse.Namespace) -> int:
             return 2
         mentions = fetch_citation_mentions(connection)
         workset_items = fetch_citation_workset_items(connection)
-        if not mentions or not workset_items:
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if (not mentions or not workset_items) and not reference_free_mode:
             error = {"code": "citation_scope_failed", "message": "citation workset missing; prepare_citation_workset must run first"}
             print(json.dumps({"error": error}, ensure_ascii=False))
             return 2
@@ -5662,12 +6189,13 @@ def _handle_persist_citation_semantics(args: argparse.Namespace) -> int:
 
     with connect_db(db_path) as connection:
         workset_items = fetch_citation_workset_items(connection)
-        if not workset_items:
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if not workset_items and not reference_free_mode:
             set_runtime_error(connection, "citation_semantics_failed", "citation workset missing; prepare_citation_workset must run first", "stage_5_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation workset missing; prepare_citation_workset must run first"}}, ensure_ascii=False))
             return 2
-        normalized_items, error = _validate_citation_semantics_payload(payload, workset_items)
+        normalized_items, error = _validate_citation_semantics_payload(payload, workset_items, reference_free_mode=reference_free_mode)
         if error is not None or normalized_items is None:
             set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation semantics payload", "stage_5_citation")
             connection.commit()
@@ -5703,7 +6231,8 @@ def _handle_persist_citation_timeline(args: argparse.Namespace) -> int:
 
     with connect_db(db_path) as connection:
         citation_items = fetch_citation_items(connection)
-        if not citation_items:
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if not citation_items and not reference_free_mode:
             set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_5_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
@@ -5733,7 +6262,8 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
 
     with connect_db(db_path) as connection:
         citation_items = fetch_citation_items(connection)
-        if not citation_items:
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if not citation_items and not reference_free_mode:
             set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_5_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
@@ -5749,7 +6279,7 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "summary must be non-empty string"}}, ensure_ascii=False))
             return 2
-        normalized_basis, error = _validate_citation_summary_basis(basis, citation_items)
+        normalized_basis, error = _validate_citation_summary_basis(basis, citation_items, reference_free_mode=reference_free_mode)
         if error is not None or normalized_basis is None:
             set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation summary basis", "stage_5_citation")
             connection.commit()
@@ -5767,6 +6297,7 @@ def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no
     missing_receipts = _missing_required_receipts(connection, REQUIRED_STAGE5_RECEIPTS)
     if missing_receipts:
         return f"missing action receipts before render: {missing_receipts}"
+    reference_free_mode = is_reference_extraction_abandoned(connection)
     inputs = fetch_runtime_inputs(connection)
     if has_action_receipt(connection, "bootstrap_runtime_db") and not has_action_receipt(connection, "persist_render_templates"):
         return "persist_render_templates receipt missing before render"
@@ -5788,9 +6319,9 @@ def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no
         for template_path in (template_paths.digest_template_path, template_paths.citation_analysis_template_path):
             if not template_path.exists():
                 return f"runtime template missing before render: {template_path}"
-    if not fetch_citation_workset_items(connection):
+    if not fetch_citation_workset_items(connection) and not reference_free_mode:
         return "citation_workset_items missing before render"
-    if not fetch_citation_items(connection):
+    if not fetch_citation_items(connection) and not reference_free_mode:
         return "citation_items missing before render"
     if fetch_citation_timeline(connection) is None:
         return "citation_timeline missing before render"
@@ -6035,6 +6566,11 @@ def build_parser() -> argparse.ArgumentParser:
     reference_splits.add_argument("--out", dest="out_path", default="")
     reference_splits.add_argument("--persist-db-only", action="store_true")
     reference_splits.set_defaults(handler=_handle_persist_reference_entry_splits)
+
+    reference_decision = subparsers.add_parser("decide_reference_extraction")
+    reference_decision.add_argument("--db-path", default="")
+    reference_decision.add_argument("--payload-file", default="")
+    reference_decision.set_defaults(handler=_handle_decide_reference_extraction)
 
     references = subparsers.add_parser("persist_references")
     references.add_argument("--db-path", default="")

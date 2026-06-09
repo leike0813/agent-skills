@@ -170,6 +170,13 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
   - 先按行切
   - 单行内若明显存在第二条文献起点，再做 inline split
   - 若像跨行续写，只打标，不自动合并
+- Deterministic preprocess 会执行以下稳定清理与候选增强：
+  - 过滤图片、HTML 表格、Figure/Table 标题、附录标题等非参考文献行
+  - 清理明显尾部页码/页眉噪声
+  - 在候选生成前保护英文作者 initials，避免 `K. He` 被错误当作句界
+  - 增加 IEEE quoted-title、venue-marker、CJK/fullwidth/type-marker 候选
+  - 对 CJK/全角参考文献先做全角标点标准化；`［J］` / `［C］` / `［D］` / `［EB/OL］` 等类型标记可作为 title/container 边界
+  - 对被过切分的 CJK + Latin 双语条目做 deterministic 合并
 - 真正的跨行合并只允许出现在 `persist_reference_entry_splits` 的 `resolution="merge"` 复核结果中。
 
 1. `prepare_references_workset`
@@ -178,6 +185,7 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
    - 若出现疑似跨行续写，脚本只打标，不自动合并
    - 脚本为每个 `entry` 生成多组 `patterns[]` 候选，并写入 `reference_parse_candidates`
    - 若 deterministic splitting 后仍有 grouped-entry 风险，脚本会返回 `requires_split_review=true`
+   - 脚本同时写入 `reference_preprocess_quality`，包含 `file_quality_low` 与触发的文件级质量信号
 2. `persist_reference_entry_splits`（仅在 `requires_split_review=true` 时出现）
    - agent 只复核 suspect blocks 的 raw entry 边界，不抽 `author/title/year`
    - `blocks[*].entries[]` 必须保持原文顺序与原文文本，只允许改变分条边界
@@ -186,10 +194,18 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
    - agent 在选中候选的基础上 refine 完整 `author[] / title / year`
    - 脚本校验后写入最终 `reference_items`
 
+当 `file_quality_low=true` 时，gate 会在 `persist_reference_entry_splits` / `persist_references` 之前先返回 `decide_reference_extraction`。agent 必须显式选择：
+
+- `continue`：继续正常 references 抽取；后续仍执行 split review、reference quality gate 和严格 `ref_index` citation 映射。
+- `abandon`：放弃本文件 references 抽取；只有当 DB 中存在 deterministic preprocess 写入的 `file_quality_low=true` 快照时脚本才接受，payload 自报无效。
+
 ### `prepare_references_workset` 预解析契约
 
 脚本必须至少尝试以下 pattern：
 
+- `ieee_quote_title`
+- `venue_marker`
+- `cjk_type_marker_entry`
 - `authors_period_title_period_venue_year`
 - `authors_colon_title_in_year`
 - `authors_year_paren_title_venue`
@@ -230,8 +246,36 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 - `grouping_suspect_count`
 - `requires_split_review`
 - `suspect_blocks`
+- `file_quality`
+- `file_quality_low`
 
 其中 `requires_split_review=true` 表示当前 workset 仍存在边界存疑的 block，此时不得直接进入 `persist_references`。
+
+### 文件级质量检测
+
+Deterministic preprocess 会在 workset 末尾计算 5 个文件级信号，并写入 `reference_preprocess_quality`：
+
+| 信号 | 触发条件 | 含义 |
+|---|---:|---|
+| `fallback_best_ratio` | `> 0.50` | 多数条目的最佳候选只能落到 fallback |
+| `year_ratio` | `< 0.20` | 只有很少条目能提取有效年份 |
+| `warning_density` | `> 1.0` | 平均每条超过 1 个 warning |
+| `numbering_anomaly` | `true` | 编号不从 1 开始、不连续或不递增 |
+| `empty_title_ratio` | `> 0.30` | 多数最佳候选没有可用标题 |
+
+至少 4 个信号触发时，`file_quality_low=true`。这不是普通 soft warning，而是一个 gate decision point：可以继续修复，也可以在 DB 证明存在时放弃 references 抽取。
+
+低质量 decision payload 示例：
+
+```json
+{
+  "decision": "abandon",
+  "reason": "The reference section is too noisy to recover reliable reference rows.",
+  "acknowledged_file_quality_low": true
+}
+```
+
+反例：如果 DB 没有 `reference_preprocess_quality.file_quality_low=true`，即使 payload 写了 `acknowledged_file_quality_low=true`，脚本也必须拒绝。
 
 ### LaTeX bibliography 入口
 
@@ -339,6 +383,7 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 - 若 `pattern_candidate.author_candidates` 已经给出稳定作者边界，最终 `author[]` 必须保持同级边界；允许轻微规范化，但不得把 `Gu, J.`、`Al-Rfou, R.` 这类作者再次拆成多个数组元素
 - 一句话硬规则：已经稳定的单个作者边界，最终 `author[]` 不得再次拆成多个数组元素
 - 脚本会拦截明显的二次误拆，并以 `reference_author_refinement_invalid` 失败，而不是静默自动修正
+- `title` 必须保持 raw reference 中的原始语言和文字系统；不得为了通过质量门禁而翻译、英文化或罗马化题名
 
 ### Reference quality gate
 
@@ -359,7 +404,37 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
 - punctuation / symbol 替换为空格
 - 再次 collapse whitespace
 
-`contentTokens` 会排除 stopwords、长度小于 2 的 token 和纯数字 token。stopwords 固定包含：`a`、`an`、`and`、`for`、`in`、`of`、`on`、`the`、`to`、`with`、`vol`、`volume`、`no`、`issue`、`pp`、`pages`、`proceedings`、`conference`、`journal`、`preprint`、`arxiv`、`doi`。
+`contentTokens` 使用 Unicode-aware tokenizer：
+
+- 保留 Unicode letter runs，因此中文、日文、韩文等非拉丁文字标题可产生可用 token。
+- 保留 ASCII mixed alnum token，例如 `yolov7`。
+- 纯数字 token 丢弃。
+- ASCII stopwords 会被过滤。stopwords 固定包含：`a`、`an`、`and`、`for`、`in`、`of`、`on`、`the`、`to`、`with`、`vol`、`volume`、`no`、`issue`、`pp`、`pages`、`proceedings`、`conference`、`journal`、`preprint`、`arxiv`、`doi`。
+- 包含至少 4 个非 ASCII 字母的标题不会因为只有一个连续 token 而触发 `short_title_requires_context`。
+
+中文标题示例：
+
+```json
+{
+  "author": ["张三", "李四"],
+  "title": "基于深度学习的文本分类方法",
+  "year": 2020,
+  "raw": "张三，李四。基于深度学习的文本分类方法。计算机研究，2020。",
+  "confidence": 0.85
+}
+```
+
+上例中的 `title` 必须保留中文原文，不得改写为 `Text classification method based on deep learning`、拼音或其它罗马化形式。
+
+仍应被拒绝的反例：
+
+```json
+[
+  {"title": "https://doi.org/10.1000/xyz", "reason_code": "bare_identifier_or_url_title"},
+  {"title": "2020.", "reason_code": "no_usable_title_tokens"},
+  {"author": ["张三"], "title": "张三", "reason_code": "author_only_title"}
+]
+```
 
 Hard block reason codes：
 
@@ -375,7 +450,7 @@ Hard block reason codes：
 - runtime 写入 active `reference_quality_issues`
 - workflow 保持在 `stage_4_references / persist_references`
 - gate 返回 `quality_directives`，逐条列出 `issue_id`、`entry_index/ref_index`、`reason_code`、`field`、`current_value`、`raw_excerpt` 和 `recommendation`
-- agent 必须重新提交完整 `persist_references` payload；能修复则写 corrected row，无法可靠修复则从下一次完整 `items[]` payload 中省略该 hard row
+- agent 必须重新提交完整 `persist_references` payload；能修复则恢复 raw reference 中原始语言/文字系统的 cited title，无法可靠修复则从下一次完整 `items[]` payload 中省略该 hard row
 
 Soft warning reason codes：
 
@@ -411,7 +486,7 @@ Hard block gate 示例：
         "field": "title",
         "current_value": "https://doi.org/10.1000/xyz",
         "raw_excerpt": "Doe. Actual Work Title. 2020. https://doi.org/10.1000/xyz",
-        "recommendation": "Use the raw reference and prepared candidates to recover the actual work title; keep DOI/URL only as metadata, or omit this row if unrecoverable."
+        "recommendation": "Use the raw reference and prepared candidates to recover the cited work title in its original language/script; keep DOI/URL only as metadata, or omit this row if unrecoverable."
       }
     ]
   }

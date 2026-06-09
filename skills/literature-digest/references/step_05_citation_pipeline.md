@@ -154,6 +154,11 @@
 - numeric 先按 `ref_number -> ref_index`；author-year 先按 `year + first-author surname`。
 - 若多候选冲突或证据不足，不可硬猜，直接进入 `unmapped_mentions`。
 - 如需辅助 join，可使用 `export_citation_workset` 只读导出候选，不得把它当作新的真源。
+- Reference-free mode 例外：
+  - 只有当 Stage 4 已通过 DB-backed `file_quality_low=true` 并显式记录 `reference_extraction_decision.status="abandoned"` 时启用。
+  - 本模式仍抽取 mention，但不做 `ref_index` 映射。
+  - 所有 marker 进入 `unmapped_mentions`，reason 固定为 `references_abandoned_file_quality_low`。
+  - 后续语义、timeline、summary 仍必须按 action 顺序写入 receipt；只是跳过与 `ref_index` 相关的完整性校验。
 
 4) **语义阶段（LLM）**
 - 仅对 `citation_workset_items` 执行语义任务，不得再做全文盲扫或重复 join。
@@ -166,6 +171,7 @@
 - 同一 `function` 下的不同文献，`summary` 也必须体现具体差异，不得批量复用“提供背景支持”“作为方法对比”这类套话。
 - `is_key_reference` 用来标记当前综述范围内必须在全局总结中点出的关键文献。
 - 这里写入的是条目级引文语义判断，不是最终引文报告。
+- Reference-free mode 下，`citation_workset_items` 可能为空；此时 `persist_citation_semantics` 的 `items` array 可以为空，但必须由脚本动作写入 receipt，不能手工伪造 DB 状态。
 - `function` 只允许使用固定枚举：
   - `background`
   - `baseline`

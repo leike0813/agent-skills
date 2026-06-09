@@ -113,6 +113,12 @@ stdout 只输出一个 JSON 对象，字段固定为：
   - `issues[]` 是 agent 下一步必须处理的条目清单，每项包含 `issue_id`、`entry_index`、`ref_index`、`severity`、`reason_code`、`field`、`current_value`、`raw_excerpt`、`recommendation`。
   - hard block 时仍可返回 `next_action=persist_references`，agent 必须按 `quality_directives.issues` 修正后重新提交完整 payload。
   - soft warning 时返回或指向 `review_reference_quality`，agent 必须逐条 corrected 或 `accept_warning`。
+  - 所有 corrected title 都必须保持 raw reference 的原始语言/文字系统（original language/script）；不得为了通过质量门禁而翻译、英文化或罗马化题名。
+- `reference_preprocess_quality: object|null`
+  - 仅在 Stage 4 返回 `next_action=decide_reference_extraction` 时返回。
+  - 来源只能是 DB 表 `reference_preprocess_quality`，由 deterministic `prepare_references_workset` 写入。
+  - 至少包含 `schema`、`metrics`、`triggered_signals`、`trigger_count`、`trigger_min`、`file_quality_low`。
+  - agent 可以据此选择继续修复 references 或显式放弃；但是否允许放弃由 stage runtime 重新读取 DB 校验，payload 自报不算。
 - `sql_examples: object[]`
   - repair 阶段对应的最小 SQL 示例列表。
   - 每项结构：
@@ -141,6 +147,7 @@ stdout 只输出一个 JSON 对象，字段固定为：
 - `persist_digest`
 - `prepare_references_workset`
 - `persist_reference_entry_splits`
+- `decide_reference_extraction`
 - `persist_references`
 - `review_reference_quality`
 - `prepare_citation_workset`
@@ -199,6 +206,7 @@ stdout 只输出一个 JSON 对象，字段固定为：
 - 并提示 `language` 必须先用用户显式指定值，否则从 prompt 主要语言推断，仅在无法稳定判断时回退 `zh-CN`
 - 当 `next_action = persist_render_templates` 时，`execution_note` 会提示先把本次 run 要使用的 digest / citation 运行时模板写入 `<tmp_dir>/templates/`
 - 当 Stage 4 gate payload 包含 `quality_directives` 时，`execution_note` 会提示必须先处理这些 issue：hard block 重新提交 `persist_references`，soft warning 通过 `review_reference_quality` corrected 或 `accept_warning`
+- references 质量修复只允许恢复原文题名边界与字段，不允许把 CJK / 非拉丁题名翻译成英文来绕过 gate
 - 当 `next_action = render_and_validate` 时，`execution_note` 会提示当前已经进入最终发布前一步
 - 并提示最终 assistant 输出应直接采用 render 脚本 stdout 返回的 JSON
 - 并说明 render 会读取 DB 中的 `output_dir` 与 `result_json_path`
@@ -284,20 +292,24 @@ gate 至少检查这些关键前置：
   - 当 `next_action = persist_references` 时，还要求：
     - `reference_entries`
     - `reference_parse_candidates`
+  - 当 `next_action = decide_reference_extraction` 时，还要求：
+    - `reference_entries`
+    - `reference_parse_candidates`
+    - `reference_preprocess_quality.file_quality_low`
 - `stage_5_citation`
   - `source_documents.normalized_source`
   - `section_scopes.citation_scope`
-  - `reference_items`
+  - `reference_items`；若 DB 中存在 verified `reference_extraction_decision.status="abandoned"`，则允许 reference-free mode 跳过此非空表要求
   - `action_receipts.prepare_citation_workset` 是 `persist_citation_semantics` 的前置
   - `action_receipts.persist_citation_semantics` 是 `persist_citation_timeline` 的前置
   - `action_receipts.persist_citation_timeline` 是 `persist_citation_summary` 的前置
 - `stage_6_render_and_validate`
   - `digest_slots`
   - `digest_section_summaries`
-  - `reference_items`
+  - `reference_items`；verified abandoned reference-free mode 下可为空
   - `section_scopes.citation_scope`
-  - `citation_workset_items`
-  - `citation_items`
+  - `citation_workset_items`；verified abandoned reference-free mode 下可为空
+  - `citation_items`；verified abandoned reference-free mode 下可为空
   - `citation_timeline`
   - `citation_summary`
   - `citation_unmapped_mentions`

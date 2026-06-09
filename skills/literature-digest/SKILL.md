@@ -17,10 +17,11 @@ compatibility: Requires local filesystem read access to source_path; no network 
 3. 只能执行 gate 返回的 `next_action`。
 4. 同时遵守 gate 返回的 `instruction_refs`、`core_instruction` 和 `execution_note`。
 5. 所有语义判断结果都必须先整理为结构化 payload，再通过 `scripts/stage_runtime.py <next_action>` 写入 SQLite。
-6. 一旦某项决策已经在前序阶段写入 DB，后续阶段只能从 DB 读取，不能重新指定。
-7. 不要直接写 SQLite 表来伪造阶段完成；阶段推进必须由对应脚本动作成功写库。
-8. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 与已固化的运行时模板渲染生成。
-9. **最终 assistant 输出必须是一个 JSON 对象，并且必须满足 stdout schema。**
+6. Reference title 必须保持 raw reference 中的原始语言和文字系统；不得为了通过质量门禁而翻译、英文化或罗马化题名。
+7. 一旦某项决策已经在前序阶段写入 DB，后续阶段只能从 DB 读取，不能重新指定。
+8. 不要直接写 SQLite 表来伪造阶段完成；阶段推进必须由对应脚本动作成功写库。
+9. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 与已固化的运行时模板渲染生成。
+10. **最终 assistant 输出必须是一个 JSON 对象，并且必须满足 stdout schema。**
 
 成功态 stdout JSON 示例：
 
@@ -241,6 +242,14 @@ compatibility: Requires local filesystem read access to source_path; no network 
   - 中文名：需要条目切分复核
   - 定义：`prepare_references_workset` 判断当前 references workset 仍存在 grouped-entry 风险时返回的布尔标记。
   - 适用动作：`prepare_references_workset`
+- `reference_preprocess_quality`
+  - 中文名：参考文献前处理质量快照
+  - 定义：由 deterministic references 前处理写入 DB 的文件级质量指标；agent 不得在 payload 中伪造。
+  - 适用动作：`prepare_references_workset`、`decide_reference_extraction`
+- `file_quality_low`
+  - 中文名：文件级参考文献质量过低
+  - 定义：确定性前处理的 5 个质量信号至少 4 个越界时为 true；只有此信号真实入库时才允许放弃 references 抽取。
+  - 适用动作：`prepare_references_workset`、`decide_reference_extraction`
 - `suspect_blocks`
   - 中文名：可疑分块列表
   - 定义：脚本判断边界仍不稳定、需要后续复核的 source block 列表及其原因说明。
@@ -580,6 +589,7 @@ python scripts/stage_runtime.py prepare_references_workset --out /tmp/references
   - `entry_style`：本次 references 著录风格，可能为 `numeric` / `author-year` / `mixed`
   - `split_mode`：当前 deterministic splitting 策略；本项目固定为 `line-first`
   - `requires_split_review`：是否需要先执行条目边界复核
+  - `file_quality_low`：文件级 reference quality 是否过低；为 true 时 gate 会先要求执行 `decide_reference_extraction`
   - `suspect_blocks`：脚本认为边界仍不稳定、需要局部复核的 block 列表
   - `warnings`：编号异常、pattern 歧义、title 边界可疑等 warning
 - 最小合法示例：
@@ -587,6 +597,7 @@ python scripts/stage_runtime.py prepare_references_workset --out /tmp/references
 python scripts/stage_runtime.py prepare_references_workset --out /tmp/references_workset.json
 ```
 - 完成后应该看到的 gate 结果：
+  - 若 `file_quality_low=true`：`next_action` 应推进为 `decide_reference_extraction`
   - 若 `requires_split_review=false`：`next_action` 应推进为 `persist_references`
   - 若 `requires_split_review=true`：`next_action` 应推进为 `persist_reference_entry_splits`
 
@@ -623,7 +634,35 @@ python scripts/stage_runtime.py persist_reference_entry_splits --payload-file /t
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_references`
 
-### 9. `persist_references`
+### 9. `decide_reference_extraction`
+
+- 何时执行：
+  - 只有当 `prepare_references_workset` 或 split review 后的确定性前处理写入 `file_quality_low=true`，且 gate 返回 `decide_reference_extraction`
+- 调用命令：
+```bash
+python scripts/stage_runtime.py decide_reference_extraction --payload-file /tmp/reference_extraction_decision.json
+```
+- 必须提供的参数 / payload：
+  - `decision`: `continue` 或 `abandon`
+  - `reason`: 非空字符串
+  - `acknowledged_file_quality_low`: 必须为 `true`
+- 最小合法示例：
+```json
+{
+  "decision": "abandon",
+  "reason": "The reference section is too noisy to recover reliable reference rows.",
+  "acknowledged_file_quality_low": true
+}
+```
+- 规则：
+  - `abandon` 只有在 DB 中存在 deterministic preprocess 写入的 `file_quality_low=true` 快照时才会被脚本接受；payload 自报无效
+  - `continue` 会回到正常严格路径：先处理 split review（如需要），再 `persist_references`
+  - `abandon` 会让后续 citation analysis 进入 reference-free 模式，不再要求 `ref_index` 映射，但仍必须完成 Stage 5 的 action receipt 链
+- 完成后应该看到的 gate 结果：
+  - `decision=continue`：`next_action` 推进为 `persist_reference_entry_splits` 或 `persist_references`
+  - `decision=abandon`：`next_action` 推进为 `prepare_citation_workset`
+
+### 10. `persist_references`
 
 - 何时执行：
   - `prepare_references_workset` 成功且不需要 split review，或 `persist_reference_entry_splits` 成功后，且 gate 返回 `persist_references`
@@ -665,7 +704,7 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - 仅有 soft quality warnings 时，`next_action` 应推进为 `review_reference_quality`
   - 存在 hard quality issues 时，不写入 `reference_items`，gate 仍返回 `persist_references` 并通过 `quality_directives` 指明需修复或从下一次完整 payload 省略的条目
 
-### 10. `review_reference_quality`
+### 11. `review_reference_quality`
 
 - 何时执行：
   - `persist_references` 成功写入 `reference_items`，但 gate 返回 `next_action=review_reference_quality`
@@ -690,9 +729,9 @@ python scripts/stage_runtime.py review_reference_quality --payload-file /tmp/ref
       "resolution": "corrected",
       "reference": {
         "author": ["Recovered Author"],
-        "title": "Recovered actual work title",
+        "title": "<RECOVERED_TITLE_IN_ORIGINAL_LANGUAGE_OR_SCRIPT>",
         "year": 2020,
-        "raw": "Recovered Author. Recovered actual work title. 2020.",
+        "raw": "Recovered Author. <RECOVERED_TITLE_IN_ORIGINAL_LANGUAGE_OR_SCRIPT>. 2020.",
         "confidence": 0.9
       }
     }
@@ -703,7 +742,7 @@ python scripts/stage_runtime.py review_reference_quality --payload-file /tmp/ref
   - 所有 active soft issue 必须被 corrected 或 `accept_warning`
   - `next_action` 应推进为 `prepare_citation_workset`
 
-### 11. `prepare_citation_workset`
+### 12. `prepare_citation_workset`
 
 - 何时执行：
   - `persist_references` 成功后，且 gate 返回 `prepare_citation_workset`
@@ -730,7 +769,7 @@ python scripts/stage_runtime.py prepare_citation_workset --out /tmp/workset.json
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_semantics`
 
-### 12. `persist_citation_semantics`
+### 13. `persist_citation_semantics`
 
 - 何时执行：
   - `prepare_citation_workset` 成功后，且 gate 返回 `persist_citation_semantics`
@@ -769,7 +808,7 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_timeline`
 
-### 13. `persist_citation_timeline`
+### 14. `persist_citation_timeline`
 
 - 何时执行：
   - `persist_citation_semantics` 成功后，且 gate 返回 `persist_citation_timeline`
@@ -805,7 +844,7 @@ python scripts/stage_runtime.py persist_citation_timeline --payload-file /tmp/ci
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_summary`
 
-### 14. `persist_citation_summary`
+### 15. `persist_citation_summary`
 
 - 何时执行：
   - `persist_citation_timeline` 成功后，且 gate 返回 `persist_citation_summary`
@@ -842,7 +881,7 @@ python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/cit
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `render_and_validate`
 
-### 15. `render_and_validate --mode render`
+### 16. `render_and_validate --mode render`
 
 - 何时执行：
   - `persist_citation_summary` 成功后，且 gate 返回 `render_and_validate`
