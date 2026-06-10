@@ -809,7 +809,7 @@ python scripts/stage_runtime.py persist_references \
   - 若所选 `pattern_candidate.author_candidates` 已给出稳定作者边界，则 `author` 必须保持同级边界；脚本只允许轻微规范化，不允许再次拆开单个作者。
   - `ref_index` 由脚本按 `entry_index` 稳定生成，不需要 agent 单独填写。
   - `year` 优先取条目末尾出版年份，不要误取 arXiv 编号前缀。
-  - `title` 必须保持 raw reference 中的原始语言和文字系统；不得为了通过质量门禁而翻译、英文化或罗马化题名。
+  - `title` 必须保持 raw reference 中的原始语言和文字系统；不得为了通过质量门禁而翻译、英文化或罗马化题名，也不得用 `none` / `null` / `unknown` / `untitled` 等 placeholder 字符串代替未知题名。
 
 ### 最小合法示例
 
@@ -885,7 +885,7 @@ python scripts/stage_runtime.py persist_references \
 
 存在 hard quality issues 时，脚本返回 exit code `2`，不写入 `reference_items`，并返回 `quality_issues`。随后 gate 仍返回 `persist_references`，但会通过 `quality_directives` 指明需修复的条目。
 
-CJK / 非拉丁文字标题由 Unicode-aware content token 检测支持。正常中文题名不会因为缺少 ASCII token 而触发 `no_usable_title_tokens`；纯数字、纯符号、裸 DOI/URL/arXiv、作者名冒充标题仍会按现有 hard reason 拒绝。
+CJK / 非拉丁文字标题由 Unicode-aware content token 检测支持。正常中文题名不会因为缺少 ASCII token 而触发 `no_usable_title_tokens`；纯数字、纯符号、裸 DOI/URL/arXiv、作者名冒充标题、完整 placeholder 标题（如 `unknown`、`N.A.`）仍会按 hard reason 拒绝。
 
 ### 常见失败原因
 

@@ -220,6 +220,7 @@ REFERENCE_QUALITY_HARD_BLOCK = "hard_block"
 REFERENCE_QUALITY_WARNING = "warning"
 REFERENCE_QUALITY_HARD_REASON_CODES = {
     "empty_title",
+    "placeholder_title",
     "bare_identifier_or_url_title",
     "publication_metadata_only_title",
     "author_only_title",
@@ -278,6 +279,15 @@ REFERENCE_QUALITY_BIBLIOGRAPHIC_MARKERS = (
     "acm",
     "pmlr",
 )
+REFERENCE_QUALITY_PLACEHOLDER_TITLES = {
+    "none",
+    "null",
+    "undefined",
+    "not available",
+    "unknown",
+    "untitled",
+}
+REFERENCE_QUALITY_COMPACT_PLACEHOLDER_TITLES = {"na"}
 REFERENCE_QUALITY_LONG_TITLE_CHARS = 180
 REFERENCE_IDENTIFIER_TITLE_RE = re.compile(
     r"^\s*(?:"
@@ -3711,6 +3721,14 @@ def _reference_quality_is_bare_identifier_or_url(title: str, normalized_title: s
     return False
 
 
+def _reference_quality_is_placeholder_title(normalized_title: str) -> bool:
+    compact = normalized_title.replace(" ", "")
+    return (
+        normalized_title in REFERENCE_QUALITY_PLACEHOLDER_TITLES
+        or compact in REFERENCE_QUALITY_COMPACT_PLACEHOLDER_TITLES
+    )
+
+
 def _reference_quality_is_publication_metadata_only(normalized_title: str, content_tokens: list[str]) -> bool:
     marker = _reference_quality_bibliographic_marker(normalized_title)
     if marker is None:
@@ -3789,13 +3807,16 @@ def _classify_reference_quality(item: dict[str, Any]) -> list[dict[str, Any]]:
     if not title:
         reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "empty_title", "title"))
     else:
+        is_placeholder_title = _reference_quality_is_placeholder_title(normalized_title)
+        if is_placeholder_title:
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "placeholder_title", "title"))
         if _reference_quality_is_bare_identifier_or_url(title, normalized_title):
             reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "bare_identifier_or_url_title", "title"))
         if _reference_quality_is_publication_metadata_only(normalized_title, content_tokens):
             reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "publication_metadata_only_title", "title"))
         if _reference_quality_is_author_only(title, normalized_title, authors):
             reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "author_only_title", "title"))
-        if not content_tokens:
+        if not content_tokens and not is_placeholder_title:
             reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "no_usable_title_tokens", "title"))
 
     if title:
@@ -3837,6 +3858,7 @@ def _classify_reference_quality(item: dict[str, Any]) -> list[dict[str, Any]]:
 def _reference_quality_recommendation(reason_code: str) -> str:
     recommendations = {
         "empty_title": "Recover the cited work title from the raw reference or prepared candidates in its original language/script; if impossible, omit this row from the next persist_references payload.",
+        "placeholder_title": "Replace the placeholder with the cited work title from the raw reference or prepared candidates in its original language/script; if the title cannot be recovered reliably, omit this row from the next persist_references payload.",
         "bare_identifier_or_url_title": "Use the raw reference and prepared candidates to recover the cited work title in its original language/script; keep DOI/URL only as metadata, or omit this row if unrecoverable.",
         "publication_metadata_only_title": "Replace venue, publisher, page, or proceedings text with the cited work title from the raw reference, preserving the original language/script.",
         "author_only_title": "Move author text to author[] and recover the cited work title from raw/candidates in its original language/script.",
@@ -5505,7 +5527,8 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
                 print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
                 return 2
 
-            title = str(item.get("title", "")).strip()
+            title_value = item.get("title", "")
+            title = "" if title_value is None else str(title_value).strip()
             if LEADING_PUNCTUATION_RE.match(title):
                 message = f"items[{index}].title has suspicious leading punctuation"
                 set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")

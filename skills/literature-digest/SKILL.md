@@ -17,7 +17,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
 3. 只能执行 gate 返回的 `next_action`。
 4. 同时遵守 gate 返回的 `instruction_refs`、`core_instruction` 和 `execution_note`。
 5. 所有语义判断结果都必须先整理为结构化 payload，再通过 `scripts/stage_runtime.py <next_action>` 写入 SQLite。
-6. Reference title 必须保持 raw reference 中的原始语言和文字系统；不得为了通过质量门禁而翻译、英文化或罗马化题名。
+6. Reference title 必须保持 raw reference 中的原始语言和文字系统；不得为了通过质量门禁而翻译、英文化或罗马化题名，也不得用 `none` / `null` / `unknown` / `untitled` 等 placeholder 字符串代替未知题名。
 7. 一旦某项决策已经在前序阶段写入 DB，后续阶段只能从 DB 读取，不能重新指定。
 8. 不要直接写 SQLite 表来伪造阶段完成；阶段推进必须由对应脚本动作成功写库。
 9. 最终公开产物只能由 `render_and_validate --mode render` 从 DB 与已固化的运行时模板渲染生成。
@@ -676,7 +676,7 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - `items[*].entry_index`：要 refine 的原始条目编号
   - `items[*].selected_pattern`：从 workset 候选中显式选中的 `pattern`
   - `items[*].author`：refine 后的完整作者数组；若 `pattern_candidate.author_candidates` 已给出稳定作者边界，就必须直接复用该边界，不得再次把 `Al-Rfou, R.` 之类作者拆成 `["Al-Rfou", "R."]`
-  - `items[*].title`：refine 后的标题；不得以前导逗号、句点、分号或冒号开头
+  - `items[*].title`：refine 后的标题；不得以前导逗号、句点、分号或冒号开头，也不得用 `none` / `null` / `unknown` / `untitled` 等 placeholder 字符串代替未知题名
   - `items[*].year`：优先取条目末尾出版年份；不要误取 arXiv 编号前缀
   - `items[*].raw`：对应原始 references 条目文本
   - `items[*].confidence`：对该条最终结构化结果的置信度
