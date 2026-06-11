@@ -17,6 +17,7 @@
 全局约束：
 
 - gate 一旦确认某项前置状态已经存在于 DB，后续主路径阶段不得再通过 CLI / JSON 重新指定它
+- 正常 reference 路径在 stage 5 前必须先完成 Stage 4 metadata enrichment：`prepare_reference_metadata_enrichment` → `persist_reference_metadata_enrichment`
 - stage 5 的固定顺序是：`prepare_citation_workset` → `persist_citation_semantics` → `persist_citation_timeline` → `persist_citation_summary` → `render_and_validate`
 - stage 5 / stage 6 不只检查目标表是否有数据，还会检查对应脚本动作的 receipt 链是否完整；不能通过手工写 SQLite 表绕过主路径
 - 例如：
@@ -150,6 +151,8 @@ stdout 只输出一个 JSON 对象，字段固定为：
 - `decide_reference_extraction`
 - `persist_references`
 - `review_reference_quality`
+- `prepare_reference_metadata_enrichment`
+- `persist_reference_metadata_enrichment`
 - `prepare_citation_workset`
 - `persist_citation_semantics`
 - `persist_citation_timeline`
@@ -292,6 +295,13 @@ gate 至少检查这些关键前置：
   - 当 `next_action = persist_references` 时，还要求：
     - `reference_entries`
     - `reference_parse_candidates`
+  - 当 `next_action = prepare_reference_metadata_enrichment` 时，还要求：
+    - `reference_items`
+    - 不存在 active `reference_quality_issues`
+  - 当 `next_action = persist_reference_metadata_enrichment` 时，还要求：
+    - `reference_items`
+    - `reference_metadata_enrichment_workset`
+    - `action_receipts.prepare_reference_metadata_enrichment`
   - 当 `next_action = decide_reference_extraction` 时，还要求：
     - `reference_entries`
     - `reference_parse_candidates`
@@ -300,6 +310,7 @@ gate 至少检查这些关键前置：
   - `source_documents.normalized_source`
   - `section_scopes.citation_scope`
   - `reference_items`；若 DB 中存在 verified `reference_extraction_decision.status="abandoned"`，则允许 reference-free mode 跳过此非空表要求
+  - `action_receipts.persist_reference_metadata_enrichment`；verified abandoned reference-free mode 下不要求
   - `action_receipts.prepare_citation_workset` 是 `persist_citation_semantics` 的前置
   - `action_receipts.persist_citation_semantics` 是 `persist_citation_timeline` 的前置
   - `action_receipts.persist_citation_timeline` 是 `persist_citation_summary` 的前置
@@ -313,6 +324,7 @@ gate 至少检查这些关键前置：
   - `citation_timeline`
   - `citation_summary`
   - `citation_unmapped_mentions`
+  - `action_receipts.persist_reference_metadata_enrichment`；verified abandoned reference-free mode 下不要求
   - `action_receipts.prepare_citation_workset`
   - `action_receipts.persist_citation_semantics`
   - `action_receipts.persist_citation_timeline`

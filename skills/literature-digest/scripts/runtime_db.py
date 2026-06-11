@@ -234,6 +234,18 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             resolved_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS reference_metadata_enrichment_workset (
+            ref_index INTEGER PRIMARY KEY,
+            locked_reference_json TEXT NOT NULL,
+            existing_metadata_json TEXT NOT NULL,
+            metadata_context_text TEXT NOT NULL,
+            allowed_fields_json TEXT NOT NULL,
+            batch_index INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            evidence_note TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS reference_parse_candidates (
             entry_index INTEGER NOT NULL,
             candidate_index INTEGER NOT NULL,
@@ -1105,6 +1117,10 @@ def store_reference_items(connection: sqlite3.Connection, items: list[dict[str, 
     connection.execute("DELETE FROM reference_items")
     now = utc_now_iso()
     for item in items:
+        metadata = dict(item.get("metadata", {})) if isinstance(item.get("metadata"), dict) else {}
+        for key, value in item.items():
+            if key not in {"ref_index", "author", "title", "year", "raw", "confidence", "metadata"}:
+                metadata[key] = value
         connection.execute(
             """
             INSERT INTO reference_items (
@@ -1118,7 +1134,7 @@ def store_reference_items(connection: sqlite3.Connection, items: list[dict[str, 
                 int(item["year"]) if item.get("year") is not None else None,
                 str(item["raw"]),
                 float(item["confidence"]),
-                _json_dump(item.get("metadata", {})),
+                _json_dump(metadata),
                 now,
             ),
         )
@@ -1144,6 +1160,77 @@ def fetch_reference_items(connection: sqlite3.Connection) -> list[dict[str, Any]
         )
         items.append(item)
     return items
+
+
+def store_reference_metadata_enrichment_workset(connection: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    connection.execute("DELETE FROM reference_metadata_enrichment_workset")
+    now = utc_now_iso()
+    for row in rows:
+        connection.execute(
+            """
+            INSERT INTO reference_metadata_enrichment_workset (
+                ref_index, locked_reference_json, existing_metadata_json, metadata_context_text,
+                allowed_fields_json, batch_index, status, evidence_note, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(row["ref_index"]),
+                _json_dump(row.get("locked_reference", {})),
+                _json_dump(row.get("existing_metadata", {})),
+                str(row.get("metadata_context_text", "")),
+                _json_dump(row.get("allowed_fields", [])),
+                int(row.get("batch_index", 0)),
+                str(row.get("status", "pending")),
+                str(row.get("evidence_note", "")),
+                now,
+            ),
+        )
+    touch_runtime(connection)
+
+
+def fetch_reference_metadata_enrichment_workset(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT ref_index, locked_reference_json, existing_metadata_json, metadata_context_text,
+               allowed_fields_json, batch_index, status, evidence_note
+        FROM reference_metadata_enrichment_workset
+        ORDER BY ref_index ASC
+        """
+    ).fetchall()
+    workset: list[dict[str, Any]] = []
+    for row in rows:
+        workset.append(
+            {
+                "ref_index": int(row["ref_index"]),
+                "locked_reference": json.loads(str(row["locked_reference_json"])),
+                "existing_metadata": json.loads(str(row["existing_metadata_json"])),
+                "metadata_context_text": str(row["metadata_context_text"]),
+                "allowed_fields": json.loads(str(row["allowed_fields_json"])),
+                "batch_index": int(row["batch_index"]),
+                "status": str(row["status"]),
+                "evidence_note": str(row["evidence_note"]),
+            }
+        )
+    return workset
+
+
+def update_reference_metadata_enrichment_statuses(connection: sqlite3.Connection, statuses: dict[int, dict[str, Any]]) -> None:
+    now = utc_now_iso()
+    for ref_index, status_obj in statuses.items():
+        connection.execute(
+            """
+            UPDATE reference_metadata_enrichment_workset
+            SET status = ?, evidence_note = ?, updated_at = ?
+            WHERE ref_index = ?
+            """,
+            (
+                str(status_obj.get("status", "")),
+                str(status_obj.get("evidence_note", "")),
+                now,
+                int(ref_index),
+            ),
+        )
+    touch_runtime(connection)
 
 
 def store_citation_mentions(connection: sqlite3.Connection, mentions: list[dict[str, Any]]) -> None:

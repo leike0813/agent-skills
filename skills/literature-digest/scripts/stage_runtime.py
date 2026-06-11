@@ -52,6 +52,7 @@ from runtime_db import (  # noqa: E402
     fetch_reference_entries,
     fetch_reference_extraction_decision,
     fetch_reference_items,
+    fetch_reference_metadata_enrichment_workset,
     fetch_reference_parse_candidates,
     fetch_reference_preprocess_quality,
     fetch_runtime_inputs,
@@ -86,10 +87,12 @@ from runtime_db import (  # noqa: E402
     store_reference_batch,
     store_reference_entries,
     store_reference_items,
+    store_reference_metadata_enrichment_workset,
     store_reference_parse_candidates,
     store_reference_preprocess_quality,
     store_section_scope,
     store_source_document,
+    update_reference_metadata_enrichment_statuses,
     is_reference_extraction_abandoned,
 )
 
@@ -104,6 +107,7 @@ CITATION_EXPORT_FILENAME = "citation_workset_export.json"
 CITATION_REVIEW_EXPORT_FILENAME = "citation_workset_review.json"
 REFERENCES_EXPORT_FILENAME = "references_workset_export.json"
 REFERENCES_REVIEW_EXPORT_FILENAME = "references_workset_review.json"
+REFERENCE_METADATA_ENRICHMENT_EXPORT_FILENAME = "reference_metadata_enrichment_workset.json"
 RESULT_JSON_FILENAME = "literature-digest.result.json"
 PDF_SIGNATURE = b"%PDF-"
 LATEX_INCLUDE_RE = re.compile(r"\\(?:input|include)\{([^}]+)\}")
@@ -231,7 +235,6 @@ REFERENCE_QUALITY_WARNING_REASON_CODES = {
     "possible_author_prefix_noise",
     "very_long_title",
     "short_title_requires_context",
-    "rich_metadata_evidence_missing",
     "missing_year",
     "missing_authors",
 }
@@ -334,6 +337,8 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_reference_entry_splits",
         "decide_reference_extraction",
         "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -349,6 +354,8 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_reference_entry_splits",
         "decide_reference_extraction",
         "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -363,6 +370,8 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_reference_entry_splits",
         "decide_reference_extraction",
         "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -376,6 +385,8 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_reference_entry_splits",
         "decide_reference_extraction",
         "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -388,6 +399,8 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_reference_entry_splits",
         "decide_reference_extraction",
         "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -399,6 +412,8 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_reference_entry_splits",
         "decide_reference_extraction",
         "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -408,6 +423,8 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
     "persist_reference_entry_splits": [
         "decide_reference_extraction",
         "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -416,6 +433,8 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
     ],
     "decide_reference_extraction": [
         "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -423,6 +442,8 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "render_and_validate",
     ],
     "persist_references": [
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -430,6 +451,23 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "render_and_validate",
     ],
     "review_reference_quality": [
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "prepare_reference_metadata_enrichment": [
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_reference_metadata_enrichment": [
         "prepare_citation_workset",
         "persist_citation_semantics",
         "persist_citation_timeline",
@@ -645,11 +683,12 @@ def _record_action_receipt(
     *,
     action_name: str,
     stage: str,
+    status: str = "succeeded",
     metadata: dict[str, Any] | None = None,
 ) -> None:
     delete_action_receipts(connection, ACTION_RECEIPT_INVALIDATIONS.get(action_name, []))
     resolve_runtime_errors(connection, stage=stage)
-    store_action_receipt(connection, action_name=action_name, stage=stage, status="succeeded", metadata=metadata)
+    store_action_receipt(connection, action_name=action_name, stage=stage, status=status, metadata=metadata)
 
 
 def _missing_required_receipts(connection, actions: tuple[str, ...]) -> list[str]:
@@ -3911,8 +3950,6 @@ def _classify_reference_quality(item: dict[str, Any]) -> list[dict[str, Any]]:
             reasons.append((REFERENCE_QUALITY_WARNING, "very_long_title", "title"))
         if 0 < len(content_tokens) < 2 and _reference_quality_non_ascii_letter_count(normalized_title) < 4:
             reasons.append((REFERENCE_QUALITY_WARNING, "short_title_requires_context", "title"))
-    if _reference_missing_rich_metadata_fields(item):
-        reasons.append((REFERENCE_QUALITY_WARNING, "rich_metadata_evidence_missing", "metadata"))
     if year is None:
         reasons.append((REFERENCE_QUALITY_WARNING, "missing_year", "year"))
     if not authors:
@@ -3952,7 +3989,6 @@ def _reference_quality_recommendation(reason_code: str) -> str:
         "possible_author_prefix_noise": "Inspect whether author text was included at the start of title; move it to author[] and keep only the work title.",
         "very_long_title": "Inspect the title boundary; split away venue, abstract, or neighboring reference text if included.",
         "short_title_requires_context": "Verify the short title against raw/candidates; correct it if it is only a fragment, preserving the original language/script, otherwise explicitly accept the warning.",
-        "rich_metadata_evidence_missing": "The raw reference contains visible venue, DOI, URL, pages, archive, volume, issue, or institution evidence. Add supported top-level rich metadata fields when reliable, or explicitly accept the warning if the evidence is noisy.",
         "missing_year": "Recover the publication year from raw/candidates when available; otherwise explicitly accept the warning.",
         "missing_authors": "Recover authors from raw/candidates when available; otherwise explicitly accept the warning.",
     }
@@ -3976,8 +4012,6 @@ def _build_reference_quality_issue(
         current_value = "" if year is None else str(year)
     elif field == "authors":
         current_value = json.dumps(authors, ensure_ascii=False)
-    elif reason_code == "rich_metadata_evidence_missing":
-        current_value = json.dumps(_reference_missing_rich_metadata_fields(item), ensure_ascii=False)
     else:
         current_value = title
     return {
@@ -4012,6 +4046,93 @@ def _normalize_reference_item(item: object, warnings: list[str]) -> dict[str, An
     metadata.update(_reference_rich_metadata_from_payload(out))
     out["metadata"] = metadata
     return out
+
+
+def _reference_metadata_locked_reference(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ref_index": int(item["ref_index"]),
+        "author": list(item.get("author", [])),
+        "title": str(item.get("title", "")),
+        "year": item.get("year"),
+        "raw": str(item.get("raw", "")),
+        "confidence": float(item.get("confidence", 0.0)),
+    }
+
+
+def _reference_item_flat_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(item.get("metadata", {})) if isinstance(item.get("metadata"), dict) else {}
+    for key, value in item.items():
+        if key not in {"ref_index", "author", "title", "year", "raw", "confidence", "metadata"}:
+            metadata[key] = value
+    return metadata
+
+
+def _remove_once_case_insensitive(text: str, needle: str) -> str:
+    needle = str(needle).strip()
+    if not needle:
+        return text
+    pattern = re.compile(re.escape(needle), re.IGNORECASE)
+    return pattern.sub(" ", text, count=1)
+
+
+def _reference_metadata_context_text(item: dict[str, Any]) -> str:
+    raw = str(item.get("raw", "")).strip()
+    context = REFERENCE_ENTRY_START_RE.sub("", raw).strip()
+    for author in _as_str_list(item.get("author")):
+        context = _remove_once_case_insensitive(context, author)
+    title = str(item.get("title", "")).strip()
+    if title:
+        context = _remove_once_case_insensitive(context, title)
+    year = _as_int_or_none(item.get("year"))
+    if year is not None:
+        context = re.sub(rf"\(?\b{year}\b\)?", " ", context, count=1)
+    context = re.sub(r"\s+", " ", context)
+    context = re.sub(r"^[\s,.;:()\[\]-]+|[\s,.;:()\[\]-]+$", "", context).strip()
+    return context or raw
+
+
+def _build_reference_metadata_enrichment_rows(reference_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    allowed_fields = list(REFERENCE_RICH_METADATA_FIELDS)
+    for position, item in enumerate(reference_items):
+        metadata = _reference_item_flat_metadata(item)
+        existing_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key in REFERENCE_RICH_METADATA_FIELDS and not _reference_metadata_value_is_empty(value)
+        }
+        rows.append(
+            {
+                "ref_index": int(item["ref_index"]),
+                "locked_reference": _reference_metadata_locked_reference(item),
+                "existing_metadata": existing_metadata,
+                "metadata_context_text": _reference_metadata_context_text(item),
+                "allowed_fields": allowed_fields,
+                "batch_index": position // 10,
+                "status": "pending",
+                "evidence_note": "",
+            }
+        )
+    return rows
+
+
+def _normalize_reference_enrichment_metadata(metadata: object) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(metadata, dict):
+        return {}, ["metadata must be object"]
+    normalized: dict[str, Any] = {}
+    errors: list[str] = []
+    source = dict(metadata)
+    for alias, canonical in REFERENCE_RICH_METADATA_ALIASES.items():
+        if alias in source and canonical not in source:
+            source[canonical] = source.pop(alias)
+    for key, value in source.items():
+        if key not in REFERENCE_RICH_METADATA_FIELDS:
+            errors.append(f"metadata.{key} is not an allowed enrichment field")
+            continue
+        if _reference_metadata_value_is_empty(value):
+            continue
+        normalized[key] = value
+    return normalized, errors
 
 
 def _extract_detected_reference_number(raw: str) -> int | None:
@@ -4608,8 +4729,16 @@ def _repair_state_from_receipts(connection) -> tuple[str, str, str, str]:  # typ
         return ("stage_5_citation", "persist_citation_timeline", "persist_citation_timeline", "ready to persist citation timeline")
     if has_action_receipt(connection, "prepare_citation_workset"):
         return ("stage_5_citation", "persist_citation_semantics", "persist_citation_semantics", "ready to persist citation semantics")
-    if has_action_receipt(connection, "persist_references"):
+    if has_action_receipt(connection, "persist_reference_metadata_enrichment"):
         return ("stage_5_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
+    if has_action_receipt(connection, "prepare_reference_metadata_enrichment"):
+        if is_reference_extraction_abandoned(connection):
+            return ("stage_5_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
+        return ("stage_4_references", "persist_reference_metadata_enrichment", "persist_reference_metadata_enrichment", "ready to persist reference metadata enrichment")
+    if has_action_receipt(connection, "review_reference_quality"):
+        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata enrichment")
+    if has_action_receipt(connection, "persist_references"):
+        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata enrichment")
     if has_action_receipt(connection, "persist_reference_entry_splits"):
         return ("stage_4_references", "persist_references", "persist_references", "ready to persist references")
     if has_action_receipt(connection, "prepare_references_workset"):
@@ -5789,7 +5918,13 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
         resolve_reference_quality_issues(connection)
         for warning in list(dict.fromkeys(warnings)):
             add_runtime_warning_once(connection, warning)
-        _set_success_state(connection, stage="stage_5_citation", substep="prepare_citation_workset", next_action="prepare_citation_workset", status="references persisted")
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep="prepare_reference_metadata_enrichment",
+            next_action="prepare_reference_metadata_enrichment",
+            status="references persisted; prepare metadata enrichment",
+        )
         _record_action_receipt(
             connection,
             action_name="persist_references",
@@ -5810,9 +5945,9 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
         if not active_issues:
             _set_success_state(
                 connection,
-                stage="stage_5_citation",
-                substep="prepare_citation_workset",
-                next_action="prepare_citation_workset",
+                stage="stage_4_references",
+                substep="prepare_reference_metadata_enrichment",
+                next_action="prepare_reference_metadata_enrichment",
                 status="reference quality review already complete",
             )
             _record_action_receipt(connection, action_name="review_reference_quality", stage="stage_4_references")
@@ -6021,9 +6156,9 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
 
         _set_success_state(
             connection,
-            stage="stage_5_citation",
-            substep="prepare_citation_workset",
-            next_action="prepare_citation_workset",
+            stage="stage_4_references",
+            substep="prepare_reference_metadata_enrichment",
+            next_action="prepare_reference_metadata_enrichment",
             status="reference quality review complete",
         )
         _record_action_receipt(
@@ -6052,6 +6187,193 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    with connect_db(db_path) as connection:
+        if is_reference_extraction_abandoned(connection):
+            _set_success_state(
+                connection,
+                stage="stage_5_citation",
+                substep="prepare_citation_workset",
+                next_action="prepare_citation_workset",
+                status="reference extraction abandoned; metadata enrichment skipped",
+            )
+            _record_action_receipt(
+                connection,
+                action_name="prepare_reference_metadata_enrichment",
+                stage="stage_4_references",
+                status="skipped",
+                metadata={"reason": "reference_extraction_abandoned"},
+            )
+            connection.commit()
+            print(json.dumps({"workset_path": "", "item_count": 0, "skipped": True, "error": None}, ensure_ascii=False))
+            return 0
+
+        reference_items = fetch_reference_items(connection)
+        if not reference_items:
+            message = "reference_items missing; persist_references must run before metadata enrichment"
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        out_path = Path(args.out_path).expanduser().resolve() if args.out_path else (runtime_paths.tmp_dir / REFERENCE_METADATA_ENRICHMENT_EXPORT_FILENAME)
+        rows = _build_reference_metadata_enrichment_rows(reference_items)
+        store_reference_metadata_enrichment_workset(connection, rows)
+        workset_payload = {
+            "kind": "reference_metadata_enrichment",
+            "instructions": {
+                "locked_fields": ["ref_index", "author", "title", "year", "raw", "confidence"],
+                "allowed_metadata_fields": list(REFERENCE_RICH_METADATA_FIELDS),
+                "single_writer": "Subagents may draft per-batch metadata, but the main agent must merge and submit one persist_reference_metadata_enrichment payload.",
+            },
+            "items": rows,
+        }
+        _write_json(out_path, workset_payload)
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep="persist_reference_metadata_enrichment",
+            next_action="persist_reference_metadata_enrichment",
+            status="reference metadata enrichment workset prepared",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="prepare_reference_metadata_enrichment",
+            stage="stage_4_references",
+            metadata={"item_count": len(rows), "batch_count": len({int(row["batch_index"]) for row in rows})},
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "workset_path": str(out_path),
+                "item_count": len(rows),
+                "batch_count": len({int(row["batch_index"]) for row in rows}),
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_persist_reference_metadata_enrichment(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    items = payload.get("items")
+    with connect_db(db_path) as connection:
+        workset_rows = fetch_reference_metadata_enrichment_workset(connection)
+        reference_items = fetch_reference_items(connection)
+
+        def fail(message: str) -> int:
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+
+        if not workset_rows:
+            return fail("reference metadata enrichment workset missing; run prepare_reference_metadata_enrichment first")
+        if not isinstance(items, list):
+            return fail("items must be an array")
+
+        workset_by_ref = {int(row["ref_index"]): row for row in workset_rows}
+        reference_by_ref = {int(item["ref_index"]): dict(item) for item in reference_items}
+        submitted: set[int] = set()
+        metadata_by_ref: dict[int, dict[str, Any]] = {}
+        status_updates: dict[int, dict[str, Any]] = {}
+        enriched_count = 0
+        no_metadata_count = 0
+        confirmed_existing_count = 0
+        forbidden_core_fields = {"author", "authors", "title", "year", "raw", "raw_reference", "reference", "confidence"}
+
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                return fail(f"items[{index}] must be object")
+            ref_index = item.get("ref_index")
+            if not isinstance(ref_index, int):
+                return fail(f"items[{index}].ref_index must be integer")
+            if ref_index not in workset_by_ref:
+                return fail(f"items[{index}].ref_index does not belong to the current enrichment workset")
+            if ref_index in submitted:
+                return fail(f"items[{index}].ref_index is duplicated")
+            submitted.add(ref_index)
+            forbidden = sorted(field for field in forbidden_core_fields if field in item)
+            if forbidden:
+                return fail(f"items[{index}] attempts to modify locked reference fields: {forbidden}")
+            status = str(item.get("status", "")).strip()
+            if status not in {"enriched", "confirmed_existing", "no_metadata_found"}:
+                return fail(f"items[{index}].status must be enriched, confirmed_existing, or no_metadata_found")
+            evidence_note = str(item.get("evidence_note") or item.get("reason") or "").strip()
+            if status == "enriched":
+                normalized_metadata, metadata_errors = _normalize_reference_enrichment_metadata(item.get("metadata"))
+                if metadata_errors:
+                    return fail(f"items[{index}] invalid metadata: {'; '.join(metadata_errors)}")
+                if not normalized_metadata:
+                    return fail(f"items[{index}].metadata must contain at least one non-empty allowed field when status=enriched")
+                metadata_by_ref[ref_index] = normalized_metadata
+                enriched_count += 1
+            elif "metadata" in item and item.get("metadata") not in ({}, None):
+                return fail(f"items[{index}].metadata is only allowed when status=enriched")
+            elif status == "confirmed_existing":
+                confirmed_existing_count += 1
+            else:
+                no_metadata_count += 1
+            status_updates[ref_index] = {"status": status, "evidence_note": evidence_note}
+
+        missing = sorted(set(workset_by_ref) - submitted)
+        if missing:
+            return fail(f"items must cover every enrichment workset ref_index exactly once; missing ref_indexes: {missing}")
+        stale_refs = sorted(set(workset_by_ref) - set(reference_by_ref))
+        if stale_refs:
+            return fail(f"reference_items missing for enrichment workset ref_indexes: {stale_refs}")
+
+        merged_items: list[dict[str, Any]] = []
+        for existing in reference_items:
+            ref_index = int(existing["ref_index"])
+            merged = dict(existing)
+            metadata = _reference_item_flat_metadata(merged)
+            metadata.update(metadata_by_ref.get(ref_index, {}))
+            merged["metadata"] = _sanitize_reference_metadata(metadata)
+            merged_items.append(merged)
+        store_reference_items(connection, merged_items)
+        update_reference_metadata_enrichment_statuses(connection, status_updates)
+        _set_success_state(
+            connection,
+            stage="stage_5_citation",
+            substep="prepare_citation_workset",
+            next_action="prepare_citation_workset",
+            status="reference metadata enrichment persisted",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="persist_reference_metadata_enrichment",
+            stage="stage_4_references",
+            metadata={
+                "item_count": len(items),
+                "enriched_count": enriched_count,
+                "confirmed_existing_count": confirmed_existing_count,
+                "no_metadata_found_count": no_metadata_count,
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "stored_reference_items": len(reference_items),
+                "enriched_count": enriched_count,
+                "confirmed_existing_count": confirmed_existing_count,
+                "no_metadata_found_count": no_metadata_count,
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
     payload = _read_json_payload(args.payload_file)
@@ -6065,6 +6387,12 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         scope_row = fetch_section_scope(connection, "citation_scope")
         reference_items = fetch_reference_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
+        if not reference_free_mode and not has_action_receipt(connection, "persist_reference_metadata_enrichment"):
+            message = "reference metadata enrichment missing; run prepare_reference_metadata_enrichment and persist_reference_metadata_enrichment before citation workset"
+            set_runtime_error(connection, "citation_scope_failed", message, "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": message}}, ensure_ascii=False))
+            return 2
         if source_doc is None:
             set_runtime_error(connection, "citation_scope_failed", "normalized source missing", "stage_5_citation")
             connection.commit()
@@ -6713,6 +7041,16 @@ def build_parser() -> argparse.ArgumentParser:
     reference_quality.add_argument("--db-path", default="")
     reference_quality.add_argument("--payload-file", default="")
     reference_quality.set_defaults(handler=_handle_review_reference_quality)
+
+    reference_metadata_prepare = subparsers.add_parser("prepare_reference_metadata_enrichment")
+    reference_metadata_prepare.add_argument("--db-path", default="")
+    reference_metadata_prepare.add_argument("--out", dest="out_path", default="")
+    reference_metadata_prepare.set_defaults(handler=_handle_prepare_reference_metadata_enrichment)
+
+    reference_metadata_persist = subparsers.add_parser("persist_reference_metadata_enrichment")
+    reference_metadata_persist.add_argument("--db-path", default="")
+    reference_metadata_persist.add_argument("--payload-file", default="")
+    reference_metadata_persist.set_defaults(handler=_handle_persist_reference_metadata_enrichment)
 
     mentions = subparsers.add_parser("prepare_citation_workset")
     mentions.add_argument("--db-path", default="")

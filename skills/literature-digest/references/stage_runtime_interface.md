@@ -43,6 +43,8 @@ python scripts/stage_runtime.py <subcommand> [args...]
 - `decide_reference_extraction`
 - `persist_references`
 - `review_reference_quality`
+- `prepare_reference_metadata_enrichment`
+- `persist_reference_metadata_enrichment`
 - `prepare_citation_workset`
 - `persist_citation_semantics`
 - `persist_citation_timeline`
@@ -810,7 +812,7 @@ python scripts/stage_runtime.py persist_references \
   - `ref_index` 由脚本按 `entry_index` 稳定生成，不需要 agent 单独填写。
   - `year` 优先取条目末尾出版年份，不要误取 arXiv 编号前缀。
   - `title` 必须保持 raw reference 中的原始语言和文字系统；不得为了通过质量门禁而翻译、英文化或罗马化题名，也不得用 `none` / `null` / `unknown` / `untitled` 等 placeholder 字符串代替未知题名。
-  - `publicationTitle`、`conferenceName`、`archiveID`、`university`、`volume`、`issue`、`pages`、`numPages`、`DOI`、`url`、`publisher`、`place`、`ISBN`、`ISSN` 可作为顶层 rich metadata 字段提交；raw/candidate 有明确证据时应提交，最低字段只是无证据时的下限。
+  - rich metadata 不在本步强制完成；后续 `prepare_reference_metadata_enrichment` 会基于已锁定 reference rows 生成单独 workset。
 
 ### 推荐示例
 
@@ -823,9 +825,6 @@ python scripts/stage_runtime.py persist_references \
       "author": ["Gu, J.", "Bradbury, J.", "Xiong, C.", "Li, V.O.", "Socher, R."],
       "title": "Non-autoregressive neural machine translation",
       "year": 2018,
-      "conferenceName": "ICLR",
-      "pages": "12-20",
-      "DOI": "10.1000/example",
       "raw": "[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR, pp. 12-20. doi:10.1000/example (2018)",
       "confidence": 0.9
     }
@@ -945,7 +944,111 @@ python scripts/stage_runtime.py review_reference_quality \
 }
 ```
 
-成功后 gate 推进到 `prepare_citation_workset`。
+成功后 gate 推进到 `prepare_reference_metadata_enrichment`。
+
+## `prepare_reference_metadata_enrichment`
+
+### 命令
+
+```bash
+python scripts/stage_runtime.py prepare_reference_metadata_enrichment \
+  [--db-path PATH] \
+  [--out PATH]
+```
+
+### 行为
+
+- 读取已锁定的 `reference_items`
+- 写入 DB-backed `reference_metadata_enrichment_workset`
+- 导出可读 workset JSON，供主 agent 或 subagents 分片分析
+- 不修改 `reference_items`
+
+### Workset item 字段
+
+- `ref_index`
+- `locked_reference`
+  - 包含 `author/title/year/raw/confidence`
+  - 本阶段不得修改
+- `existing_metadata`
+- `metadata_context_text`
+  - 从 raw 中低风险移除编号、作者、标题、年份后的剩余文本
+  - 如果无法安全移除，则保留更多上下文
+- `allowed_fields`
+- `batch_index`
+
+### 成功输出
+
+```json
+{
+  "workset_path": "/abs/path/reference_metadata_enrichment_workset.json",
+  "item_count": 2,
+  "batch_count": 1,
+  "error": null
+}
+```
+
+## `persist_reference_metadata_enrichment`
+
+### 命令
+
+```bash
+python scripts/stage_runtime.py persist_reference_metadata_enrichment \
+  [--db-path PATH] \
+  [--payload-file FILE]
+```
+
+### Payload 顶层结构
+
+```json
+{
+  "items": [
+    {
+      "ref_index": 0,
+      "status": "enriched",
+      "metadata": {
+        "publicationTitle": "Journal of Example Research",
+        "volume": "12",
+        "issue": "3",
+        "pages": "45-67",
+        "DOI": "10.1000/example"
+      },
+      "evidence_note": "Found in metadata_context_text."
+    },
+    {
+      "ref_index": 1,
+      "status": "no_metadata_found",
+      "reason": "No reliable optional metadata remains after locked author/title/year fields."
+    }
+  ]
+}
+```
+
+### 字段说明
+
+- `items`
+  - 必填。必须覆盖当前 enrichment workset 的每个 `ref_index`，且每个只能出现一次。
+- `status`
+  - 只允许 `enriched`、`confirmed_existing`、`no_metadata_found`。
+- `metadata`
+  - 仅 `status="enriched"` 时允许。
+  - 至少包含一个非空 allowed field。
+  - allowed fields 固定为 `publicationTitle`、`conferenceName`、`archiveID`、`university`、`volume`、`issue`、`pages`、`numPages`、`DOI`、`url`、`publisher`、`place`、`ISBN`、`ISSN`。
+- locked core fields
+  - 不得提交 `author`、`title`、`year`、`raw`、`confidence` 等字段。
+
+### 成功输出
+
+```json
+{
+  "stored_reference_items": 2,
+  "enriched_count": 1,
+  "confirmed_existing_count": 0,
+  "no_metadata_found_count": 1,
+  "error": null
+}
+```
+
+成功后 gate 推进到 `prepare_citation_workset`。subagents 可以按 `batch_index` 产出草稿，但只有主 agent 合并后调用本命令。
 
 ## `prepare_citation_workset`
 

@@ -29,20 +29,20 @@
 - 无法定位 references 区块：`references=[]`（digest 可正常生成）
 - 多个候选 references：默认选择“最后一个且长度合理”的区块
 - 条目分割不稳定：保留 `raw`，并输出 `author=[]`、`title=""`、`year=null`，`confidence` 置低（例如 0.1）
-- 必填字段保持不变（`author/title/year/raw/confidence`），但这只是最低下限，不是目标上限。
+- 必填字段保持不变（`author/title/year/raw/confidence`）。`persist_references` 先稳定这些核心行；rich metadata 在后续 `prepare_reference_metadata_enrichment` / `persist_reference_metadata_enrichment` 中单独补全。
 - **注意区分 reference 条目的类型**：常见的 reference 主要分以下几类：
   1. 期刊论文：title 后一般跟随期刊名称，对应 `publicationTitle`
   2. 会议论文：title 后一般跟随会议名称，常以 `In` 起头，对应 `conferenceName`
   3. 预印本：常见 `arXiv preprint`，对应 `archiveID`
   4. 学位论文：常含大学和地点，对应 `university` 与 `place`
-- **高价值可选字段提取优先级（有证据就应输出，禁止“只做最低限度”）**：
+- **高价值可选字段提取优先级（在 metadata enrichment 阶段，有证据就应输出，禁止“只做最低限度”）**：
   1. `publicationTitle`、`conferenceName`、`archiveID`、`university`
   2. `volume`、`issue`、`pages`
   3. `DOI`、`url`
   4. `publisher`、`place`
 - **反偷懒约束（重要）**：
   - 若 `raw` 中已出现明确证据（如 `In: <venue>`、`vol.`、`no.`、`pp.`、`doi`、`https://...`、`Publisher`、`University` 等），应尽量填入对应可选字段。
-  - 不允许在有明确证据时仅输出必填字段。
+  - 这些字段应在 reference metadata enrichment payload 中补全；不要把压力推给 deterministic preprocess。
 - **反臆造约束（重要）**：
   - 可选字段仍为可选；证据不足时可以省略。
   - 不要为了“字段完整”而凭空生成 metadata。
@@ -193,6 +193,14 @@ Fielding, Roy Thomas. Architectural styles and the design of network-based softw
    - agent 只在候选中选择 `selected_pattern`
    - agent 在选中候选的基础上 refine 完整 `author[] / title / year`
    - 脚本校验后写入最终 `reference_items`
+4. `prepare_reference_metadata_enrichment`
+   - 脚本从已确定的 `reference_items` 生成按 `ref_index` 切分的 metadata enrichment workset
+   - 每个 item 都包含 locked reference、existing metadata、去除编号/作者/标题/年份后的 `metadata_context_text`、allowed fields 和 `batch_index`
+   - 可以让 subagents 分批草拟，但 subagents 不写 DB；主 agent 合并后进入下一步
+5. `persist_reference_metadata_enrichment`
+   - agent 覆盖每个 workset `ref_index`
+   - 只补 rich metadata，不修改 locked `author/title/year/raw/confidence`
+   - 脚本将 allowed metadata merge 回 `reference_items.metadata`
 
 当 `file_quality_low=true` 时，gate 会在 `persist_reference_entry_splits` / `persist_references` 之前先返回 `decide_reference_extraction`。agent 必须显式选择：
 
@@ -467,7 +475,6 @@ Soft warning reason codes：
 - `short_title_requires_context`
 - `missing_year`
 - `missing_authors`
-- `rich_metadata_evidence_missing`
 
 若只有 soft warning：
 
@@ -475,6 +482,8 @@ Soft warning reason codes：
 - 受影响 item 写入 `metadata.title_quality = {"status": "warning", "flags": [...]}`
 - workflow 推进到 `review_reference_quality`
 - gate 返回 `quality_directives` 要求逐条 inspect，能修则 corrected，不能修且可接受时显式 `accept_warning`
+
+缺失可选 rich metadata 不再作为 `reference_quality_issues`；它由后续 `reference_metadata_enrichment` workset 单独处理。
 
 Hard block gate 示例：
 
@@ -531,6 +540,53 @@ Soft warning corrected payload 示例：
 }
 ```
 
+### Reference metadata enrichment 契约
+
+`prepare_reference_metadata_enrichment` 在 reference quality review 完成后运行。它只读取已写入 DB 的 `reference_items`，生成 DB-backed workset 和可读导出文件。每个 item 包含：
+
+- `ref_index`
+- `locked_reference`：已确定的 `author/title/year/raw/confidence`，本阶段不得修改
+- `existing_metadata`：已经保留的 rich metadata
+- `metadata_context_text`：从 raw 中低风险移除编号、作者、标题、年份后的剩余文本
+- `allowed_fields`
+- `batch_index`
+
+`metadata_context_text` 是 agent 提取 rich metadata 的主要输入；如果脚本无法安全移除某些片段，会保留更多上下文。agent 不能因此重写 locked core fields。
+
+`persist_reference_metadata_enrichment` payload 必须覆盖每个 workset `ref_index`：
+
+```json
+{
+  "items": [
+    {
+      "ref_index": 0,
+      "status": "enriched",
+      "metadata": {
+        "publicationTitle": "Journal of Example Research",
+        "volume": "12",
+        "issue": "3",
+        "pages": "45-67",
+        "DOI": "10.1000/example"
+      },
+      "evidence_note": "Found in metadata_context_text."
+    },
+    {
+      "ref_index": 1,
+      "status": "no_metadata_found",
+      "reason": "No reliable optional metadata remains after locked author/title/year fields."
+    }
+  ]
+}
+```
+
+规则：
+
+- `status` 只允许 `enriched`、`confirmed_existing`、`no_metadata_found`
+- `enriched` 必须提供至少一个非空 allowed metadata field
+- allowed metadata fields 固定为 `publicationTitle`、`conferenceName`、`archiveID`、`university`、`volume`、`issue`、`pages`、`numPages`、`DOI`、`url`、`publisher`、`place`、`ISBN`、`ISSN`
+- 不得提交 `author/title/year/raw/confidence` 等 locked core fields
+- 可以按 `batch_index` 委派 subagents 草拟 metadata，但 subagents 只交回草稿；主 agent 必须合并、检查字段白名单和证据后提交一次正式 payload
+
 ### 编号质量检查
 
 在写入 `reference_entries` / `reference_items` 前，脚本必须额外检查：
@@ -553,8 +609,9 @@ Soft warning corrected payload 示例：
   - `reference_batches`
   - `reference_parse_candidates`
   - `reference_items`
+  - `reference_metadata_enrichment_workset`
 - `references.json` 是 `stage_6_render_and_validate` 从 `reference_items` 渲染得到的公开产物
-- `prepare_citation_workset` 必须直接复用 `reference_items` 做 mention -> reference 解析，不得重新回到原始 references 文本做重复关联
+- 正常模式下，`prepare_citation_workset` 必须在 `persist_reference_metadata_enrichment` 后运行，并直接复用 `reference_items` 做 mention -> reference 解析，不得重新回到原始 references 文本做重复关联
 - 本阶段不直接发布公开文件，也不得把 `references.json` 当作后续内部分析真源
 
 ### 多作者冒号体例示例

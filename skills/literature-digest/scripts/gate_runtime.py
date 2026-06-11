@@ -73,6 +73,7 @@ STAGE_RULES: dict[str, dict[str, Any]] = {
             "reference_extraction_decision",
             "reference_items",
             "reference_quality_issues",
+            "reference_metadata_enrichment_workset",
         ],
     },
     "stage_5_citation": {
@@ -344,7 +345,14 @@ def _instruction_refs(stage: str, next_action: str) -> list[dict[str, str]]:
         refs[0]["section"] = "Outline and scope extraction"
     elif next_action == "persist_digest":
         refs[0]["section"] = "Digest generation"
-    elif next_action in {"prepare_references_workset", "persist_reference_entry_splits", "decide_reference_extraction", "persist_references"}:
+    elif next_action in {
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "decide_reference_extraction",
+        "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+    }:
         refs[0]["section"] = "References extraction"
     elif next_action in {"prepare_citation_workset", "persist_citation_semantics", "persist_citation_timeline", "persist_citation_summary"}:
         refs[0]["section"] = "Citation pipeline"
@@ -570,7 +578,7 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
                         }
                     ]
                 },
-                "notes": "quality_directives contains hard_block rows. Rebuild the full persist_references payload from prepared candidates, correcting listed rows by recovering the cited title in the raw reference's original language/script. Preserve visible rich metadata such as DOI, url, pages, venue, archive, volume, issue, publisher, place, ISBN, and ISSN when supported by raw evidence. Do not translate, Anglicize, or romanize a title to satisfy the gate. If a hard row is unrecoverable, omit that row from the new full items[] payload instead of writing a placeholder title.",
+                "notes": "quality_directives contains hard_block rows. Rebuild the full persist_references payload from prepared candidates, correcting listed rows by recovering the cited title in the raw reference's original language/script. Do not translate, Anglicize, or romanize a title to satisfy the gate. If a hard row is unrecoverable, omit that row from the new full items[] payload instead of writing a placeholder title. Rich metadata is completed in the later metadata enrichment step.",
             }
         return {
             "command": f"python scripts/stage_runtime.py persist_references {db_arg} {payload_arg}",
@@ -582,17 +590,12 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
                         "author": ["Author, A."],
                         "title": "Reference title",
                         "year": 2020,
-                        "publicationTitle": "Journal of Example Research",
-                        "volume": 12,
-                        "issue": 3,
-                        "pages": "45-67",
-                        "DOI": "10.1000/example",
                         "raw": "Author, A. 2020. Reference title. Journal of Example Research, 12(3), 45-67. doi:10.1000/example.",
                         "confidence": 0.9,
                     }
                 ]
             },
-            "notes": "Select one prepared pattern per entry and refine the final structured reference items. Minimum fields are only the floor; when raw/candidates visibly contain venue, DOI, url, pages, archive, volume, issue, publisher, place, ISBN, or ISSN evidence, submit those supported rich metadata fields at item top level. Preserve each cited title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles.",
+            "notes": "Select one prepared pattern per entry and refine the final core reference rows. Preserve each cited title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles. Rich metadata is completed after quality review in prepare_reference_metadata_enrichment.",
         }
     if next_action == "review_reference_quality":
         first_issue = dict(list((quality_directives or {}).get("issues", [{}]))[0])
@@ -609,6 +612,38 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
                 ]
             },
             "notes": f"Submit exactly one resolution per active quality_directives issue. Use accept_warning only for acceptable soft warnings. To correct instead, use resolution=corrected with reference fields such as ref_index={ref_index}, author, title, year, raw, confidence, DOI, url, pages, publicationTitle, or conferenceName, preserving the title's original language/script.",
+        }
+    if next_action == "prepare_reference_metadata_enrichment":
+        return {
+            "command": f"python scripts/stage_runtime.py prepare_reference_metadata_enrichment {db_arg}",
+            "payload_example": None,
+            "notes": "This step reads locked reference_items and writes a DB-backed enrichment workset. The exported workset may be split among subagents for drafting, but only the main agent should submit the merged persist payload.",
+        }
+    if next_action == "persist_reference_metadata_enrichment":
+        return {
+            "command": f"python scripts/stage_runtime.py persist_reference_metadata_enrichment {db_arg} {payload_arg}",
+            "payload_example": {
+                "items": [
+                    {
+                        "ref_index": 0,
+                        "status": "enriched",
+                        "metadata": {
+                            "publicationTitle": "Journal of Example Research",
+                            "volume": "12",
+                            "issue": "3",
+                            "pages": "45-67",
+                            "DOI": "10.1000/example",
+                        },
+                        "evidence_note": "Found in the metadata_context_text trailing journal/volume/pages/doi segment.",
+                    },
+                    {
+                        "ref_index": 1,
+                        "status": "no_metadata_found",
+                        "reason": "No reliable optional metadata remains after locked author/title/year fields.",
+                    },
+                ]
+            },
+            "notes": "Cover every ref_index from the enrichment workset exactly once. Only submit supported optional metadata fields; do not include or edit locked fields such as author, title, year, raw, confidence, or ref_index. Subagents may draft per-batch fragments, but the main agent must merge them into this single payload.",
         }
     if next_action == "prepare_citation_workset":
         return {
@@ -693,9 +728,13 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
     if next_action == "decide_reference_extraction":
         return "Deterministic reference preprocessing reported file-level quality too low. Inspect the prepared workset, then explicitly choose continue or abandon. Abandonment is only accepted when the DB contains a deterministic file_quality_low signal; do not fabricate this in the payload."
     if next_action == "persist_references":
-        return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries. Minimum fields are only the floor: if raw/candidates visibly contain venue, DOI, url, pages, archive, volume, issue, publisher, place, ISBN, or ISSN evidence, submit those supported rich metadata fields at item top level. Preserve each title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles to satisfy the quality gate. If quality_directives is present, repair the listed rows first and resubmit the full persist_references payload; omit unrecoverable hard rows rather than writing placeholders."
+        return "Refine core reference rows from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries. Preserve each title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles to satisfy the quality gate. If quality_directives is present, repair the listed rows first and resubmit the full persist_references payload; omit unrecoverable hard rows rather than writing placeholders. Rich metadata is completed in the later metadata enrichment step."
     if next_action == "review_reference_quality":
         return "Review the active quality_directives issues. Correct rows by recovering titles in their raw reference's original language/script when reliable; do not translate, Anglicize, or romanize titles. Otherwise use accept_warning for soft warnings after inspection. Every active issue must have exactly one resolution before Stage 5 can proceed."
+    if next_action == "prepare_reference_metadata_enrichment":
+        return "Prepare the reference metadata enrichment workset from locked reference_items. Core fields are already fixed; this step only creates per-ref_index context for optional metadata completion."
+    if next_action == "persist_reference_metadata_enrichment":
+        return "Persist optional reference metadata enrichment now. Cover every workset ref_index exactly once, use only allowed metadata fields, and do not submit locked core fields such as author, title, year, raw, or confidence. Subagent drafts must be merged by the main agent into this single payload."
     if next_action == "prepare_citation_workset":
         return "Prepare the citation workset from stored citation_scope and reference_items. Do not rebuild scope or reference mapping by hand."
     if next_action == "persist_citation_semantics":
@@ -786,6 +825,18 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
                 missing.append("reference_items")
             if connection.execute("SELECT 1 FROM reference_quality_issues WHERE status = 'active' LIMIT 1").fetchone() is None:
                 missing.append("reference_quality_issues.active")
+        if next_action == "prepare_reference_metadata_enrichment":
+            if count("reference_items") == 0:
+                missing.append("reference_items")
+            if connection.execute("SELECT 1 FROM reference_quality_issues WHERE status = 'active' LIMIT 1").fetchone() is not None:
+                missing.append("reference_quality_issues.active_unresolved")
+        if next_action == "persist_reference_metadata_enrichment":
+            if count("reference_items") == 0:
+                missing.append("reference_items")
+            if count("reference_metadata_enrichment_workset") == 0:
+                missing.append("reference_metadata_enrichment_workset")
+            if "prepare_reference_metadata_enrichment" not in receipts:
+                missing.append("action_receipts.prepare_reference_metadata_enrichment")
     elif stage == "stage_5_citation":
         row = connection.execute("SELECT 1 FROM source_documents WHERE doc_key = 'normalized_source' LIMIT 1").fetchone()
         if row is None:
@@ -795,6 +846,8 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
         reference_free_mode = is_reference_extraction_abandoned(connection)
         if count("reference_items") == 0 and not reference_free_mode:
             missing.append("reference_items")
+        if "persist_reference_metadata_enrichment" not in receipts and not reference_free_mode:
+            missing.append("action_receipts.persist_reference_metadata_enrichment")
         if next_action == "persist_citation_semantics" and count("citation_workset_items") == 0 and not reference_free_mode:
             missing.append("citation_workset_items")
         if next_action == "persist_citation_semantics" and "prepare_citation_workset" not in receipts:
@@ -828,6 +881,8 @@ def _missing_prerequisites(connection, stage: str, next_action: str) -> list[str
             missing.append("citation_summary")
         if "persist_render_templates" not in receipts:
             missing.append("action_receipts.persist_render_templates")
+        if "persist_reference_metadata_enrichment" not in receipts and not reference_free_mode:
+            missing.append("action_receipts.persist_reference_metadata_enrichment")
         for action_name in REQUIRED_STAGE5_RECEIPTS:
             if action_name not in receipts:
                 missing.append(f"action_receipts.{action_name}")

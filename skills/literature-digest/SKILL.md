@@ -144,7 +144,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
 必须由 LLM 完成：
 - digest 槽位内容生成
 - 大纲与 scope 决策
-- references 语义字段补全
+- references 语义字段补全与 reference metadata enrichment
 - citation semantics 与 summary
 
 必须由脚本完成：
@@ -680,8 +680,8 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - `items[*].year`：优先取条目末尾出版年份；不要误取 arXiv 编号前缀
   - `items[*].raw`：对应原始 references 条目文本
   - `items[*].confidence`：对该条最终结构化结果的置信度
-  - `items[*].publicationTitle` / `conferenceName` / `archiveID` / `university` / `volume` / `issue` / `pages` / `numPages` / `DOI` / `url` / `publisher` / `place` / `ISBN` / `ISSN`：可选 rich metadata；raw 或 candidate 有明确证据时应作为顶层字段提交，最低字段只是无证据时的下限
-- 推荐示例（raw 有 venue / pages / DOI 证据时必须保留）：
+  - rich metadata 不在本步强制完成；本步先稳定写入核心 reference rows，后续 `prepare_reference_metadata_enrichment` 会生成专门的补全 workset
+- 推荐示例：
 ```json
 {
   "items": [
@@ -691,9 +691,6 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
       "author": ["Gu, J.", "Bradbury, J.", "Xiong, C.", "Li, V.O.", "Socher, R."],
       "title": "Non-autoregressive neural machine translation",
       "year": 2018,
-      "conferenceName": "ICLR",
-      "pages": "12-20",
-      "DOI": "10.1000/example",
       "raw": "[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR, pp. 12-20. doi:10.1000/example (2018)",
       "confidence": 0.9
     }
@@ -704,7 +701,7 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - 合法：`["Al-Rfou, R.", "Choe, D.", "Constant, N.", "Guo, M.", "Jones, L."]`
   - 非法：`["Al-Rfou", "R.", "Choe", "D.", "Constant", "N.", "Guo", "M.", "Jones", "L."]`
 - 完成后应该看到的 gate 结果：
-  - 无质量问题时，`next_action` 应推进为 `prepare_citation_workset`
+  - 无质量问题时，`next_action` 应推进为 `prepare_reference_metadata_enrichment`
   - 仅有 soft quality warnings 时，`next_action` 应推进为 `review_reference_quality`
   - 存在 hard quality issues 时，不写入 `reference_items`，gate 仍返回 `persist_references` 并通过 `quality_directives` 指明需修复或从下一次完整 payload 省略的条目
 
@@ -744,12 +741,65 @@ python scripts/stage_runtime.py review_reference_quality --payload-file /tmp/ref
 ```
 - 完成后应该看到的 gate 结果：
   - 所有 active soft issue 必须被 corrected 或 `accept_warning`
-  - `next_action` 应推进为 `prepare_citation_workset`
+  - `next_action` 应推进为 `prepare_reference_metadata_enrichment`
 
-### 12. `prepare_citation_workset`
+### 12. `prepare_reference_metadata_enrichment`
 
 - 何时执行：
-  - `persist_references` 成功后，且 gate 返回 `prepare_citation_workset`
+  - 核心 `reference_items` 已写入且没有 active reference quality issues，gate 返回 `prepare_reference_metadata_enrichment`
+- 调用命令：
+```bash
+python scripts/stage_runtime.py prepare_reference_metadata_enrichment [--out /tmp/reference_metadata_enrichment_workset.json]
+```
+- 行为：
+  - 脚本从已锁定的 `reference_items` 生成 enrichment workset
+  - 每个 workset item 包含 locked `ref_index/author/title/year/raw/confidence`、已有 rich metadata、`metadata_context_text`、允许字段和 `batch_index`
+  - 可以把不同 `batch_index` 分给 subagents 草拟 metadata，但 subagent 只产出草稿；主 agent 必须合并后提交一次正式 payload
+- 完成后应该看到的 gate 结果：
+  - `next_action` 应推进为 `persist_reference_metadata_enrichment`
+
+### 13. `persist_reference_metadata_enrichment`
+
+- 何时执行：
+  - gate 返回 `persist_reference_metadata_enrichment`
+- 调用命令：
+```bash
+python scripts/stage_runtime.py persist_reference_metadata_enrichment --payload-file /tmp/reference_metadata_enrichment_payload.json
+```
+- 必须覆盖 enrichment workset 的每个 `ref_index`：
+```json
+{
+  "items": [
+    {
+      "ref_index": 0,
+      "status": "enriched",
+      "metadata": {
+        "conferenceName": "ICLR",
+        "pages": "12-20",
+        "DOI": "10.1000/example"
+      },
+      "evidence_note": "Found in metadata_context_text after the locked title."
+    },
+    {
+      "ref_index": 1,
+      "status": "no_metadata_found",
+      "reason": "No reliable optional metadata remains after locked author/title/year fields."
+    }
+  ]
+}
+```
+- 规则：
+  - `status` 只允许 `enriched`、`confirmed_existing`、`no_metadata_found`
+  - `enriched` 必须包含至少一个非空 allowed metadata field
+  - 只允许补 `publicationTitle`、`conferenceName`、`archiveID`、`university`、`volume`、`issue`、`pages`、`numPages`、`DOI`、`url`、`publisher`、`place`、`ISBN`、`ISSN`
+  - 不得提交或修改 `author/title/year/raw/confidence/ref_index` 等 locked core fields
+- 完成后应该看到的 gate 结果：
+  - `next_action` 应推进为 `prepare_citation_workset`
+
+### 14. `prepare_citation_workset`
+
+- 何时执行：
+  - 正常模式下 `persist_reference_metadata_enrichment` 成功后，或 reference-free abandoned 模式下，gate 返回 `prepare_citation_workset`
 - 调用命令：
 ```bash
 python scripts/stage_runtime.py prepare_citation_workset [--out /tmp/workset.json]
@@ -773,7 +823,7 @@ python scripts/stage_runtime.py prepare_citation_workset --out /tmp/workset.json
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_semantics`
 
-### 13. `persist_citation_semantics`
+### 15. `persist_citation_semantics`
 
 - 何时执行：
   - `prepare_citation_workset` 成功后，且 gate 返回 `persist_citation_semantics`
@@ -812,7 +862,7 @@ python scripts/stage_runtime.py persist_citation_semantics --payload-file /tmp/c
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_timeline`
 
-### 14. `persist_citation_timeline`
+### 16. `persist_citation_timeline`
 
 - 何时执行：
   - `persist_citation_semantics` 成功后，且 gate 返回 `persist_citation_timeline`
@@ -848,7 +898,7 @@ python scripts/stage_runtime.py persist_citation_timeline --payload-file /tmp/ci
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `persist_citation_summary`
 
-### 15. `persist_citation_summary`
+### 17. `persist_citation_summary`
 
 - 何时执行：
   - `persist_citation_timeline` 成功后，且 gate 返回 `persist_citation_summary`
@@ -885,7 +935,7 @@ python scripts/stage_runtime.py persist_citation_summary --payload-file /tmp/cit
 - 完成后应该看到的 gate 结果：
   - `next_action` 应推进为 `render_and_validate`
 
-### 16. `render_and_validate --mode render`
+### 18. `render_and_validate --mode render`
 
 - 何时执行：
   - `persist_citation_summary` 成功后，且 gate 返回 `render_and_validate`
