@@ -680,7 +680,8 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
   - `items[*].year`：优先取条目末尾出版年份；不要误取 arXiv 编号前缀
   - `items[*].raw`：对应原始 references 条目文本
   - `items[*].confidence`：对该条最终结构化结果的置信度
-- 最小合法示例：
+  - `items[*].publicationTitle` / `conferenceName` / `archiveID` / `university` / `volume` / `issue` / `pages` / `numPages` / `DOI` / `url` / `publisher` / `place` / `ISBN` / `ISSN`：可选 rich metadata；raw 或 candidate 有明确证据时应作为顶层字段提交，最低字段只是无证据时的下限
+- 推荐示例（raw 有 venue / pages / DOI 证据时必须保留）：
 ```json
 {
   "items": [
@@ -690,7 +691,10 @@ python scripts/stage_runtime.py persist_references --payload-file /tmp/reference
       "author": ["Gu, J.", "Bradbury, J.", "Xiong, C.", "Li, V.O.", "Socher, R."],
       "title": "Non-autoregressive neural machine translation",
       "year": 2018,
-      "raw": "[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR (2018)",
+      "conferenceName": "ICLR",
+      "pages": "12-20",
+      "DOI": "10.1000/example",
+      "raw": "[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR, pp. 12-20. doi:10.1000/example (2018)",
       "confidence": 0.9
     }
   ]

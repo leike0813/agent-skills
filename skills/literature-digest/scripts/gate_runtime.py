@@ -564,12 +564,13 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
                             "author": ["Recovered Author"],
                             "title": "<RECOVERED_TITLE_IN_ORIGINAL_LANGUAGE_OR_SCRIPT>",
                             "year": 2020,
+                            "DOI": "10.1000/example",
                             "raw": str(first_issue.get("raw_excerpt", "")),
                             "confidence": 0.8,
                         }
                     ]
                 },
-                "notes": "quality_directives contains hard_block rows. Rebuild the full persist_references payload from prepared candidates, correcting listed rows by recovering the cited title in the raw reference's original language/script. Do not translate, Anglicize, or romanize a title to satisfy the gate. If a hard row is unrecoverable, omit that row from the new full items[] payload instead of writing a placeholder title.",
+                "notes": "quality_directives contains hard_block rows. Rebuild the full persist_references payload from prepared candidates, correcting listed rows by recovering the cited title in the raw reference's original language/script. Preserve visible rich metadata such as DOI, url, pages, venue, archive, volume, issue, publisher, place, ISBN, and ISSN when supported by raw evidence. Do not translate, Anglicize, or romanize a title to satisfy the gate. If a hard row is unrecoverable, omit that row from the new full items[] payload instead of writing a placeholder title.",
             }
         return {
             "command": f"python scripts/stage_runtime.py persist_references {db_arg} {payload_arg}",
@@ -581,12 +582,17 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
                         "author": ["Author, A."],
                         "title": "Reference title",
                         "year": 2020,
-                        "raw": "Author, A. 2020. Reference title.",
+                        "publicationTitle": "Journal of Example Research",
+                        "volume": 12,
+                        "issue": 3,
+                        "pages": "45-67",
+                        "DOI": "10.1000/example",
+                        "raw": "Author, A. 2020. Reference title. Journal of Example Research, 12(3), 45-67. doi:10.1000/example.",
                         "confidence": 0.9,
                     }
                 ]
             },
-            "notes": "Select one prepared pattern per entry and refine the final structured reference items. Preserve each cited title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles.",
+            "notes": "Select one prepared pattern per entry and refine the final structured reference items. Minimum fields are only the floor; when raw/candidates visibly contain venue, DOI, url, pages, archive, volume, issue, publisher, place, ISBN, or ISSN evidence, submit those supported rich metadata fields at item top level. Preserve each cited title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles.",
         }
     if next_action == "review_reference_quality":
         first_issue = dict(list((quality_directives or {}).get("issues", [{}]))[0])
@@ -602,7 +608,7 @@ def _command_example(next_action: str, db_path: Path, quality_directives: dict[s
                     },
                 ]
             },
-            "notes": f"Submit exactly one resolution per active quality_directives issue. Use accept_warning only for acceptable soft warnings. To correct instead, use resolution=corrected with reference fields such as ref_index={ref_index}, author, title, year, raw, and confidence, preserving the title's original language/script.",
+            "notes": f"Submit exactly one resolution per active quality_directives issue. Use accept_warning only for acceptable soft warnings. To correct instead, use resolution=corrected with reference fields such as ref_index={ref_index}, author, title, year, raw, confidence, DOI, url, pages, publicationTitle, or conferenceName, preserving the title's original language/script.",
         }
     if next_action == "prepare_citation_workset":
         return {
@@ -687,7 +693,7 @@ def _execution_note(current_stage: str, next_action: str, stage_gate: str) -> st
     if next_action == "decide_reference_extraction":
         return "Deterministic reference preprocessing reported file-level quality too low. Inspect the prepared workset, then explicitly choose continue or abandon. Abandonment is only accepted when the DB contains a deterministic file_quality_low signal; do not fabricate this in the payload."
     if next_action == "persist_references":
-        return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries. Preserve each title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles to satisfy the quality gate. If quality_directives is present, repair the listed rows first and resubmit the full persist_references payload; omit unrecoverable hard rows rather than writing placeholders."
+        return "Refine references from prepared candidates only. Reuse selected_pattern and preserve prepared author boundaries. Minimum fields are only the floor: if raw/candidates visibly contain venue, DOI, url, pages, archive, volume, issue, publisher, place, ISBN, or ISSN evidence, submit those supported rich metadata fields at item top level. Preserve each title in the raw reference's original language/script; do not translate, Anglicize, or romanize titles to satisfy the quality gate. If quality_directives is present, repair the listed rows first and resubmit the full persist_references payload; omit unrecoverable hard rows rather than writing placeholders."
     if next_action == "review_reference_quality":
         return "Review the active quality_directives issues. Correct rows by recovering titles in their raw reference's original language/script when reliable; do not translate, Anglicize, or romanize titles. Otherwise use accept_warning for soft warnings after inspection. Every active issue must have exactly one resolution before Stage 5 can proceed."
     if next_action == "prepare_citation_workset":

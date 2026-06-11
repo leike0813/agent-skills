@@ -231,8 +231,28 @@ REFERENCE_QUALITY_WARNING_REASON_CODES = {
     "possible_author_prefix_noise",
     "very_long_title",
     "short_title_requires_context",
+    "rich_metadata_evidence_missing",
     "missing_year",
     "missing_authors",
+}
+REFERENCE_RICH_METADATA_FIELDS = (
+    "publicationTitle",
+    "conferenceName",
+    "archiveID",
+    "university",
+    "volume",
+    "issue",
+    "pages",
+    "numPages",
+    "DOI",
+    "url",
+    "publisher",
+    "place",
+    "ISBN",
+    "ISSN",
+)
+REFERENCE_RICH_METADATA_ALIASES = {
+    "doi": "DOI",
 }
 REFERENCE_QUALITY_STOPWORDS = {
     "a",
@@ -3654,6 +3674,69 @@ def _quality_year(item: dict[str, Any], raw: str) -> int | None:
     return int(match.group(1)) if match is not None else None
 
 
+def _reference_metadata_value_is_empty(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) == 0
+    return False
+
+
+def _sanitize_reference_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key == "citationKey":
+            continue
+        if key in REFERENCE_RICH_METADATA_FIELDS and _reference_metadata_value_is_empty(value):
+            continue
+        sanitized[key] = value
+    return sanitized
+
+
+def _reference_rich_metadata_from_payload(item: dict[str, Any]) -> dict[str, Any]:
+    rich: dict[str, Any] = {}
+    for field in REFERENCE_RICH_METADATA_FIELDS:
+        if field in item and not _reference_metadata_value_is_empty(item.get(field)):
+            rich[field] = item[field]
+    for alias, canonical in REFERENCE_RICH_METADATA_ALIASES.items():
+        if alias in item and canonical not in rich and not _reference_metadata_value_is_empty(item.get(alias)):
+            rich[canonical] = item[alias]
+    return rich
+
+
+def _reference_rich_field_present(item: dict[str, Any], field: str) -> bool:
+    if field in item and not _reference_metadata_value_is_empty(item.get(field)):
+        return True
+    metadata = item.get("metadata")
+    return isinstance(metadata, dict) and field in metadata and not _reference_metadata_value_is_empty(metadata.get(field))
+
+
+def _reference_missing_rich_metadata_fields(item: dict[str, Any]) -> list[str]:
+    raw = _quality_raw(item)
+    if not raw:
+        return []
+    missing: set[str] = set()
+    if re.search(r"\bdoi\s*[:=]\s*10\.\d{4,9}/\S+|https?://doi\.org/10\.\d{4,9}/\S+|\b10\.\d{4,9}/\S+", raw, flags=re.IGNORECASE):
+        missing.add("DOI")
+    if re.search(r"https?://(?!doi\.org)\S+", raw, flags=re.IGNORECASE):
+        missing.add("url")
+    if re.search(r"\barxiv\s*(?:preprint)?\s*(?:arxiv:)?\s*\d{4}\.\d{4,5}", raw, flags=re.IGNORECASE):
+        missing.add("archiveID")
+    if re.search(r"\b(?:pages?|pp)\.?\s+\d+[–-]\d+|\b\d+\s*[–-]\s*\d+\b", raw, flags=re.IGNORECASE):
+        missing.add("pages")
+    if re.search(r"\b(?:vol\.?|volume)\s*\d+", raw, flags=re.IGNORECASE):
+        missing.add("volume")
+    if re.search(r"\b(?:no\.?|issue)\s*\d+|\b\d+\s*\(\s*\d+\s*\)", raw, flags=re.IGNORECASE):
+        missing.add("issue")
+    if re.search(r"(?:^|[.;]\s+)In\s*:?\s+[A-Z][^.,;()]{2,80}", raw):
+        missing.add("conferenceName")
+    if re.search(r"\b[A-Z][A-Za-z&\s]+University\b|\bUniversity of [A-Z][A-Za-z&\s]+", raw):
+        missing.add("university")
+    return sorted(field for field in missing if not _reference_rich_field_present(item, field))
+
+
 def _normalize_reference_quality_title(title: str) -> str:
     collapsed = re.sub(r"\s+", " ", str(title)).strip()
     normalized = unicodedata.normalize("NFKC", collapsed).lower()
@@ -3828,6 +3911,8 @@ def _classify_reference_quality(item: dict[str, Any]) -> list[dict[str, Any]]:
             reasons.append((REFERENCE_QUALITY_WARNING, "very_long_title", "title"))
         if 0 < len(content_tokens) < 2 and _reference_quality_non_ascii_letter_count(normalized_title) < 4:
             reasons.append((REFERENCE_QUALITY_WARNING, "short_title_requires_context", "title"))
+    if _reference_missing_rich_metadata_fields(item):
+        reasons.append((REFERENCE_QUALITY_WARNING, "rich_metadata_evidence_missing", "metadata"))
     if year is None:
         reasons.append((REFERENCE_QUALITY_WARNING, "missing_year", "year"))
     if not authors:
@@ -3867,6 +3952,7 @@ def _reference_quality_recommendation(reason_code: str) -> str:
         "possible_author_prefix_noise": "Inspect whether author text was included at the start of title; move it to author[] and keep only the work title.",
         "very_long_title": "Inspect the title boundary; split away venue, abstract, or neighboring reference text if included.",
         "short_title_requires_context": "Verify the short title against raw/candidates; correct it if it is only a fragment, preserving the original language/script, otherwise explicitly accept the warning.",
+        "rich_metadata_evidence_missing": "The raw reference contains visible venue, DOI, URL, pages, archive, volume, issue, or institution evidence. Add supported top-level rich metadata fields when reliable, or explicitly accept the warning if the evidence is noisy.",
         "missing_year": "Recover the publication year from raw/candidates when available; otherwise explicitly accept the warning.",
         "missing_authors": "Recover authors from raw/candidates when available; otherwise explicitly accept the warning.",
     }
@@ -3890,6 +3976,8 @@ def _build_reference_quality_issue(
         current_value = "" if year is None else str(year)
     elif field == "authors":
         current_value = json.dumps(authors, ensure_ascii=False)
+    elif reason_code == "rich_metadata_evidence_missing":
+        current_value = json.dumps(_reference_missing_rich_metadata_fields(item), ensure_ascii=False)
     else:
         current_value = title
     return {
@@ -3919,6 +4007,10 @@ def _normalize_reference_item(item: object, warnings: list[str]) -> dict[str, An
     out["year"] = _as_int_or_none(out.get("year"))
     out["raw"] = "" if out.get("raw") is None else str(out.get("raw"))
     out["confidence"] = _as_confidence(out.get("confidence"), 0.1)
+    metadata_value = out.get("metadata", {})
+    metadata = _sanitize_reference_metadata(dict(metadata_value) if isinstance(metadata_value, dict) else {})
+    metadata.update(_reference_rich_metadata_from_payload(out))
+    out["metadata"] = metadata
     return out
 
 
@@ -5568,7 +5660,9 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
             year = _as_int_or_none(item.get("year"))
             raw = str(item.get("raw", ""))
             confidence = _as_confidence(item.get("confidence"), 0.1)
-            metadata = dict(item.get("metadata", {}))
+            item_metadata = item.get("metadata", {})
+            metadata = _sanitize_reference_metadata(dict(item_metadata) if isinstance(item_metadata, dict) else {})
+            metadata.update(_reference_rich_metadata_from_payload(item))
             metadata["entry_index"] = entry_index
             metadata["selected_pattern"] = selected_pattern
             metadata["pattern_candidate"] = candidate_obj
@@ -5814,7 +5908,22 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
             current_item = dict(reference_by_index[int(ref_index)])
             metadata = dict(current_item.get("metadata", {}))
             corrected_item = dict(current_item)
-            for key in ("author", "authors", "title", "parsed_title", "parsedTitle", "paper_title", "year", "raw", "raw_reference", "reference", "confidence"):
+            corrected_passthrough_keys = (
+                "author",
+                "authors",
+                "title",
+                "parsed_title",
+                "parsedTitle",
+                "paper_title",
+                "year",
+                "raw",
+                "raw_reference",
+                "reference",
+                "confidence",
+                *REFERENCE_RICH_METADATA_FIELDS,
+                *REFERENCE_RICH_METADATA_ALIASES.keys(),
+            )
+            for key in corrected_passthrough_keys:
                 if key in corrected:
                     corrected_item[key] = corrected[key]
             if "metadata" in corrected and isinstance(corrected["metadata"], dict):

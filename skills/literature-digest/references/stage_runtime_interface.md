@@ -810,8 +810,9 @@ python scripts/stage_runtime.py persist_references \
   - `ref_index` 由脚本按 `entry_index` 稳定生成，不需要 agent 单独填写。
   - `year` 优先取条目末尾出版年份，不要误取 arXiv 编号前缀。
   - `title` 必须保持 raw reference 中的原始语言和文字系统；不得为了通过质量门禁而翻译、英文化或罗马化题名，也不得用 `none` / `null` / `unknown` / `untitled` 等 placeholder 字符串代替未知题名。
+  - `publicationTitle`、`conferenceName`、`archiveID`、`university`、`volume`、`issue`、`pages`、`numPages`、`DOI`、`url`、`publisher`、`place`、`ISBN`、`ISSN` 可作为顶层 rich metadata 字段提交；raw/candidate 有明确证据时应提交，最低字段只是无证据时的下限。
 
-### 最小合法示例
+### 推荐示例
 
 ```json
 {
@@ -822,7 +823,10 @@ python scripts/stage_runtime.py persist_references \
       "author": ["Gu, J.", "Bradbury, J.", "Xiong, C.", "Li, V.O.", "Socher, R."],
       "title": "Non-autoregressive neural machine translation",
       "year": 2018,
-      "raw": "[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR (2018)",
+      "conferenceName": "ICLR",
+      "pages": "12-20",
+      "DOI": "10.1000/example",
+      "raw": "[11] Gu, J., Bradbury, J., Xiong, C., Li, V.O., Socher, R.: Non-autoregressive neural machine translation. In: ICLR, pp. 12-20. doi:10.1000/example (2018)",
       "confidence": 0.9
     }
   ]
