@@ -3212,9 +3212,6 @@ def _resolve_output_root(explicit_out_dir: Path | None, source_path: Path | None
         return source_path.parent
     if explicit_out_dir is not None:
         return explicit_out_dir
-    env = os.environ.get("LITERATURE_DIGEST_OUTPUT_DIR")
-    if env:
-        return Path(env).expanduser()
     return Path.cwd()
 
 
@@ -4917,7 +4914,7 @@ def _handle_normalize_source(args: argparse.Namespace) -> int:
     payload, code = _dispatch_source(
         source_path=source_path,
         output_paths=output_paths,
-        disable_pymupdf4llm=bool(os.environ.get("LITERATURE_DIGEST_DISABLE_PYMUPDF4LLM")),
+        disable_pymupdf4llm=False,
         db_path=db_path,
         persist_db_only=args.persist_db_only,
         language=language,
