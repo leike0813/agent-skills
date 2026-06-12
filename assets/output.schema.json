@@ -1,0 +1,200 @@
+{
+    "type": "object",
+    "properties": {
+        "digest_path": {
+            "type": "string",
+            "x-type": "artifact",
+            "x-role": "digest"
+        },
+        "references_path": {
+            "type": "string",
+            "x-type": "artifact",
+            "x-role": "references"
+        },
+        "citation_analysis_path": {
+            "type": "string",
+            "x-type": "artifact",
+            "x-role": "citation-analysis"
+        },
+        "literature_matching_metadata_path": {
+            "type": "string",
+            "x-type": "artifact",
+            "x-role": "literature-matching-metadata"
+        },
+        "citation_analysis_report_path": {
+            "type": "string",
+            "x-type": "artifact",
+            "x-role": "citation-analysis-report"
+        },
+        "representative_image": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "selected",
+                        "none"
+                    ]
+                },
+                "source_kind": {
+                    "type": "string",
+                    "enum": [
+                        "markdown_image_ref",
+                        "pdf_figure_caption"
+                    ]
+                },
+                "label": {
+                    "type": "string"
+                },
+                "caption_quote": {
+                    "type": "string"
+                },
+                "section_hint": {
+                    "type": "string"
+                },
+                "page_hint": {
+                    "type": [
+                        "integer",
+                        "null"
+                    ],
+                    "minimum": 1
+                },
+                "markdown_src_hint": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                },
+                "selection_reason": {
+                    "type": "string"
+                },
+                "confidence": {
+                    "type": "string",
+                    "enum": [
+                        "high",
+                        "medium",
+                        "low"
+                    ]
+                }
+            },
+            "required": [
+                "status"
+            ],
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "status": {
+                                "const": "none"
+                            }
+                        }
+                    },
+                    "then": {
+                        "properties": {
+                            "status": {
+                                "const": "none"
+                            }
+                        },
+                        "required": [
+                            "status"
+                        ],
+                        "additionalProperties": false
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "status": {
+                                "const": "selected"
+                            }
+                        }
+                    },
+                    "then": {
+                        "required": [
+                            "source_kind",
+                            "label",
+                            "caption_quote",
+                            "selection_reason",
+                            "confidence"
+                        ]
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "status": {
+                                "const": "selected"
+                            },
+                            "source_kind": {
+                                "const": "markdown_image_ref"
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "source_kind"
+                        ]
+                    },
+                    "then": {
+                        "required": [
+                            "markdown_src_hint"
+                        ]
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "status": {
+                                "const": "selected"
+                            },
+                            "source_kind": {
+                                "const": "pdf_figure_caption"
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "source_kind"
+                        ]
+                    },
+                    "then": {
+                        "not": {
+                            "required": [
+                                "markdown_src_hint"
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        "provenance": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "input_hash": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                }
+            }
+        },
+        "warnings": {
+            "type": "array"
+        },
+        "error": {
+            "type": [
+                "object",
+                "null"
+            ]
+        }
+    },
+    "required": [
+        "digest_path",
+        "references_path",
+        "citation_analysis_path",
+        "literature_matching_metadata_path",
+        "provenance",
+        "warnings",
+        "error"
+    ]
+}

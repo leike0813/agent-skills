@@ -1,0 +1,14 @@
+{#-
+Rendered from the final citation payload. Required top-level structure:
+- meta
+- summary
+- items
+- unmapped_mentions
+- report_md
+
+`report_md` is renderer-derived from structured citation DB content.
+
+Detailed semantics, mention structure, and report guidance live in:
+- references/step_05_citation_pipeline.md
+-#}
+{{ citation_analysis | to_pretty_json }}
