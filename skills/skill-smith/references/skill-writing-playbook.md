@@ -223,7 +223,11 @@ description: Capability summary. Use when ...
 - 对于容易被误用的规则，说明原因。
 - 不要把所有内容塞进 `SKILL.md`；超过运行时常用范围的细节进入 references。
 - 使用模板后必须改写为具体运行时指令；不要保留模板解释、占位符或 authoring hints。
-- 只写 Codex 不会自然知道、且对稳定完成任务有帮助的信息。
+- 只写 agent 不会自然知道、且对稳定完成任务有帮助的信息。
+- 需要在执行过程中由 agent 填写的内容，可以提供 payload schema 及样例，由脚本校验 payload 合法性，避免 agent 随意发挥。
+- 如果 payload 有枚举值，显式列出；不要让 agent 自行猜。
+- payload 应尽量扁平化，字段名称应具有语义自明性，避免容易导致误解的字段名。
+- 长程任务的阶段划分应以 agent 的决策点为依据，不需要 agent 决策的流程不应切分、不应中断，不应让 agent 仅成为驱动脚本执行的工具。
 - 产品特定元数据如 `agents/openai.yaml` 只在目标环境需要时设计，不写进通用 frontmatter。
 - 产品特定 metadata、hooks、tool permissions 或默认 prompt 不能替代 `SKILL.md` 的核心运行时指令。
 - 只写当前有效协议；更新 skill 时删除历史说明、旧字段兼容、fallback 提醒、版本对比和迁移说明。
