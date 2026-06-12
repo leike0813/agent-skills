@@ -135,12 +135,14 @@ description: Create, update, review, and architect high-quality agent skills by 
 8. **设计 scripts/assets**
    - 设计 scripts 前读 [llm-script-boundary.md](references/llm-script-boundary.md)。
    - 有脚本就必须在 `SKILL.md` 写调用示例。
+   - 需要 agent 填写的 payload 应尽可能扁平化，字段名称应具有语义自明性，避免容易导致误解的字段名。
    - 复杂 payload 必须提供 payload 示例、字段语义、枚举值、正例和反例。
    - 有自动化上下游时读 [io-schema-contracts.md](references/io-schema-contracts.md)。
 
 9. **设计长程状态**
    - 任务多阶段、强依赖、可能跨上下文压缩时读 [state-machine-and-sqlite.md](references/state-machine-and-sqlite.md)。
    - 只有确实需要恢复、门禁、稳定渲染时才引入 SQLite/gate。
+   - 阶段划分应以 agent 的决策点为依据，不需要 agent 决策的流程应合并，脚本级联执行。
 
 10. **按设计问题读取说明性样例**
    - 样例文档只用于架构启发，不是可复制模板。
@@ -173,6 +175,8 @@ description: Create, update, review, and architect high-quality agent skills by 
 - 如果某段内容只在少数场景需要，放进 reference，并在 `SKILL.md` 写清读取时机。
 - 如果脚本是正式执行契约的一部分，`SKILL.md` 必须写命令示例；不能只在 reference 里提脚本名。
 - 如果 payload 有枚举值，显式列出；不要让 agent 自行猜。
+- payload 应尽量扁平化，字段名称应具有语义自明性，避免容易导致误解的字段名。
+- 长程任务的阶段划分应以 agent 的决策点为依据，不需要 agent 决策的流程不应切分、不应中断，不应让 agent 仅成为驱动脚本执行的工具。
 - 如果输出被机器消费，成功和失败都必须有稳定 shape。
 - 不创建无运行价值的辅助文档或资源目录。
 - 如果是公开或共享 skill，必须考虑脱敏、安全扫描、许可证、内部路径泄露和无惊讶原则。
@@ -311,6 +315,7 @@ description: Create, update, review, and architect high-quality agent skills by 
 - 有脚本时是否有调用示例和 payload 示例。
 - 有机器消费输出时是否有 schema、成功/失败 shape、枚举值和验证方式。
 - 有长程状态时是否有 gate、恢复协议、只读视图与真源边界。
+- 是否存在 runtime-only 的阶段，运行流程中是否含有让 agent 机械执行某些固定指令的设计。
 - 是否包含正例、反例或 near-miss 验收场景。
 - 如建议正式评估迭代，是否已通过用户同意、子代理可用性、输入输出可评价性三条件 gate。
 - 若存在 `agents/openai.yaml`，是否与 `SKILL.md` 能力一致且只作为可选产品元数据。
