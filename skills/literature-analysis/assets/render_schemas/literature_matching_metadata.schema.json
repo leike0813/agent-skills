@@ -1,0 +1,61 @@
+{
+  "type": "object",
+  "properties": {
+    "literature_matching_metadata": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "const": "literature_matching_metadata.v1"
+        },
+        "key_terms": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string"
+          }
+        },
+        "methods": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        },
+        "problems": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        },
+        "datasets": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude_terms": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "key_terms",
+        "methods",
+        "problems",
+        "datasets",
+        "exclude_terms"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "literature_matching_metadata"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,7130 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import re
+import sys
+import unicodedata
+import zlib
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from jsonschema import validate  # type: ignore[import-untyped]
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+SKILL_DIR = SCRIPT_DIR.parents[1]
+
+from .runtime_db import (  # noqa: E402
+    add_runtime_warning,
+    add_runtime_warning_once,
+    build_citation_render_context,
+    build_citation_report_render_context,
+    build_digest_render_context,
+    build_literature_matching_metadata_render_context,
+    build_public_output_payload,
+    build_reference_parse_audit_context,
+    build_references_render_context,
+    connect_db,
+    count_citation_mentions,
+    default_db_path,
+    fetch_artifact_registry,
+    fetch_action_receipts,
+    fetch_citation_items,
+    fetch_citation_mention_links,
+    fetch_citation_mentions,
+    fetch_citation_summary,
+    fetch_citation_timeline,
+    fetch_citation_unmapped_mentions,
+    fetch_citation_workset_items,
+    fetch_latest_error,
+    fetch_active_reference_quality_issues,
+    fetch_reference_entries,
+    fetch_reference_extraction_decision,
+    fetch_reference_items,
+    fetch_reference_metadata_enrichment_workset,
+    fetch_reference_parse_candidates,
+    fetch_reference_preprocess_quality,
+    fetch_runtime_inputs,
+    fetch_section_scope,
+    fetch_source_document,
+    fetch_workflow_state,
+    initialize_database,
+    delete_action_receipts,
+    has_action_receipt,
+    register_artifact,
+    replace_reference_quality_issues,
+    resolve_reference_quality_issues,
+    resolve_runtime_errors,
+    set_runtime_error,
+    set_runtime_input,
+    set_workflow_state,
+    store_action_receipt,
+    store_citation_batch,
+    store_citation_items,
+    store_citation_mention_links,
+    store_citation_mentions,
+    store_citation_summary,
+    store_citation_timeline,
+    store_citation_unmapped_mentions,
+    store_citation_workset_items,
+    store_digest_section_summaries,
+    store_digest_slots,
+    store_literature_matching_metadata,
+    store_representative_image,
+    store_outline_nodes,
+    store_reference_extraction_decision,
+    store_reference_batch,
+    store_reference_entries,
+    store_reference_items,
+    store_reference_metadata_enrichment_workset,
+    store_reference_parse_candidates,
+    store_reference_preprocess_quality,
+    store_section_scope,
+    store_source_document,
+    update_reference_metadata_enrichment_statuses,
+    is_reference_extraction_abandoned,
+)
+
+
+TMP_DIRNAME = ".literature_analysis_tmp"
+SOURCE_MD_FILENAME = "source.md"
+SOURCE_META_FILENAME = "source_meta.json"
+RUNTIME_TEMPLATES_DIRNAME = "templates"
+RUNTIME_DIGEST_TEMPLATE_FILENAME = "digest.runtime.md.j2"
+RUNTIME_CITATION_TEMPLATE_FILENAME = "citation_analysis.runtime.md.j2"
+CITATION_EXPORT_FILENAME = "citation_workset_export.json"
+CITATION_REVIEW_EXPORT_FILENAME = "citation_workset_review.json"
+REFERENCES_EXPORT_FILENAME = "references_workset_export.json"
+REFERENCES_REVIEW_EXPORT_FILENAME = "references_workset_review.json"
+REFERENCE_METADATA_ENRICHMENT_EXPORT_FILENAME = "reference_metadata_enrichment_workset.json"
+REFERENCE_PARSE_AUDIT_FILENAME = "reference_parse_audit.json"
+RESULT_JSON_FILENAME = "literature-analysis.result.json"
+PDF_SIGNATURE = b"%PDF-"
+LATEX_INCLUDE_RE = re.compile(r"\\(?:input|include)\{([^}]+)\}")
+LATEX_BIBLIOGRAPHY_RE = re.compile(r"\\bibliography\{([^}]+)\}")
+LATEX_ADDBIBRESOURCE_RE = re.compile(r"\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\}")
+LATEX_BIBITEM_RE = re.compile(r"\\bibitem\{([^}]+)\}")
+LATEX_CITE_RE = re.compile(r"\\cite(?:p|t|author|year)?(?:\[[^\]]*\]){0,2}\{([^}]+)\}")
+BIBTEX_ENTRY_START_RE = re.compile(r"(?m)^\s*@([A-Za-z]+)\s*\{\s*([^,\s]+)\s*,")
+
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+BRACKET_NUMERIC_RE = re.compile(r"\[([^\[\]\n]{1,160})\]")
+AUTHOR_YEAR_PARENS_RE = re.compile(r"\(([^()\n]{0,200}(?:19|20)\d{2}[a-z]?[^()\n]{0,200})\)")
+AUTHOR_YEAR_NARRATIVE_RE = re.compile(r"\b([A-Z][A-Za-z'`-]+(?:\s+et al\.)?)\s*\(((?:19|20)\d{2}[a-z]?)\)")
+YEAR_RE = re.compile(r"\b((?:19|20)\d{2})[a-z]?\b")
+RANGE_RE = re.compile(r"^(\d+)\s*[-–—]\s*(\d+)$")
+NUMBER_RE = re.compile(r"^\d+$")
+SURNAME_RE = re.compile(r"[A-Za-z][A-Za-z'`-]+")
+REFERENCES_RE = re.compile(r"\b(references|bibliography)\b|参考文献", re.IGNORECASE)
+MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)\n]+\)")
+URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+RESOURCE_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|\.{0,2}/|/)\S+\.(?:png|jpe?g|gif|svg|pdf)\b", re.IGNORECASE)
+RESOURCE_SUFFIX_RE = re.compile(r"\.(?:png|jpe?g|gif|svg|pdf)\b", re.IGNORECASE)
+DATE_LIKE_RE = re.compile(
+    r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|"
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|"
+    r"January|February|March|April|June|July|August|September|October|November|December)"
+    r"\s+\d{1,2},?\s+\d{4})\b",
+    re.IGNORECASE,
+)
+TERMINAL_PUBLICATION_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})[a-z]?\b(?!\.\d)")
+REFERENCE_TAIL_RE = re.compile(r"(?:\((?:19|20)\d{2}[a-z]?\)|(?:19|20)\d{2}[a-z]?)(?:\.)?(?=\s|$)")
+REFERENCE_TAIL_AT_END_RE = re.compile(r"(?:\((?:19|20)\d{2}[a-z]?\)|(?:19|20)\d{2}[a-z]?)(?:\.)?\s*$")
+REFERENCE_ENTRY_START_RE = re.compile(r"^(?:\[\d{1,3}\]|\d{1,3}[\.\)])\s*")
+COMMA_STYLE_AUTHOR_RE = re.compile(r"[A-Z][A-Za-z'`-]+,\s*(?:[A-Z][A-Za-z.-]*\.?(?:\s*[A-Z][A-Za-z.-]*\.?)*)")
+LEADING_PUNCTUATION_RE = re.compile(r"^[,.;:]\s*")
+YEAR_WITH_TAIL_RE = re.compile(r"(?:\((?:19|20)\d{2}[a-z]?\)|(?:19|20)\d{2}[a-z]?)\.\s+")
+REFERENCE_SENTENCE_BREAK_RE = re.compile(r"\.\s+")
+LIKELY_AUTHOR_PREFIX_SEPARATOR_RE = re.compile(r"(?:;|,\s| and | & )", re.IGNORECASE)
+NON_REFERENCE_LINE_RE = re.compile(
+    r"^\s*(?:!\[|<table\b|figure\s+\d+|table\s+\d+|#{1,6}\s+(?:appendix|附录)\b)",
+    re.IGNORECASE,
+)
+TRAILING_PAGE_MARKER_RE = re.compile(r"\s+(?:[-–—]\s*)?\d{1,4}\s*$")
+AUTHOR_INITIAL_PROTECT_RE = re.compile(r"\b([A-Z])\.\s+(?=[A-Z][A-Za-z'`-])")
+AUTHOR_INITIAL_SENTINEL = "\x00"
+CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+FULLWIDTH_TO_HALFWIDTH = str.maketrans(
+    {
+        "［": "[",
+        "］": "]",
+        "，": ",",
+        "．": ".",
+        "。": ".",
+        "：": ":",
+        "（": "(",
+        "）": ")",
+        "；": ";",
+        "／": "/",
+        "－": "-",
+        "‘": "'",
+        "’": "'",
+        "“": '"',
+        "”": '"',
+        "∥": "/",
+    }
+)
+CJK_TYPE_MARKER_ENTRY_RE = re.compile(
+    r"^(?P<authors_and_title>.+?)\s*"
+    r"[\[\uff3b](?:J|C|D|M|N|S|P|EB/OL)[\]\uff3d]\s*"
+    r"[.]\s*"
+    r"(?P<container>[^,]*?)\s*,\s*"
+    r"\(?(?P<year>(?:19|20)\d{2})"
+)
+ENGLISH_AUTHOR_START_RE = re.compile(r"^[A-Z][A-Za-z]{1,20}\s+[A-Z][,\.\s]")
+TRAILING_CLOSE_RE = re.compile(r"[\)\]\uff09\uff3d]?\s*[\.。．]\s*$")
+REFERENCE_PREPROCESS_QUALITY_SCHEMA = "reference_preprocess_quality.v1"
+REFERENCE_PREPROCESS_VERSION = "line-first-v171"
+REFERENCE_FILE_QUALITY_LOW_WARNING = "reference_file_quality_low"
+REFERENCE_FREE_UNMAPPED_REASON = "references_abandoned_file_quality_low"
+
+OUTLINE_NODE_REQUIRED_KEYS = (
+    "node_id",
+    "heading_level",
+    "title",
+    "line_start",
+    "line_end",
+    "parent_node_id",
+)
+SCOPE_REQUIRED_KEYS = (
+    "section_title",
+    "line_start",
+    "line_end",
+    "metadata",
+)
+LITERATURE_MATCHING_METADATA_SCHEMA = "literature_matching_metadata.v1"
+LITERATURE_MATCHING_METADATA_LIMITS = {
+    "key_terms": 12,
+    "methods": 8,
+    "problems": 8,
+    "datasets": 8,
+    "exclude_terms": 6,
+}
+
+WARNING_REFERENCE_LOW_CONFIDENCE = "reference_parse_low_confidence"
+WARNING_REFERENCE_PATTERN_AMBIGUOUS = "reference_pattern_ambiguous"
+WARNING_REFERENCE_TITLE_BOUNDARY_SUSPECT = "reference_title_boundary_suspect"
+WARNING_REFERENCE_AUTHOR_OVERSPLIT = "reference_author_oversplit_detected"
+WARNING_REFERENCE_ENTRY_GROUPING_SUSPECT = "reference_entry_grouping_suspect"
+WARNING_CITATION_FALSE_POSITIVE_FILTERED = "citation_false_positive_filtered"
+WARNING_CITATION_TIMELINE_MISSING_YEAR = "citation_timeline_missing_year"
+WARNING_SCOPE_FALLBACK_USED = "scope_fallback_used"
+WARNING_DIGEST_UNDERCOVERAGE = "digest_undercoverage"
+REFERENCE_QUALITY_HARD_BLOCK = "hard_block"
+REFERENCE_QUALITY_WARNING = "warning"
+REFERENCE_QUALITY_HARD_REASON_CODES = {
+    "empty_title",
+    "placeholder_title",
+    "bare_identifier_or_url_title",
+    "publication_metadata_only_title",
+    "author_only_title",
+    "no_usable_title_tokens",
+}
+REFERENCE_QUALITY_WARNING_REASON_CODES = {
+    "bibliographic_suffix_in_title",
+    "possible_author_prefix_noise",
+    "very_long_title",
+    "short_title_requires_context",
+    "missing_year",
+    "missing_authors",
+}
+REFERENCE_RICH_METADATA_FIELDS = (
+    "publicationTitle",
+    "conferenceName",
+    "archiveID",
+    "university",
+    "volume",
+    "issue",
+    "pages",
+    "numPages",
+    "DOI",
+    "url",
+    "publisher",
+    "place",
+    "ISBN",
+    "ISSN",
+    "itemType",
+    "date",
+)
+REFERENCE_RICH_METADATA_ALIASES = {
+    "doi": "DOI",
+}
+REFERENCE_QUALITY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "for",
+    "in",
+    "of",
+    "on",
+    "the",
+    "to",
+    "with",
+    "vol",
+    "volume",
+    "no",
+    "issue",
+    "pp",
+    "pages",
+    "proceedings",
+    "conference",
+    "journal",
+    "preprint",
+    "arxiv",
+    "doi",
+}
+REFERENCE_QUALITY_BIBLIOGRAPHIC_MARKERS = (
+    "arxiv preprint",
+    "preprint",
+    "in proceedings",
+    "proceedings of",
+    "conference on",
+    "journal of",
+    "transactions on",
+    "vol",
+    "volume",
+    "no",
+    "issue",
+    "pp",
+    "pages",
+    "publisher",
+    "press",
+    "springer",
+    "ieee",
+    "acm",
+    "pmlr",
+)
+REFERENCE_QUALITY_PLACEHOLDER_TITLES = {
+    "none",
+    "null",
+    "undefined",
+    "not available",
+    "unknown",
+    "untitled",
+}
+REFERENCE_QUALITY_COMPACT_PLACEHOLDER_TITLES = {"na"}
+REFERENCE_QUALITY_LONG_TITLE_CHARS = 180
+REFERENCE_IDENTIFIER_TITLE_RE = re.compile(
+    r"^\s*(?:"
+    r"https?://\S+|www\.\S+|"
+    r"(?:doi\s*:\s*)?10\.\d{4,9}/\S+|"
+    r"https?://(?:dx\.)?doi\.org/10\.\d{4,9}/\S+|"
+    r"arxiv\s*:\s*\d{4}\.\d{4,5}(?:v\d+)?|"
+    r"\d{4}\.\d{4,5}(?:v\d+)?"
+    r")\s*$",
+    re.IGNORECASE,
+)
+LITERAL_STRING_RE = re.compile(r"\((?:\\.|[^\\)])*\)")
+TJ_ARRAY_RE = re.compile(r"\[(.*?)\]\s*TJ", re.DOTALL)
+TJ_SINGLE_RE = re.compile(r"(\((?:\\.|[^\\)])*\))\s*Tj")
+
+ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
+    "confirm_runtime_paths": [
+        "bootstrap_runtime_db",
+        "persist_render_templates",
+        "normalize_source",
+        "persist_outline_and_scopes",
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "decide_reference_extraction",
+        "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "bootstrap_runtime_db": [
+        "persist_render_templates",
+        "normalize_source",
+        "persist_outline_and_scopes",
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "decide_reference_extraction",
+        "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_render_templates": [
+        "normalize_source",
+        "persist_outline_and_scopes",
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "decide_reference_extraction",
+        "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "normalize_source": [
+        "persist_outline_and_scopes",
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "decide_reference_extraction",
+        "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_outline_and_scopes": [
+        "persist_digest",
+        "prepare_references_workset",
+        "persist_reference_entry_splits",
+        "decide_reference_extraction",
+        "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_digest": ["render_and_validate"],
+    "prepare_references_workset": [
+        "persist_reference_entry_splits",
+        "decide_reference_extraction",
+        "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_reference_entry_splits": [
+        "decide_reference_extraction",
+        "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "decide_reference_extraction": [
+        "persist_references",
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_references": [
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "review_reference_quality": [
+        "prepare_reference_metadata_enrichment",
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "prepare_reference_metadata_enrichment": [
+        "persist_reference_metadata_enrichment",
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_reference_metadata_enrichment": [
+        "prepare_citation_workset",
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "prepare_citation_workset": [
+        "persist_citation_semantics",
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_citation_semantics": [
+        "persist_citation_timeline",
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_citation_timeline": [
+        "persist_citation_summary",
+        "render_and_validate",
+    ],
+    "persist_citation_summary": ["render_and_validate"],
+    "render_and_validate": [],
+}
+
+REQUIRED_STAGE5_RECEIPTS = (
+    "prepare_citation_workset",
+    "persist_citation_semantics",
+    "persist_citation_timeline",
+    "persist_citation_summary",
+)
+TEXT_BLOCK_RE = re.compile(r"BT(.*?)ET", re.DOTALL)
+
+DIGEST_FILENAME = "digest.md"
+REFERENCES_FILENAME = "references.json"
+CITATION_ANALYSIS_FILENAME = "citation_analysis.json"
+CITATION_ANALYSIS_REPORT_FILENAME = "citation_analysis.md"
+LITERATURE_MATCHING_METADATA_FILENAME = "literature_matching_metadata.json"
+STAGE_ERROR_CODES = {
+    "digest_stage_failed",
+    "references_stage_failed",
+    "reference_extraction_decision_failed",
+    "references_merge_failed",
+    "citation_scope_failed",
+    "citation_semantics_failed",
+    "citation_timeline_failed",
+    "citation_report_failed",
+    "citation_merge_failed",
+    "normalize_source_failed",
+    "render_templates_failed",
+}
+ALLOWED_CITATION_FUNCTIONS = {
+    "background",
+    "baseline",
+    "contrast",
+    "component",
+    "dataset",
+    "tooling",
+    "historical",
+    "uncategorized",
+}
+
+ASSETS_DIR = SKILL_DIR / "assets"
+TEMPLATES_DIR = ASSETS_DIR / "templates"
+RENDER_SCHEMAS_DIR = ASSETS_DIR / "render_schemas"
+
+
+@dataclass
+class DispatchPaths:
+    source_md_path: Path
+    source_meta_path: Path
+
+
+@dataclass
+class RuntimePaths:
+    working_dir: Path
+    tmp_dir: Path
+    db_path: Path
+    result_json_path: Path
+    output_dir: Path
+
+
+@dataclass
+class RuntimeTemplatePaths:
+    digest_template_path: Path
+    citation_analysis_template_path: Path
+
+
+@dataclass
+class Scope:
+    section_title: str
+    line_start: int
+    line_end: int
+    source: str
+
+
+def utc_now_iso() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def sha256_file(path: Path) -> str:
+    sha = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            sha.update(chunk)
+    return f"sha256:{sha.hexdigest()}"
+
+
+def sha256_path(path: Path) -> str:
+    resolved = path.expanduser().resolve()
+    if resolved.is_file():
+        return sha256_file(resolved)
+
+    sha = hashlib.sha256()
+    for child in sorted(p for p in resolved.rglob("*") if p.is_file()):
+        relative = child.relative_to(resolved).as_posix().encode("utf-8")
+        sha.update(relative)
+        sha.update(b"\0")
+        with child.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                sha.update(chunk)
+    return f"sha256:{sha.hexdigest()}"
+
+
+def _write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _resolve_cli_path(path_value: str) -> Path | None:
+    if not path_value.strip():
+        return None
+    return Path(path_value).expanduser().resolve()
+
+
+def _normalized_output_dir(path_value: str) -> Path:
+    if path_value:
+        return Path(path_value).expanduser().resolve()
+    return Path.cwd().resolve()
+
+
+def _runtime_paths_from_values(
+    *,
+    working_dir_value: str = "",
+    tmp_dir_value: str = "",
+    db_path_value: str = "",
+    result_json_path_value: str = "",
+    output_dir_value: str = "",
+    fallback_db_path: Path | None = None,
+) -> RuntimePaths:
+    fallback_working_dir = Path.cwd().resolve()
+    working_dir = _resolve_cli_path(working_dir_value) or fallback_working_dir
+    tmp_dir = _resolve_cli_path(tmp_dir_value) or (working_dir / TMP_DIRNAME).resolve()
+    db_path = _resolve_cli_path(db_path_value) or (fallback_db_path.resolve() if fallback_db_path is not None else default_db_path().resolve())
+    result_json_path = _resolve_cli_path(result_json_path_value) or (working_dir / RESULT_JSON_FILENAME).resolve()
+    output_dir = _resolve_cli_path(output_dir_value) or working_dir
+    return RuntimePaths(
+        working_dir=working_dir,
+        tmp_dir=tmp_dir,
+        db_path=db_path,
+        result_json_path=result_json_path,
+        output_dir=output_dir,
+    )
+
+
+def _runtime_paths_from_inputs(inputs: dict[str, str], *, fallback_db_path: Path | None = None) -> RuntimePaths:
+    return _runtime_paths_from_values(
+        working_dir_value=inputs.get("working_dir", ""),
+        tmp_dir_value=inputs.get("tmp_dir", ""),
+        db_path_value=inputs.get("db_path", ""),
+        result_json_path_value=inputs.get("result_json_path", ""),
+        output_dir_value=inputs.get("output_dir", ""),
+        fallback_db_path=fallback_db_path,
+    )
+
+
+def _compat_runtime_paths_from_db_path(db_path: Path) -> RuntimePaths:
+    normalized_db_path = db_path.expanduser().resolve()
+    tmp_dir = normalized_db_path.parent
+    working_dir = tmp_dir.parent if tmp_dir.name == TMP_DIRNAME else tmp_dir
+    return _runtime_paths_from_values(
+        working_dir_value=str(working_dir),
+        tmp_dir_value=str(tmp_dir),
+        db_path_value=str(normalized_db_path),
+        result_json_path_value=str((working_dir / RESULT_JSON_FILENAME).resolve()),
+        output_dir_value=str(working_dir),
+        fallback_db_path=normalized_db_path,
+    )
+
+
+def _resolve_result_json_path(db_path: Path | None = None) -> Path:
+    if db_path is not None and db_path.exists():
+        try:
+            with connect_db(db_path) as connection:
+                inputs = fetch_runtime_inputs(connection)
+            return _runtime_paths_from_inputs(inputs, fallback_db_path=db_path).result_json_path
+        except Exception:  # noqa: BLE001
+            pass
+    return (Path.cwd().resolve() / RESULT_JSON_FILENAME).resolve()
+
+
+def _write_render_result_json(payload: dict[str, Any], *, result_json_path: Path | None = None) -> None:
+    _write_json((result_json_path or (Path.cwd().resolve() / RESULT_JSON_FILENAME)).resolve(), payload)
+
+
+def _record_action_receipt(
+    connection,
+    *,
+    action_name: str,
+    stage: str,
+    status: str = "succeeded",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    delete_action_receipts(connection, ACTION_RECEIPT_INVALIDATIONS.get(action_name, []))
+    resolve_runtime_errors(connection, stage=stage)
+    store_action_receipt(connection, action_name=action_name, stage=stage, status=status, metadata=metadata)
+
+
+def _missing_required_receipts(connection, actions: tuple[str, ...]) -> list[str]:
+    return [action for action in actions if not has_action_receipt(connection, action)]
+
+
+def _scope_contains_citation_signals(lines: list[str], scope: Scope) -> bool:
+    for line_no in range(scope.line_start, scope.line_end + 1):
+        raw = lines[line_no - 1]
+        sanitized = _sanitize_citation_line(raw)
+        if BRACKET_NUMERIC_RE.search(sanitized):
+            return True
+        if AUTHOR_YEAR_PARENS_RE.search(sanitized) or AUTHOR_YEAR_NARRATIVE_RE.search(sanitized):
+            return True
+    return False
+
+
+def _is_review_like_scope(scope: Scope) -> bool:
+    return bool(re.search(r"\b(related|review|background|prior|survey|introduction)\b", scope.section_title, re.IGNORECASE))
+
+
+def _first_author_aliases(authors: object) -> set[str]:
+    if not isinstance(authors, list) or not authors:
+        return set()
+    first_author = str(authors[0]).strip()
+    if not first_author:
+        return set()
+    pre_comma = first_author.split(",", 1)[0].strip()
+    aliases: set[str] = set()
+    target = pre_comma or first_author
+    normalized_target = re.sub(r"\s+", " ", target.lower()).strip()
+    if normalized_target:
+        aliases.add(normalized_target)
+    surname_matches = SURNAME_RE.findall(target)
+    if surname_matches:
+        aliases.add(surname_matches[-1].lower())
+    return aliases
+
+
+def _read_json_payload(path_value: str) -> dict[str, Any]:
+    if path_value:
+        return json.loads(Path(path_value).read_text(encoding="utf-8"))
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return {}
+    return json.loads(raw)
+
+
+def _default_dispatch_paths(runtime_paths: RuntimePaths | None = None) -> DispatchPaths:
+    tmp_dir = runtime_paths.tmp_dir if runtime_paths is not None else (Path.cwd().resolve() / TMP_DIRNAME)
+    return DispatchPaths(
+        source_md_path=tmp_dir / SOURCE_MD_FILENAME,
+        source_meta_path=tmp_dir / SOURCE_META_FILENAME,
+    )
+
+
+def _runtime_templates_dir(runtime_paths: RuntimePaths) -> Path:
+    return (runtime_paths.tmp_dir / RUNTIME_TEMPLATES_DIRNAME).resolve()
+
+
+def _repo_digest_template_path(language: str) -> Path:
+    if language.lower().startswith("en"):
+        return (TEMPLATES_DIR / "digest.en-US.md.j2").resolve()
+    return (TEMPLATES_DIR / "digest.zh-CN.md.j2").resolve()
+
+
+def _repo_citation_template_path(language: str) -> Path:
+    if language.lower().startswith("en"):
+        return (TEMPLATES_DIR / "citation_analysis.en-US.md.j2").resolve()
+    return (TEMPLATES_DIR / "citation_analysis.zh-CN.md.j2").resolve()
+
+
+def _runtime_template_paths_from_inputs(
+    inputs: dict[str, str],
+    *,
+    runtime_paths: RuntimePaths,
+    allow_repo_fallback: bool,
+) -> RuntimeTemplatePaths:
+    digest_template_path = _resolve_cli_path(inputs.get("digest_template_path", ""))
+    citation_template_path = _resolve_cli_path(inputs.get("citation_analysis_template_path", ""))
+    if digest_template_path is not None and citation_template_path is not None:
+        return RuntimeTemplatePaths(
+            digest_template_path=digest_template_path.resolve(),
+            citation_analysis_template_path=citation_template_path.resolve(),
+        )
+    if allow_repo_fallback:
+        language = inputs.get("language", "") or "zh-CN"
+        return RuntimeTemplatePaths(
+            digest_template_path=_repo_digest_template_path(language),
+            citation_analysis_template_path=_repo_citation_template_path(language),
+        )
+    templates_dir = _runtime_templates_dir(runtime_paths)
+    return RuntimeTemplatePaths(
+        digest_template_path=(templates_dir / RUNTIME_DIGEST_TEMPLATE_FILENAME).resolve(),
+        citation_analysis_template_path=(templates_dir / RUNTIME_CITATION_TEMPLATE_FILENAME).resolve(),
+    )
+
+
+def _detect_source_type(source_path: Path) -> tuple[str | None, str | None, str | None]:
+    if source_path.is_dir():
+        tex_candidates = sorted(source_path.rglob("*.tex"))
+        if tex_candidates:
+            return "latex_project", "latex_project_directory", None
+        return None, None, "input directory does not contain any .tex files"
+
+    try:
+        head = source_path.read_bytes()[:8]
+    except Exception as exc:  # noqa: BLE001
+        return None, None, f"read source failed: {exc}"
+
+    if head.startswith(PDF_SIGNATURE):
+        return "pdf", "pdf_signature", None
+
+    try:
+        text = source_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None, None, "input is neither PDF signature nor UTF-8 text"
+    except Exception as exc:  # noqa: BLE001
+        return None, None, f"read source as utf-8 failed: {exc}"
+
+    if source_path.suffix.lower() == ".tex" or "\\documentclass" in text or "\\begin{document}" in text:
+        return "latex_tex", "latex_text_markers", None
+    return "markdown", "utf8_text", None
+
+
+def _extension_warning(source_path: Path, source_type: str) -> list[str]:
+    if source_path.is_dir():
+        return []
+    suffix = source_path.suffix.lower()
+    if not suffix:
+        return []
+    if source_type == "pdf" and suffix != ".pdf":
+        return [f"source_path extension '{suffix}' ignored; content detected as PDF"]
+    if source_type == "latex_tex" and suffix != ".tex":
+        return [f"source_path extension '{suffix}' ignored; content detected as LaTeX"]
+    if source_type == "markdown" and suffix not in (".md", ".markdown", ".txt"):
+        return [f"source_path extension '{suffix}' ignored; content detected as UTF-8 text"]
+    return []
+
+
+def _quality_metrics(markdown_text: str) -> dict[str, int]:
+    lines = markdown_text.splitlines()
+    return {
+        "char_count": len(markdown_text),
+        "non_empty_lines": sum(1 for line in lines if line.strip()),
+        "heading_lines": sum(1 for line in lines if re.search(r"^\s*#{1,6}\s+", line)),
+        "references_keyword_hits": len(REFERENCES_RE.findall(markdown_text)),
+    }
+
+
+def _quality_markers(markdown_text: str) -> dict[str, Any]:
+    lines = markdown_text.splitlines()
+    non_empty_lines = [line for line in lines if line.strip()]
+    heading_lines = sum(1 for line in lines if HEADING_RE.match(line.strip()))
+    table_like_lines = sum(1 for line in lines if line.count("|") >= 2)
+    noisy_lines = sum(1 for line in non_empty_lines if re.search(r"(?:\b[A-Za-z]\b\s+){4,}", line))
+    total_non_empty = max(1, len(non_empty_lines))
+
+    if heading_lines >= 4:
+        heading_reliability = "high"
+    elif heading_lines >= 2:
+        heading_reliability = "medium"
+    else:
+        heading_reliability = "low"
+
+    return {
+        "heading_reliability": heading_reliability,
+        "table_noise_presence": table_like_lines > 0,
+        "ocr_noise_likely": noisy_lines / total_non_empty >= 0.2,
+        "reference_numbering_reliability": "unknown",
+    }
+
+
+def _convert_markdown_source(source_path: Path) -> str:
+    return source_path.read_text(encoding="utf-8")
+
+
+def _detect_main_tex_path(project_dir: Path) -> Path | None:
+    candidates = sorted(path for path in project_dir.rglob("*.tex") if path.is_file())
+    if not candidates:
+        return None
+
+    scored: list[tuple[int, Path]] = []
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        score = 0
+        if "\\documentclass" in text:
+            score += 10
+        if "\\begin{document}" in text:
+            score += 10
+        stem = path.stem.lower()
+        if stem in {"main", "paper", "manuscript"}:
+            score += 4
+        if "main" in path.name.lower():
+            score += 2
+        scored.append((score, path))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], len(item[1].parts), str(item[1])))
+    return scored[0][1]
+
+
+def _resolve_latex_include(base_dir: Path, target: str) -> Path:
+    candidate = target.strip()
+    if not candidate:
+        return (base_dir / "__missing__.tex").resolve()
+    raw_path = (base_dir / candidate).expanduser()
+    if raw_path.suffix:
+        return raw_path.resolve()
+    return raw_path.with_suffix(".tex").resolve()
+
+
+def _flatten_latex_text(
+    text: str,
+    *,
+    base_dir: Path,
+    project_root: Path,
+    visited: set[Path],
+    included_tex_files: list[str],
+) -> str:
+    def replace_include(match: re.Match[str]) -> str:
+        include_target = match.group(1).strip()
+        include_path = _resolve_latex_include(base_dir, include_target)
+        try:
+            relative_label = include_path.relative_to(project_root).as_posix()
+        except ValueError:
+            relative_label = include_path.name
+        if not include_path.exists():
+            return f"\n% >>> MISSING INCLUDE: {relative_label}\n"
+        if include_path in visited:
+            return f"\n% >>> SKIPPED CYCLIC INCLUDE: {relative_label}\n"
+        visited.add(include_path)
+        included_tex_files.append(str(include_path))
+        nested_text = include_path.read_text(encoding="utf-8")
+        flattened_nested = _flatten_latex_text(
+            nested_text,
+            base_dir=include_path.parent,
+            project_root=project_root,
+            visited=visited,
+            included_tex_files=included_tex_files,
+        )
+        return (
+            f"\n% >>> BEGIN INCLUDED FILE: {relative_label}\n"
+            f"{flattened_nested.rstrip()}\n"
+            f"% <<< END INCLUDED FILE: {relative_label}\n"
+        )
+
+    return LATEX_INCLUDE_RE.sub(replace_include, text)
+
+
+def _resolve_bib_files(tex_text: str, *, base_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for match in LATEX_BIBLIOGRAPHY_RE.finditer(tex_text):
+        for item in match.group(1).split(","):
+            candidate = item.strip()
+            if not candidate:
+                continue
+            path = (base_dir / candidate).expanduser()
+            resolved = (path if path.suffix else path.with_suffix(".bib")).resolve()
+            if resolved.exists() and resolved not in seen:
+                seen.add(resolved)
+                paths.append(resolved)
+    for match in LATEX_ADDBIBRESOURCE_RE.finditer(tex_text):
+        candidate = match.group(1).strip()
+        if not candidate:
+            continue
+        path = (base_dir / candidate).expanduser()
+        resolved = (path if path.suffix else path.with_suffix(".bib")).resolve()
+        if resolved.exists() and resolved not in seen:
+            seen.add(resolved)
+            paths.append(resolved)
+    return paths
+
+
+def _render_fenced_latex_source(
+    *,
+    tex_text: str,
+    tex_label: str,
+    bib_blocks: list[tuple[str, str]],
+) -> str:
+    parts = [
+        f"<!-- normalized_source copied directly from LaTeX source: {tex_label} -->",
+        "```tex",
+        tex_text.rstrip(),
+        "```",
+    ]
+    if bib_blocks:
+        parts.extend(
+            [
+                "",
+                "<!-- The following bibliography block(s) were copied directly from .bib files, not expanded from LaTeX \\bibitem. -->",
+            ]
+        )
+        for bib_label, bib_text in bib_blocks:
+            parts.extend(
+                [
+                    "",
+                    f"<!-- bibliography source: {bib_label} -->",
+                    "```bibtex",
+                    bib_text.rstrip(),
+                    "```",
+                ]
+            )
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _normalize_latex_source(source_path: Path) -> tuple[str, dict[str, Any]]:
+    if source_path.is_dir():
+        main_tex_path = _detect_main_tex_path(source_path)
+        if main_tex_path is None:
+            raise RuntimeError("unable to detect main LaTeX entry file in project directory")
+        raw_text = main_tex_path.read_text(encoding="utf-8")
+        included_tex_files: list[str] = []
+        flattened = _flatten_latex_text(
+            raw_text,
+            base_dir=main_tex_path.parent,
+            project_root=source_path.resolve(),
+            visited={main_tex_path.resolve()},
+            included_tex_files=included_tex_files,
+        )
+        bib_paths = _resolve_bib_files(flattened, base_dir=main_tex_path.parent)
+        bib_blocks = [(str(path), path.read_text(encoding="utf-8")) for path in bib_paths]
+        markdown = _render_fenced_latex_source(
+            tex_text=flattened,
+            tex_label=str(main_tex_path),
+            bib_blocks=bib_blocks,
+        )
+        return markdown, {
+            "source_type": "latex_project",
+            "detection_method": "latex_project_directory",
+            "conversion_backend": "fenced_raw_latex",
+            "main_tex_path": str(main_tex_path),
+            "included_tex_files": included_tex_files,
+            "bib_files": [str(path) for path in bib_paths],
+        }
+
+    tex_text = source_path.read_text(encoding="utf-8")
+    bib_paths = _resolve_bib_files(tex_text, base_dir=source_path.parent)
+    bib_blocks = [(str(path), path.read_text(encoding="utf-8")) for path in bib_paths]
+    markdown = _render_fenced_latex_source(
+        tex_text=tex_text,
+        tex_label=str(source_path),
+        bib_blocks=bib_blocks,
+    )
+    return markdown, {
+        "source_type": "latex_tex",
+        "detection_method": "latex_text_markers",
+        "conversion_backend": "fenced_raw_latex",
+        "main_tex_path": str(source_path),
+        "included_tex_files": [],
+        "bib_files": [str(path) for path in bib_paths],
+    }
+
+
+def _convert_pdf_with_pymupdf4llm(source_path: Path) -> str:
+    try:
+        import pymupdf4llm  # type: ignore[import-not-found, import-untyped]
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"pymupdf4llm unavailable: {exc}") from exc
+
+    try:
+        markdown = pymupdf4llm.to_markdown(str(source_path))
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"pymupdf4llm conversion failed: {exc}") from exc
+
+    if isinstance(markdown, bytes):
+        markdown = markdown.decode("utf-8", errors="replace")
+    elif not isinstance(markdown, str):
+        markdown = str(markdown)
+
+    normalized = markdown.strip()
+    if not normalized:
+        raise RuntimeError("pymupdf4llm returned empty markdown")
+    return normalized + "\n"
+
+
+def _decode_pdf_literal(token: str) -> str:
+    body = token[1:-1]
+    chars: list[str] = []
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char != "\\":
+            chars.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(body):
+            break
+        nxt = body[index + 1]
+        if nxt in "()\\":
+            chars.append(nxt)
+            index += 2
+            continue
+        if nxt == "n":
+            chars.append("\n")
+            index += 2
+            continue
+        if nxt == "r":
+            chars.append("\r")
+            index += 2
+            continue
+        if nxt == "t":
+            chars.append("\t")
+            index += 2
+            continue
+        if nxt == "b":
+            chars.append("\b")
+            index += 2
+            continue
+        if nxt == "f":
+            chars.append("\f")
+            index += 2
+            continue
+        if nxt.isdigit():
+            octal = nxt
+            step = 2
+            while index + step < len(body) and len(octal) < 3 and body[index + step].isdigit():
+                octal += body[index + step]
+                step += 1
+            chars.append(chr(int(octal, 8)))
+            index += step
+            continue
+        chars.append(nxt)
+        index += 2
+    return "".join(chars)
+
+
+def _extract_text_from_pdf_stream(stream_bytes: bytes) -> str:
+    stripped = stream_bytes.strip(b"\r\n")
+    decoded_candidates: list[bytes] = [stripped]
+    try:
+        decoded_candidates.insert(0, zlib.decompress(stripped))
+    except Exception:  # noqa: BLE001
+        pass
+
+    extracted_blocks: list[str] = []
+    for candidate in decoded_candidates:
+        try:
+            text = candidate.decode("latin-1", errors="ignore")
+        except Exception:  # noqa: BLE001
+            continue
+
+        text_blocks = TEXT_BLOCK_RE.findall(text) or [text]
+        for block in text_blocks:
+            fragments: list[str] = []
+            for array_match in TJ_ARRAY_RE.finditer(block):
+                fragments.extend(_decode_pdf_literal(item) for item in LITERAL_STRING_RE.findall(array_match.group(1)))
+            for single_match in TJ_SINGLE_RE.finditer(block):
+                fragments.append(_decode_pdf_literal(single_match.group(1)))
+            if not fragments:
+                fragments.extend(_decode_pdf_literal(item) for item in LITERAL_STRING_RE.findall(block))
+            cleaned = " ".join(part.strip() for part in fragments if part.strip()).strip()
+            if cleaned:
+                extracted_blocks.append(cleaned)
+        if extracted_blocks:
+            break
+
+    return "\n\n".join(extracted_blocks)
+
+
+def _convert_pdf_with_stdlib(source_path: Path) -> str:
+    pdf_bytes = source_path.read_bytes()
+    stream_pattern = re.compile(rb"stream\r?\n(.*?)\r?\nendstream", re.DOTALL)
+    text_parts: list[str] = []
+    for match in stream_pattern.finditer(pdf_bytes):
+        extracted = _extract_text_from_pdf_stream(match.group(1))
+        if extracted:
+            text_parts.append(extracted)
+
+    if not text_parts:
+        raise RuntimeError("stdlib fallback could not recover any text from PDF streams")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for part in text_parts:
+        normalized = part.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+
+    markdown = "\n\n".join(deduped).strip()
+    if not markdown:
+        raise RuntimeError("stdlib fallback produced empty markdown")
+    return markdown + "\n"
+
+
+def _normalize_heading_title(title: str) -> str:
+    stripped = title.strip()
+    stripped = re.sub(r"^\s*(?:\d+(?:\.\d+)*|[IVXLCMivxlcm]+)[\.\)\-:]?\s+", "", stripped)
+    return stripped.strip()
+
+
+def _is_introduction_title(title: str) -> bool:
+    normalized = _normalize_heading_title(title)
+    lowered = normalized.lower()
+    return lowered.startswith("introduction") or normalized.startswith("引言") or normalized.startswith("绪论")
+
+
+def _find_intro_scope(lines: list[str]) -> Scope | None:
+    headings: list[tuple[int, int, str]] = []
+    for idx, line in enumerate(lines, start=1):
+        match = HEADING_RE.match(line.strip())
+        if not match:
+            continue
+        headings.append((idx, len(match.group(1)), match.group(2).strip()))
+
+    intro: tuple[int, int, str] | None = None
+    for heading in headings:
+        if _is_introduction_title(heading[2]):
+            intro = heading
+            break
+    if intro is None:
+        return None
+
+    intro_line, intro_level, intro_title = intro
+    scope_end = len(lines)
+    for line_no, level, _ in headings:
+        if line_no <= intro_line:
+            continue
+        if level <= intro_level:
+            scope_end = line_no - 1
+            break
+    return Scope(section_title=intro_title, line_start=intro_line, line_end=max(intro_line, scope_end), source="intro_fallback")
+
+
+def _coerce_scope_metadata(
+    metadata: object,
+    *,
+    section_title: str,
+    source: str = "agent",
+    fallback_from: dict[str, Any] | None = None,
+    fallback_reason: str = "",
+) -> dict[str, Any]:
+    meta = dict(metadata) if isinstance(metadata, dict) else {}
+    covered_sections = meta.get("covered_sections")
+    if isinstance(covered_sections, list):
+        normalized_covered = [str(item) for item in covered_sections if str(item).strip()]
+    elif isinstance(covered_sections, str) and covered_sections.strip():
+        normalized_covered = [covered_sections.strip()]
+    else:
+        normalized_covered = [section_title]
+    meta["scope_source"] = str(meta.get("scope_source", source or "agent"))
+    meta["selection_reason"] = str(meta.get("selection_reason", ""))
+    meta["covered_sections"] = normalized_covered
+    meta["fallback_from"] = meta.get("fallback_from", fallback_from)
+    meta["fallback_reason"] = str(meta.get("fallback_reason", fallback_reason))
+    return meta
+
+
+def _scope_from_obj(obj: object) -> Scope | None:
+    if not isinstance(obj, dict):
+        return None
+    section_title = obj.get("section_title")
+    line_start = obj.get("line_start")
+    line_end = obj.get("line_end")
+    if not isinstance(section_title, str) or not isinstance(line_start, int) or not isinstance(line_end, int):
+        return None
+    return Scope(section_title=section_title, line_start=line_start, line_end=line_end, source="agent")
+
+
+def _load_scope_from_file(path: Path) -> Scope | None:
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    direct = _scope_from_obj(obj)
+    if direct is not None:
+        return direct
+    if isinstance(obj, dict):
+        for key in ["analysis_scope", "review_scope", "scope"]:
+            candidate = _scope_from_obj(obj.get(key))
+            if candidate is not None:
+                return candidate
+        meta = obj.get("meta")
+        if isinstance(meta, dict):
+            candidate = _scope_from_obj(meta.get("scope"))
+            if candidate is not None:
+                return candidate
+    return None
+
+
+def _validate_scope(scope: Scope, total_lines: int) -> str | None:
+    if scope.line_start <= 0 or scope.line_end <= 0:
+        return "line_start/line_end must be positive integers"
+    if scope.line_start > scope.line_end:
+        return "line_start must be <= line_end"
+    if scope.line_end > total_lines:
+        return f"line_end out of range: {scope.line_end} > {total_lines}"
+    return None
+
+
+def _db_scope_to_scope(scope_row: dict[str, Any]) -> Scope:
+    return Scope(
+        section_title=str(scope_row["section_title"]),
+        line_start=int(scope_row["line_start"]),
+        line_end=int(scope_row["line_end"]),
+        source=str(dict(scope_row.get("metadata", {})).get("scope_source", "db")),
+    )
+
+
+def _resolve_db_citation_scope(
+    *,
+    scope_row: dict[str, Any] | None,
+    lines: list[str],
+) -> tuple[Scope | None, dict[str, Any], str | None]:
+    if scope_row is None:
+        return None, {}, "section_scopes.citation_scope missing; gate should have blocked this action"
+
+    metadata = _coerce_scope_metadata(
+        scope_row.get("metadata", {}),
+        section_title=str(scope_row["section_title"]),
+        source="db",
+    )
+    stored_scope = {
+        "section_title": str(scope_row["section_title"]),
+        "line_start": int(scope_row["line_start"]),
+        "line_end": int(scope_row["line_end"]),
+    }
+    scope = _db_scope_to_scope(scope_row)
+    validation_error = _validate_scope(scope, len(lines))
+    if validation_error is None:
+        return scope, metadata, None
+
+    fallback = _find_intro_scope(lines)
+    if fallback is None:
+        return None, metadata, f"stored citation_scope invalid and introduction fallback failed: {validation_error}"
+
+    fallback_metadata = _coerce_scope_metadata(
+        metadata,
+        section_title=fallback.section_title,
+        source="db_fallback",
+        fallback_from=stored_scope,
+        fallback_reason=validation_error,
+    )
+    fallback.source = "db_fallback"
+    return fallback, fallback_metadata, None
+
+
+def _resolve_scope_from_args(args: argparse.Namespace, lines: list[str], payload_scope: object = None) -> tuple[Scope | None, str | None]:
+    payload_candidate = _scope_from_obj(payload_scope)
+    if payload_candidate is not None:
+        return payload_candidate, _validate_scope(payload_candidate, len(lines))
+    if args.scope_start is not None or args.scope_end is not None:
+        if args.scope_start is None or args.scope_end is None:
+            return None, "both --scope-start and --scope-end are required when one is provided"
+        scope = Scope(
+            section_title=args.scope_title or "Review Scope",
+            line_start=args.scope_start,
+            line_end=args.scope_end,
+            source="agent",
+        )
+        return scope, _validate_scope(scope, len(lines))
+    if args.scope_file:
+        scope_file = Path(args.scope_file)
+        if not scope_file.exists():
+            return None, f"scope file not found: {scope_file}"
+        parsed_scope = _load_scope_from_file(scope_file)
+        if parsed_scope is None:
+            return None, f"unable to parse scope from file: {scope_file}"
+        return parsed_scope, _validate_scope(parsed_scope, len(lines))
+    fallback = _find_intro_scope(lines)
+    if fallback is None:
+        return None, "no agent scope provided and introduction fallback failed"
+    return fallback, _validate_scope(fallback, len(lines))
+
+
+def _validate_outline_nodes_payload(outline_nodes: object) -> tuple[list[dict[str, Any]] | None, str | None]:
+    if not isinstance(outline_nodes, list):
+        return None, "outline_nodes must be array"
+    normalized_nodes: list[dict[str, Any]] = []
+    seen_node_ids: set[str] = set()
+    for index, node in enumerate(outline_nodes):
+        if not isinstance(node, dict):
+            return None, f"outline_nodes[{index}] must be object"
+        missing = [key for key in OUTLINE_NODE_REQUIRED_KEYS if key not in node]
+        if missing:
+            return None, f"outline_nodes[{index}] missing required keys: {', '.join(missing)}"
+        node_id = str(node["node_id"]).strip()
+        if not node_id:
+            return None, f"outline_nodes[{index}].node_id must be non-empty string"
+        if node_id in seen_node_ids:
+            return None, f"outline_nodes[{index}].node_id must be unique"
+        seen_node_ids.add(node_id)
+        title = str(node["title"]).strip()
+        if not title:
+            return None, f"outline_nodes[{index}].title must be non-empty string"
+        try:
+            heading_level = int(node["heading_level"])
+            line_start = int(node["line_start"])
+            line_end = int(node["line_end"])
+        except (TypeError, ValueError):
+            return None, f"outline_nodes[{index}] heading_level/line_start/line_end must be integers"
+        if heading_level < 1:
+            return None, f"outline_nodes[{index}].heading_level must be >= 1"
+        if line_start < 1 or line_end < line_start:
+            return None, f"outline_nodes[{index}] line range must satisfy 1 <= line_start <= line_end"
+        metadata = node.get("metadata", {})
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            return None, f"outline_nodes[{index}].metadata must be object when provided"
+        parent_node_id = node.get("parent_node_id")
+        normalized_nodes.append(
+            {
+                "node_id": node_id,
+                "heading_level": heading_level,
+                "title": title,
+                "line_start": line_start,
+                "line_end": line_end,
+                "parent_node_id": None if parent_node_id in (None, "") else str(parent_node_id),
+                "metadata": dict(metadata),
+            }
+        )
+    return normalized_nodes, None
+
+
+def _validate_scope_payload(scope_obj: object, scope_name: str) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(scope_obj, dict):
+        return None, f"{scope_name} must be object"
+    missing = [key for key in SCOPE_REQUIRED_KEYS if key not in scope_obj]
+    if missing:
+        return None, f"{scope_name} missing required keys: {', '.join(missing)}"
+    section_title = str(scope_obj["section_title"]).strip()
+    if not section_title:
+        return None, f"{scope_name}.section_title must be non-empty string"
+    try:
+        line_start = int(scope_obj["line_start"])
+        line_end = int(scope_obj["line_end"])
+    except (TypeError, ValueError):
+        return None, f"{scope_name}.line_start and {scope_name}.line_end must be integers"
+    if line_start < 1 or line_end < line_start:
+        return None, f"{scope_name} line range must satisfy 1 <= line_start <= line_end"
+    metadata = scope_obj.get("metadata")
+    if metadata is None:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        return None, f"{scope_name}.metadata must be object"
+    return {
+        "section_title": section_title,
+        "line_start": line_start,
+        "line_end": line_end,
+        "metadata": dict(metadata),
+    }, None
+
+
+def _validate_literature_matching_metadata_payload(metadata_obj: object) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(metadata_obj, dict):
+        return None, "literature_matching_metadata must be object"
+    schema_value = metadata_obj.get("schema")
+    if schema_value != LITERATURE_MATCHING_METADATA_SCHEMA:
+        return None, f"literature_matching_metadata.schema must be {LITERATURE_MATCHING_METADATA_SCHEMA}"
+    allowed_keys = {"schema", *LITERATURE_MATCHING_METADATA_LIMITS.keys()}
+    extra_keys = sorted(str(key) for key in metadata_obj.keys() if key not in allowed_keys)
+    if extra_keys:
+        return None, f"literature_matching_metadata contains unsupported keys: {', '.join(extra_keys)}"
+    normalized: dict[str, Any] = {"schema": LITERATURE_MATCHING_METADATA_SCHEMA}
+    for key, limit in LITERATURE_MATCHING_METADATA_LIMITS.items():
+        if key not in metadata_obj:
+            return None, f"literature_matching_metadata missing required key: {key}"
+        value = metadata_obj.get(key)
+        if not isinstance(value, list):
+            return None, f"literature_matching_metadata.{key} must be array"
+        if len(value) > limit:
+            return None, f"literature_matching_metadata.{key} must contain at most {limit} items"
+        items: list[str] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                return None, f"literature_matching_metadata.{key}[{index}] must be string"
+            item_text = item.strip()
+            if item_text:
+                items.append(item_text)
+        normalized[key] = items
+    return normalized, None
+
+
+def _sanitize_citation_line(line: str) -> str:
+    sanitized = MARKDOWN_IMAGE_RE.sub(" ", line)
+    sanitized = URL_RE.sub(" ", sanitized)
+    sanitized = RESOURCE_PATH_RE.sub(" ", sanitized)
+    return sanitized
+
+
+def _count_false_positive_noise(line: str) -> int:
+    count = 0
+    count += len(MARKDOWN_IMAGE_RE.findall(line))
+    count += len(URL_RE.findall(line))
+    count += len(RESOURCE_PATH_RE.findall(line))
+    count += len(DATE_LIKE_RE.findall(line))
+    return count
+
+
+def _is_false_positive_mention(mention: dict[str, Any]) -> bool:
+    marker = str(mention.get("marker", "")).strip()
+    snippet = str(mention.get("snippet", "")).strip()
+    style = str(mention.get("style", "")).lower()
+    if not marker and not snippet:
+        return True
+    if style == "latex-cite":
+        return False
+    if DATE_LIKE_RE.search(marker) or DATE_LIKE_RE.search(snippet):
+        return True
+    if RESOURCE_SUFFIX_RE.search(marker) or RESOURCE_SUFFIX_RE.search(snippet):
+        return True
+    if URL_RE.search(marker) or URL_RE.search(snippet):
+        return True
+    if MARKDOWN_IMAGE_RE.search(snippet):
+        return True
+    if style == "author-year":
+        surname_hint = str(mention.get("surname_hint", "")).strip()
+        if not surname_hint:
+            return True
+    return False
+
+
+def _extract_terminal_publication_year(raw: str) -> int | None:
+    matches = [int(match.group(1)) for match in TERMINAL_PUBLICATION_YEAR_RE.finditer(raw)]
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def _count_reference_tail_markers(raw: str) -> int:
+    return len(list(REFERENCE_TAIL_RE.finditer(raw)))
+
+
+def _ends_with_reference_tail(raw: str) -> bool:
+    return REFERENCE_TAIL_AT_END_RE.search(raw.strip()) is not None
+
+
+def _looks_like_author_year_entry_start(text: str) -> bool:
+    normalized = _normalize_reference_entry_text(text)
+    if not normalized:
+        return False
+    if REFERENCE_ENTRY_START_RE.match(normalized):
+        return True
+    year_match = YEAR_WITH_TAIL_RE.search(normalized)
+    if year_match is None:
+        return False
+    prefix = normalized[: year_match.start()].strip(" ,;:")
+    if not prefix or len(prefix) > 180:
+        return False
+    if ":" in prefix:
+        return False
+    if not LIKELY_AUTHOR_PREFIX_SEPARATOR_RE.search(prefix):
+        return False
+    author_like_matches = COMMA_STYLE_AUTHOR_RE.findall(prefix)
+    if author_like_matches:
+        return True
+    return len(SURNAME_RE.findall(prefix)) >= 2
+
+
+def _looks_like_reference_entry_start(text: str) -> bool:
+    normalized = _normalize_reference_entry_text(text)
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    venue_prefixes = (
+        "in proceedings",
+        "proceedings",
+        "in:",
+        "pages ",
+        "pp.",
+        "journal ",
+        "conference ",
+        "in cvpr",
+        "in iccv",
+        "in eccv",
+        "in neurips",
+        "in nips",
+        "in iclr",
+        "in icml",
+    )
+    if lowered.startswith(venue_prefixes):
+        return False
+    if REFERENCE_ENTRY_START_RE.match(normalized):
+        return True
+    return _looks_like_author_year_entry_start(normalized)
+
+
+def _has_nearby_year_marker(text: str, *, max_chars: int = 120) -> bool:
+    window = _normalize_reference_entry_text(text)[:max_chars]
+    return bool(re.search(r"(?:\((?:19|20)\d{2}[a-z]?\)|(?:19|20)\d{2}[a-z]?)(?:\.)?", window))
+
+
+def _scope_lines_without_heading(lines: list[str], scope: Scope) -> tuple[list[str], int]:
+    start_index = max(scope.line_start - 1, 0)
+    end_index = min(scope.line_end, len(lines))
+    scoped_lines = lines[start_index:end_index]
+    scope_heading_level = 1
+    if scoped_lines:
+        first_stripped = scoped_lines[0].strip()
+        heading_match = HEADING_RE.match(first_stripped)
+        if heading_match is not None:
+            scope_heading_level = len(heading_match.group(1))
+        first_title = re.sub(r"^#{1,6}\s+", "", first_stripped).strip()
+        if first_title.lower() == scope.section_title.strip().lower():
+            scoped_lines = scoped_lines[1:]
+            start_index += 1
+    truncated_lines: list[str] = []
+    for line in scoped_lines:
+        stripped = line.strip()
+        heading_match = HEADING_RE.match(stripped)
+        if heading_match is not None and truncated_lines and len(heading_match.group(1)) <= scope_heading_level:
+            break
+        truncated_lines.append(line)
+    return truncated_lines, start_index + 1
+
+
+def _find_inline_reference_start_offsets(raw: str) -> list[int]:
+    normalized = _normalize_reference_entry_text(raw)
+    if not normalized:
+        return []
+    offsets = [0]
+    for match in re.finditer(r"\s(?=\[\d{1,4}\]\s+\S)", normalized):
+        candidate_offset = match.end()
+        if candidate_offset > 0:
+            offsets.append(candidate_offset)
+    for match in REFERENCE_SENTENCE_BREAK_RE.finditer(normalized):
+        candidate_offset = match.end()
+        if candidate_offset >= len(normalized):
+            continue
+        continuation_tail = normalized[candidate_offset:].lstrip().lower()
+        if re.match(r"(?:lncs\b|vol\.?\b|pp\.?\b|springer\b|cham\b|https?://|doi\b)", continuation_tail):
+            continue
+        if _looks_like_reference_entry_start(normalized[candidate_offset:]):
+            offsets.append(candidate_offset)
+    for match in COMMA_STYLE_AUTHOR_RE.finditer(normalized):
+        candidate_offset = match.start()
+        if candidate_offset <= 0:
+            continue
+        continuation_tail = normalized[candidate_offset:].lstrip().lower()
+        if re.match(r"(?:lncs\b|vol\.?\b|pp\.?\b|springer\b|cham\b|https?://|doi\b)", continuation_tail):
+            continue
+        prefix = normalized[:candidate_offset].rstrip()
+        if re.search(r"(?:\((?:19|20)\d{2}[a-z]?\)|(?:19|20)\d{2}[a-z]?)(?:\.)?\s*$", prefix) and _has_nearby_year_marker(normalized[candidate_offset:]):
+            offsets.append(candidate_offset)
+    return sorted(set(offsets))
+
+
+def _split_inline_reference_chunk(raw: str) -> list[str]:
+    normalized = _normalize_reference_entry_text(raw)
+    offsets = _find_inline_reference_start_offsets(normalized)
+    if len(offsets) <= 1:
+        return [normalized] if normalized else []
+    parts: list[str] = []
+    for index, start in enumerate(offsets):
+        end = offsets[index + 1] if index + 1 < len(offsets) else len(normalized)
+        part = _normalize_reference_entry_text(normalized[start:end])
+        if part:
+            parts.append(part)
+    return parts
+
+
+def _strip_reference_number_prefix(raw: str) -> tuple[str, int | None]:
+    text = raw.strip()
+    detected_ref_number = _extract_detected_reference_number(text)
+    if detected_ref_number is not None:
+        text = REFERENCE_ENTRY_START_RE.sub("", text, count=1).strip()
+    return text, detected_ref_number
+
+
+def _normalize_reference_entry_text(raw: str) -> str:
+    return re.sub(r"\s+", " ", raw.strip())
+
+
+def _is_valid_publication_year(year: object) -> bool:
+    try:
+        year_int = int(year)
+    except (TypeError, ValueError):
+        return False
+    return 1800 <= year_int <= datetime.now(UTC).year + 1
+
+
+def _strip_trailing_page_markers(raw: str) -> str:
+    text = raw.rstrip()
+    if len(text) < 40:
+        return text
+    return TRAILING_PAGE_MARKER_RE.sub("", text)
+
+
+def _protect_author_initials(raw: str) -> str:
+    return AUTHOR_INITIAL_PROTECT_RE.sub(lambda match: f"{match.group(1)}.{AUTHOR_INITIAL_SENTINEL}", raw)
+
+
+def _restore_initials(raw: str) -> str:
+    return raw.replace(AUTHOR_INITIAL_SENTINEL, " ")
+
+
+def _has_cjk(text: str, threshold: float = 0.1) -> bool:
+    if not text:
+        return False
+    cjk_count = sum(1 for char in text if CJK_RE.match(char))
+    return cjk_count / max(len(text), 1) >= threshold
+
+
+def _is_cjk_entry(raw: str) -> bool:
+    text = re.sub(r"^[\[\uff08\uff3b]?\s*\d{1,3}\s*[\]\uff09\uff3d]?\s*", "", raw.strip(), count=1)
+    return _has_cjk(text, threshold=0.1) or bool(re.search(r"[\uff3b\uff3d\uff0c\uff0e\uff1a\uff08\uff09]", raw))
+
+
+def _normalize_fullwidth_reference_text(raw: str) -> str:
+    text = raw.translate(FULLWIDTH_TO_HALFWIDTH)
+    return re.sub(r"\[(\d{1,3})\s+\]", r"[\1]", text)
+
+
+def _split_cjk_authors(author_text: str) -> list[str]:
+    authors = [
+        item.strip().rstrip(",\u3001")
+        for item in re.split(r"[,\u3001]\s*", author_text)
+        if item.strip().rstrip(",\u3001")
+    ]
+    return authors or _split_author_candidates(author_text)
+
+
+def _split_type_marker_authors_title(text: str) -> tuple[str, str]:
+    index = text.rfind(".")
+    if index > 0:
+        return text[:index].strip(), text[index + 1 :].strip()
+    if ":" in text:
+        author_text, title = text.split(":", 1)
+        return author_text.strip(), title.strip()
+    return text.strip(), ""
+
+
+def _merge_bilingual_reference_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    index = 0
+    while index < len(entries):
+        current = dict(entries[index])
+        raw_current = str(current.get("raw", ""))
+        if index + 1 < len(entries):
+            next_entry = dict(entries[index + 1])
+            raw_next = str(next_entry.get("raw", ""))
+            if (
+                _has_cjk(raw_current)
+                and not _has_cjk(raw_next)
+                and ENGLISH_AUTHOR_START_RE.match(raw_next)
+                and TRAILING_CLOSE_RE.search(raw_current)
+            ):
+                current["raw"] = _normalize_reference_entry_text(f"{raw_current} {raw_next}")
+                metadata = dict(current.get("metadata", {}))
+                next_metadata = dict(next_entry.get("metadata", {}))
+                if isinstance(next_metadata.get("line_end"), int):
+                    metadata["line_end"] = next_metadata["line_end"]
+                metadata["bilingual_merged"] = True
+                current["metadata"] = metadata
+                index += 2
+                merged.append(current)
+                continue
+        merged.append(current)
+        index += 1
+
+    for entry_index, entry in enumerate(merged):
+        entry["entry_index"] = entry_index
+    return merged
+
+
+def _extract_scope_lines(lines: list[str], scope: Scope) -> list[tuple[int, str]]:
+    scoped_lines, scoped_line_start = _scope_lines_without_heading(lines, scope)
+    return list(enumerate(scoped_lines, start=scoped_line_start))
+
+
+def _split_bibitem_entries(lines: list[str], scope: Scope) -> list[dict[str, Any]] | None:
+    scoped_lines = _extract_scope_lines(lines, scope)
+    if not any(LATEX_BIBITEM_RE.search(line) for _, line in scoped_lines):
+        return None
+
+    blocks: list[dict[str, Any]] = []
+    current_lines: list[str] = []
+    current_key: str | None = None
+    line_start = 0
+    block_index = 0
+
+    def flush(line_end: int) -> None:
+        nonlocal current_lines, current_key, line_start, block_index
+        if not current_lines:
+            return
+        source_text = _normalize_reference_entry_text(" ".join(part.strip() for part in current_lines if part.strip()))
+        if source_text:
+            blocks.append(
+                {
+                    "block_index": block_index,
+                    "source_text": source_text,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "proposed_entries": [source_text],
+                    "metadata": {"bibitem_key": current_key, "source_format": "latex_bibitem"},
+                }
+            )
+            block_index += 1
+        current_lines = []
+        current_key = None
+        line_start = 0
+
+    for line_no, line in scoped_lines:
+        match = LATEX_BIBITEM_RE.search(line)
+        if match is not None:
+            flush(line_no - 1)
+            line_start = line_no
+            current_key = match.group(1).strip()
+            current_lines = [line]
+        elif current_lines:
+            current_lines.append(line)
+    flush(scoped_lines[-1][0] if scoped_lines else 0)
+    return blocks
+
+
+def _split_bibtex_entries(lines: list[str], scope: Scope) -> list[dict[str, Any]] | None:
+    scoped_lines = _extract_scope_lines(lines, scope)
+    if not any(BIBTEX_ENTRY_START_RE.match(line) for _, line in scoped_lines) and not any(line.strip() == "```bibtex" for _, line in scoped_lines):
+        return None
+
+    blocks: list[dict[str, Any]] = []
+    in_bibtex_fence = False
+    current_lines: list[str] = []
+    current_key = ""
+    current_type = ""
+    line_start = 0
+    brace_balance = 0
+    block_index = 0
+
+    def flush(line_end: int) -> None:
+        nonlocal current_lines, current_key, current_type, line_start, brace_balance, block_index
+        if not current_lines:
+            return
+        raw = "\n".join(current_lines).strip()
+        if raw:
+            source_text = raw
+            blocks.append(
+                {
+                    "block_index": block_index,
+                    "source_text": source_text,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "proposed_entries": [source_text],
+                    "metadata": {
+                        "citekey": current_key,
+                        "bibtex_entry_type": current_type,
+                        "source_format": "bibtex",
+                    },
+                }
+            )
+            block_index += 1
+        current_lines = []
+        current_key = ""
+        current_type = ""
+        line_start = 0
+        brace_balance = 0
+
+    for line_no, line in scoped_lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if stripped == "```bibtex":
+                in_bibtex_fence = True
+            elif in_bibtex_fence:
+                flush(line_no - 1)
+                in_bibtex_fence = False
+            continue
+        if not in_bibtex_fence and not BIBTEX_ENTRY_START_RE.match(stripped):
+            continue
+        start_match = BIBTEX_ENTRY_START_RE.match(line)
+        if start_match is not None:
+            flush(line_no - 1)
+            line_start = line_no
+            current_type = start_match.group(1).strip()
+            current_key = start_match.group(2).strip()
+            current_lines = [line]
+            brace_balance = line.count("{") - line.count("}")
+            if brace_balance <= 0:
+                flush(line_no)
+            continue
+        if current_lines:
+            current_lines.append(line)
+            brace_balance += line.count("{") - line.count("}")
+            if brace_balance <= 0:
+                flush(line_no)
+
+    flush(scoped_lines[-1][0] if scoped_lines else 0)
+    return blocks or None
+
+
+def _split_reference_blocks(lines: list[str], scope: Scope) -> list[dict[str, Any]]:
+    bibtex_blocks = _split_bibtex_entries(lines, scope)
+    if bibtex_blocks is not None:
+        return bibtex_blocks
+    bibitem_blocks = _split_bibitem_entries(lines, scope)
+    if bibitem_blocks is not None:
+        return bibitem_blocks
+
+    scoped_lines, scoped_line_start = _scope_lines_without_heading(lines, scope)
+    blocks: list[dict[str, Any]] = []
+    for block_index, (offset, line) in enumerate(enumerate(scoped_lines, start=scoped_line_start)):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if NON_REFERENCE_LINE_RE.match(stripped):
+            continue
+        source_text = _normalize_reference_entry_text(_strip_trailing_page_markers(stripped))
+        if not source_text:
+            continue
+        blocks.append(
+            {
+                "block_index": block_index,
+                "source_text": source_text,
+                "line_start": offset,
+                "line_end": offset,
+                "proposed_entries": _split_inline_reference_chunk(source_text),
+                "metadata": {"source_format": "plain_text"},
+            }
+        )
+    return blocks
+
+
+def _build_reference_entries_from_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    entry_index = 0
+    for block in blocks:
+        for part in list(block.get("proposed_entries", [])):
+            raw = str(part)
+            if not raw:
+                continue
+            normalized_text, detected_ref_number = _strip_reference_number_prefix(raw)
+            entries.append(
+                {
+                    "entry_index": entry_index,
+                    "raw": raw,
+                    "year": _extract_terminal_publication_year(raw),
+                    "metadata": {
+                        "line_start": int(block["line_start"]),
+                        "line_end": int(block["line_end"]),
+                        "block_index": int(block["block_index"]),
+                        "normalized_entry_text": normalized_text,
+                        "detected_ref_number": detected_ref_number,
+                        **dict(block.get("metadata", {})),
+                    },
+                }
+            )
+            entry_index += 1
+    return entries
+
+
+def _split_reference_entries(lines: list[str], scope: Scope) -> list[dict[str, Any]]:
+    blocks = _split_reference_blocks(lines, scope)
+    return _build_reference_entries_from_blocks(blocks)
+
+
+def _looks_like_full_name_author_part(text: str) -> bool:
+    tokens = [token.strip(" .") for token in re.split(r"\s+", text.strip()) if token.strip(" .")]
+    if len(tokens) < 2:
+        return False
+    if any(len(token) == 1 for token in tokens):
+        return False
+    return any(char.isalpha() for token in tokens for char in token)
+
+
+def _split_author_candidates(author_text: str) -> list[str]:
+    text = author_text.strip().strip(" ,;:")
+    if not text:
+        return []
+    comma_style = [match.group(0).strip().rstrip(" ,;:") for match in COMMA_STYLE_AUTHOR_RE.finditer(text)]
+    if comma_style:
+        return comma_style
+    if "," in text:
+        parts = [part.strip().rstrip(" ,;:") for part in text.split(",") if part.strip()]
+        if len(parts) > 1 and all(_looks_like_full_name_author_part(part) for part in parts):
+            return parts
+    if ";" in text:
+        return [part.strip().rstrip(" ,;:") for part in text.split(";") if part.strip()]
+    if " and " in text.lower():
+        return [part.strip().rstrip(" ,;:") for part in re.split(r"\band\b|&", text, flags=re.IGNORECASE) if part.strip()]
+    return [text]
+
+
+def _normalize_author_boundary_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.casefold())
+
+
+def _candidate_author_boundaries_are_stable(candidate_authors: list[str]) -> bool:
+    normalized = [_normalize_author_boundary_text(author) for author in candidate_authors if _normalize_author_boundary_text(author)]
+    if not normalized:
+        return False
+    return len(normalized) > 1 or any("," in author for author in candidate_authors)
+
+
+def _detect_reference_author_oversplit(submitted_authors: list[str], candidate_authors: list[str]) -> str | None:
+    if not _candidate_author_boundaries_are_stable(candidate_authors):
+        return None
+
+    submitted_norm = [_normalize_author_boundary_text(author) for author in submitted_authors if _normalize_author_boundary_text(author)]
+    candidate_norm = [_normalize_author_boundary_text(author) for author in candidate_authors if _normalize_author_boundary_text(author)]
+    if not submitted_norm or not candidate_norm or submitted_norm == candidate_norm:
+        return None
+
+    submitted_index = 0
+    segment_counts: list[int] = []
+    for candidate in candidate_norm:
+        combined = ""
+        start = submitted_index
+        while submitted_index < len(submitted_norm) and len(combined) < len(candidate):
+            combined += submitted_norm[submitted_index]
+            submitted_index += 1
+            if combined == candidate:
+                break
+        if combined != candidate:
+            return None
+        segment_counts.append(submitted_index - start)
+
+    if submitted_index != len(submitted_norm):
+        return None
+    if not any(count > 1 for count in segment_counts):
+        return None
+    return (
+        "author[] must preserve prepared candidate boundaries; reuse pattern_candidate.author_candidates "
+        "and only lightly normalize formatting instead of splitting surnames and initials into separate elements"
+    )
+
+
+def _make_reference_candidate(
+    *,
+    entry_index: int,
+    pattern: str,
+    author_text: str,
+    title_candidate: str,
+    container_candidate: str,
+    year_candidate: int | None,
+    confidence: float,
+    split_basis: str,
+) -> dict[str, Any]:
+    return {
+        "entry_index": entry_index,
+        "pattern": pattern,
+        "author_text": author_text.strip().strip(" ,;:"),
+        "author_candidates": _split_author_candidates(author_text),
+        "title_candidate": title_candidate.strip().strip(" ."),
+        "container_candidate": container_candidate.strip().strip(" ."),
+        "year_candidate": year_candidate,
+        "confidence": confidence,
+        "metadata": {
+            "split_basis": split_basis,
+        },
+    }
+
+
+def _candidate_ieee_quote_title(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<authors>.+?),\s*[\"“](?P<title>.+?)[,，]?[\"”]\s*(?P<after>.+)$",
+        text,
+    )
+    if match is None:
+        return None
+    after = match.group("after").strip()
+    container = re.sub(r"^(?:in|In:?)\s+", "", after).strip(" ,.")
+    year_match = YEAR_RE.search(after)
+    year = int(year_match.group(1)) if year_match is not None else terminal_year
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="ieee_quote_title",
+        author_text=match.group("authors"),
+        title_candidate=match.group("title"),
+        container_candidate=container,
+        year_candidate=year,
+        confidence=0.9 if year is not None else 0.82,
+        split_basis="IEEE quoted title between author block and venue tail",
+    )
+
+
+def _candidate_venue_marker(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<head>.+?)\.\s+(?P<title>.+?)\.\s+(?P<marker>In:|in|Proceedings of)\s+(?P<container>.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    container = match.group("container").strip()
+    year_match = YEAR_RE.search(container)
+    year = int(year_match.group(1)) if year_match is not None else terminal_year
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="venue_marker",
+        author_text=match.group("head"),
+        title_candidate=match.group("title"),
+        container_candidate=f"{match.group('marker')} {container}".strip(),
+        year_candidate=year,
+        confidence=0.84 if year is not None else 0.74,
+        split_basis="venue marker separates title and container",
+    )
+
+
+def _candidate_authors_colon_title_in_year(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<authors>.+?):\s*(?P<title>.+?)(?:\.\s*In:\s*(?P<container>.+?))?\s*\((?P<year>(?:19|20)\d{2})[a-z]?\)\s*\.?$",
+        text,
+    )
+    if match is None:
+        return None
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="authors_colon_title_in_year",
+        author_text=match.group("authors"),
+        title_candidate=match.group("title"),
+        container_candidate=match.group("container") or "",
+        year_candidate=int(match.group("year")),
+        confidence=0.92 if terminal_year == int(match.group("year")) else 0.84,
+        split_basis="authors block before ':' and title before optional In:/year tail",
+    )
+
+
+def _candidate_authors_period_title_period_venue_year(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<authors>.+?)\.\s+(?P<title>.+?)\.(?:\s+(?P<container>.+?))?(?:\s*\(?((?P<year>(?:19|20)\d{2}))\)?)?\.?$",
+        text,
+    )
+    if match is None:
+        return None
+    year = int(match.group("year")) if match.group("year") else terminal_year
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="authors_period_title_period_venue_year",
+        author_text=match.group("authors"),
+        title_candidate=match.group("title"),
+        container_candidate=match.group("container") or "",
+        year_candidate=year,
+        confidence=0.75 if year is not None else 0.62,
+        split_basis="first sentence as authors, second sentence as title, trailing sentence/year as container",
+    )
+
+
+def _candidate_authors_year_paren_title_venue(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    match = re.match(
+        r"^(?P<authors>.+?)\s*\((?P<year>(?:19|20)\d{2})[a-z]?\)\.?\s+(?P<title>.+?)(?:\.\s+(?P<container>.+))?$",
+        text,
+    )
+    if match is None:
+        return None
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="authors_year_paren_title_venue",
+        author_text=match.group("authors"),
+        title_candidate=match.group("title"),
+        container_candidate=match.group("container") or "",
+        year_candidate=int(match.group("year")) if match.group("year") else terminal_year,
+        confidence=0.8,
+        split_basis="authors before year parentheses, title after year marker",
+    )
+
+
+def _candidate_thesis_or_book_tail_year(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any] | None:
+    if terminal_year is None:
+        return None
+    head = re.sub(rf"[\s,.;:()]*{terminal_year}[\s,.;:()]*$", "", text).strip()
+    if not head:
+        return None
+    if ":" in head:
+        author_text, title_candidate = head.split(":", 1)
+    elif ". " in head:
+        author_text, title_candidate = head.split(". ", 1)
+    else:
+        return None
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="thesis_or_book_tail_year",
+        author_text=author_text,
+        title_candidate=title_candidate,
+        container_candidate="",
+        year_candidate=terminal_year,
+        confidence=0.58,
+        split_basis="tail year stripped first, remaining text split on ':' or first period",
+    )
+
+
+def _candidate_fallback_raw_split(entry_index: int, text: str, terminal_year: int | None) -> dict[str, Any]:
+    if ":" in text:
+        author_text, title_candidate = text.split(":", 1)
+    elif ". " in text:
+        author_text, title_candidate = text.split(". ", 1)
+    else:
+        author_text, title_candidate = text, ""
+    return _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="fallback_raw_split",
+        author_text=author_text,
+        title_candidate=title_candidate,
+        container_candidate="",
+        year_candidate=terminal_year,
+        confidence=0.35,
+        split_basis="fallback split using ':' or first sentence boundary",
+    )
+
+
+def _parse_bibtex_fields(raw: str) -> tuple[str | None, str | None, dict[str, str]]:
+    entry_match = re.search(r"@([A-Za-z]+)\s*\{\s*([^,\s]+)\s*,", raw, re.DOTALL)
+    if entry_match is None:
+        return None, None, {}
+    entry_type = entry_match.group(1).strip()
+    citekey = entry_match.group(2).strip()
+    body_start = entry_match.end()
+    body = raw[body_start:].strip()
+    if body.endswith("}"):
+        body = body[:-1]
+
+    fields: dict[str, str] = {}
+    current: list[str] = []
+    depth = 0
+    in_quote = False
+    for char in body:
+        if char == '"' and depth == 0:
+            in_quote = not in_quote
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0 and not in_quote:
+            segment = "".join(current).strip()
+            if "=" in segment:
+                key, value = segment.split("=", 1)
+                fields[key.strip().lower()] = value.strip()
+            current = []
+            continue
+        current.append(char)
+    tail = "".join(current).strip()
+    if "=" in tail:
+        key, value = tail.split("=", 1)
+        fields[key.strip().lower()] = value.strip()
+
+    normalized_fields: dict[str, str] = {}
+    for key, value in fields.items():
+        stripped = value.strip().rstrip(",")
+        if stripped.startswith("{") and stripped.endswith("}"):
+            stripped = stripped[1:-1]
+        if stripped.startswith('"') and stripped.endswith('"'):
+            stripped = stripped[1:-1]
+        normalized_fields[key] = re.sub(r"\s+", " ", stripped.replace("\n", " ")).strip()
+    return entry_type, citekey, normalized_fields
+
+
+def _candidate_bibtex_entry_fields(entry_index: int, raw: str) -> dict[str, Any] | None:
+    entry_type, citekey, fields = _parse_bibtex_fields(raw)
+    if not fields:
+        return None
+    author_text = fields.get("author", "")
+    title_candidate = fields.get("title", "")
+    container_candidate = (
+        fields.get("journal")
+        or fields.get("booktitle")
+        or fields.get("publisher")
+        or fields.get("school")
+        or fields.get("institution")
+        or ""
+    )
+    year_match = YEAR_RE.search(fields.get("year", ""))
+    year_candidate = int(year_match.group(1)) if year_match is not None else None
+    candidate = _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="bibtex_entry_fields",
+        author_text=author_text,
+        title_candidate=title_candidate,
+        container_candidate=container_candidate,
+        year_candidate=year_candidate,
+        confidence=0.96 if title_candidate and author_text else 0.82,
+        split_basis="parsed direct bibtex fields",
+    )
+    candidate["metadata"].update(
+        {
+            "citekey": citekey,
+            "entry_type": entry_type,
+            "parsed_fields": fields,
+        }
+    )
+    return candidate
+
+
+def _extract_bibitem_key(raw: str) -> str | None:
+    match = LATEX_BIBITEM_RE.search(raw)
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = str(entry.get("raw", ""))
+    metadata = dict(entry.get("metadata", {}))
+    source_format = str(metadata.get("source_format", ""))
+    text, _ = _strip_reference_number_prefix(raw)
+    bibitem_key = _extract_bibitem_key(text)
+    if bibitem_key is not None:
+        text = LATEX_BIBITEM_RE.sub("", text, count=1).strip()
+    text = _normalize_reference_entry_text(text)
+    entry_index = int(entry["entry_index"])
+    terminal_year = _extract_terminal_publication_year(raw)
+    if source_format == "bibtex":
+        candidate = _candidate_bibtex_entry_fields(entry_index, raw)
+        if candidate is not None:
+            candidate["candidate_index"] = 0
+            return [candidate]
+    candidate_builders = [
+        _candidate_ieee_quote_title,
+        _candidate_venue_marker,
+        _candidate_authors_period_title_period_venue_year,
+        _candidate_authors_colon_title_in_year,
+        _candidate_authors_year_paren_title_venue,
+        _candidate_thesis_or_book_tail_year,
+    ]
+    seen: set[tuple[str, str, str, int | None]] = set()
+    candidates: list[dict[str, Any]] = []
+    for candidate_index, builder in enumerate(candidate_builders, start=0):
+        candidate = builder(entry_index, text, terminal_year)
+        if candidate is None:
+            continue
+        key = (
+            str(candidate["pattern"]),
+            str(candidate["author_text"]),
+            str(candidate["title_candidate"]),
+            candidate.get("year_candidate"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        if bibitem_key is not None:
+            candidate.setdefault("metadata", {})["bibitem_key"] = bibitem_key
+        candidate["candidate_index"] = len(candidates)
+        candidates.append(candidate)
+    fallback = _candidate_fallback_raw_split(entry_index, text, terminal_year)
+    fallback_key = (
+        str(fallback["pattern"]),
+        str(fallback["author_text"]),
+        str(fallback["title_candidate"]),
+        fallback.get("year_candidate"),
+    )
+    if fallback_key not in seen:
+        if bibitem_key is not None:
+            fallback.setdefault("metadata", {})["bibitem_key"] = bibitem_key
+        fallback["candidate_index"] = len(candidates)
+        candidates.append(fallback)
+    return candidates
+
+
+def _generate_reference_candidates_v16(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = str(entry.get("raw", ""))
+    entry_copy = dict(entry)
+    entry_copy["raw"] = _protect_author_initials(_strip_trailing_page_markers(raw))
+    candidates = _generate_reference_candidates(entry_copy)
+    for candidate in candidates:
+        for key in ("author_text", "title_candidate", "container_candidate"):
+            value = candidate.get(key)
+            if isinstance(value, str):
+                candidate[key] = _restore_initials(value)
+    return candidates
+
+
+def _candidate_cjk_type_marker_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    raw = str(entry.get("raw", ""))
+    entry_index = int(entry.get("entry_index", 0))
+    normalized = _normalize_fullwidth_reference_text(raw)
+    text, _ = _strip_reference_number_prefix(normalized)
+    text = _normalize_reference_entry_text(text)
+    match = CJK_TYPE_MARKER_ENTRY_RE.match(text)
+    if match is None:
+        return None
+    author_text, title = _split_type_marker_authors_title(match.group("authors_and_title"))
+    candidate = _make_reference_candidate(
+        entry_index=entry_index,
+        pattern="cjk_type_marker_entry",
+        author_text=author_text,
+        title_candidate=title,
+        container_candidate=match.group("container"),
+        year_candidate=int(match.group("year")) if match.group("year") else None,
+        confidence=0.75,
+        split_basis="type-marker [J/C/D/...] delimits title and container",
+    )
+    if _has_cjk(author_text):
+        candidate["author_candidates"] = _split_cjk_authors(author_text)
+    candidate["candidate_index"] = 0
+    return candidate
+
+
+def _generate_reference_candidates_v171(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    if _is_cjk_entry(str(entry.get("raw", ""))):
+        cjk_candidate = _candidate_cjk_type_marker_entry(entry)
+        if cjk_candidate is not None:
+            return [cjk_candidate]
+        normalized_entry = dict(entry)
+        normalized_entry["raw"] = _normalize_fullwidth_reference_text(str(entry.get("raw", "")))
+        return _generate_reference_candidates_v16(normalized_entry)
+    return _generate_reference_candidates_v16(entry)
+
+
+def _detect_reference_entry_style(entries: list[dict[str, Any]]) -> str:
+    numeric_count = 0
+    author_year_count = 0
+    for entry in entries:
+        metadata = dict(entry.get("metadata", {}))
+        if metadata.get("detected_ref_number") is not None:
+            numeric_count += 1
+        if _ends_with_reference_tail(str(entry.get("raw", ""))):
+            author_year_count += 1
+    if numeric_count and author_year_count:
+        return "mixed"
+    if numeric_count:
+        return "numeric"
+    if author_year_count:
+        return "author-year"
+    return "mixed"
+
+
+def _detect_reference_block_suspicions(
+    *,
+    blocks: list[dict[str, Any]],
+    entries: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    entry_style: str,
+) -> list[dict[str, Any]]:
+    candidates_by_entry: dict[int, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        candidates_by_entry.setdefault(int(candidate["entry_index"]), []).append(candidate)
+    entries_by_block: dict[int, list[dict[str, Any]]] = {}
+    for entry in entries:
+        block_index = int(dict(entry.get("metadata", {})).get("block_index", -1))
+        entries_by_block.setdefault(block_index, []).append(entry)
+    block_by_index = {int(block["block_index"]): block for block in blocks}
+
+    suspicions: list[dict[str, Any]] = []
+    consumed_blocks: set[int] = set()
+    for index, block in enumerate(blocks):
+        block_index = int(block["block_index"])
+        if block_index in consumed_blocks:
+            continue
+        source_text = str(block.get("source_text", ""))
+        proposed_entries = [str(item) for item in block.get("proposed_entries", []) if str(item)]
+        reasons: list[str] = []
+        suspicion_kind: str | None = None
+        member_block_indexes = [block_index]
+        source_format = str(dict(block.get("metadata", {})).get("source_format", "plain_text"))
+
+        if source_format in {"bibtex", "latex_bibitem"}:
+            reasons = []
+        elif len(proposed_entries) > 1 and not all(REFERENCE_ENTRY_START_RE.match(entry.strip()) for entry in proposed_entries):
+            reasons.append("single line contains multiple strong reference starts")
+            suspicion_kind = "grouped_entries_in_single_line"
+        elif not _ends_with_reference_tail(source_text):
+            cursor = index + 1
+            continuation_found = False
+            while cursor < len(blocks):
+                next_block = blocks[cursor]
+                next_source_text = str(next_block.get("source_text", ""))
+                if _looks_like_reference_entry_start(next_source_text):
+                    break
+                continuation_found = True
+                member_block_indexes.append(int(next_block["block_index"]))
+                cursor += 1
+            if continuation_found:
+                reasons.append("line does not end like a complete reference entry")
+                reasons.append("following line looks like continuation text rather than a new reference entry")
+                suspicion_kind = "possible_multiline_entry"
+        else:
+            has_detected_number = any(
+                dict(entry.get("metadata", {})).get("detected_ref_number") is not None
+                for entry in entries_by_block.get(block_index, [])
+            )
+            if entry_style == "author-year" and not has_detected_number and len(source_text) > 450:
+                reasons.append("entry text is unusually long for a single author-year reference")
+                suspicion_kind = suspicion_kind or "mixed_or_ambiguous_boundary"
+
+        for entry in entries_by_block.get(block_index, []):
+            entry_index = int(entry["entry_index"])
+            raw = str(entry.get("raw", ""))
+            for candidate in candidates_by_entry.get(entry_index, []):
+                combined = _normalize_reference_entry_text(
+                    f"{candidate.get('title_candidate', '')} {candidate.get('container_candidate', '')}"
+                )
+                if len(_find_inline_reference_start_offsets(combined)) > 1 and len(raw) > 180:
+                    reasons.append(
+                        "candidate title/container still contains another strong reference start; likely grouped entries remain"
+                    )
+                    suspicion_kind = suspicion_kind or "mixed_or_ambiguous_boundary"
+                    break
+            if reasons:
+                break
+
+        if reasons:
+            source_parts = [str(block_by_index[member_block_index]["source_text"]) for member_block_index in member_block_indexes]
+            proposed: list[str] = []
+            for member_block_index in member_block_indexes:
+                member_block = block_by_index[member_block_index]
+                proposed.extend([str(item) for item in member_block.get("proposed_entries", []) if str(item)])
+            suspicions.append(
+                {
+                    "block_index": block_index,
+                    "source_text": _normalize_reference_entry_text(" ".join(source_parts)),
+                    "line_start": int(block["line_start"]),
+                    "line_end": int(block_by_index[member_block_indexes[-1]]["line_end"]),
+                    "reasons": list(dict.fromkeys(reasons)),
+                    "proposed_entries": proposed,
+                    "suspicion_kind": suspicion_kind or "mixed_or_ambiguous_boundary",
+                    "member_block_indexes": member_block_indexes,
+                }
+            )
+            consumed_blocks.update(member_block_indexes)
+    return suspicions
+
+
+def _build_reference_batches(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    batches: list[dict[str, Any]] = []
+    if entries:
+        chunk_size = 15
+        for batch_index, start in enumerate(range(0, len(entries), chunk_size)):
+            end = min(start + chunk_size - 1, len(entries) - 1)
+            batches.append(
+                {
+                    "batch_kind": "references_workset",
+                    "batch_index": batch_index,
+                    "status": "prepared",
+                    "entry_start": start,
+                    "entry_end": end,
+                    "metadata": {"entry_count": end - start + 1},
+                }
+            )
+    return batches
+
+
+def _replace_reference_workset(
+    connection,
+    *,
+    entries: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    batches: list[dict[str, Any]],
+) -> None:  # type: ignore[no-untyped-def]
+    store_reference_entries(connection, entries)
+    connection.execute("DELETE FROM reference_batches")
+    for batch in batches:
+        store_reference_batch(
+            connection,
+            batch_kind=str(batch["batch_kind"]),
+            batch_index=int(batch["batch_index"]),
+            status=str(batch["status"]),
+            entry_start=int(batch["entry_start"]),
+            entry_end=int(batch["entry_end"]),
+            metadata=dict(batch.get("metadata", {})),
+        )
+    store_reference_parse_candidates(connection, candidates)
+
+
+def _validate_reference_candidate_years(candidates: list[dict[str, Any]]) -> None:
+    for candidate in candidates:
+        year_candidate = candidate.get("year_candidate")
+        if year_candidate is not None and not _is_valid_publication_year(year_candidate):
+            candidate["year_candidate"] = None
+
+
+def _detect_reference_file_quality(
+    *,
+    entries: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    has_numbering_anomaly: bool,
+    warnings: list[str],
+) -> dict[str, Any]:
+    entry_count = len(entries) or 1
+    best_by_entry: dict[int, dict[str, Any]] = {}
+    for candidate in candidates:
+        entry_index = int(candidate["entry_index"])
+        if entry_index not in best_by_entry:
+            best_by_entry[entry_index] = candidate
+    best_candidates = list(best_by_entry.values())
+    best_count = len(best_candidates) or 1
+
+    fallback_best_ratio = sum(
+        1 for candidate in best_candidates if str(candidate.get("pattern", "")) == "fallback_raw_split"
+    ) / best_count
+    year_ratio = sum(1 for candidate in best_candidates if candidate.get("year_candidate") is not None) / best_count
+    warning_density = len(warnings) / entry_count
+    empty_title_ratio = sum(
+        1 for candidate in best_candidates if not str(candidate.get("title_candidate", "")).strip()
+    ) / best_count
+
+    metrics = {
+        "fallback_best_ratio": fallback_best_ratio,
+        "year_ratio": year_ratio,
+        "warning_density": warning_density,
+        "numbering_anomaly": 1.0 if has_numbering_anomaly else 0.0,
+        "empty_title_ratio": empty_title_ratio,
+    }
+    thresholds = {
+        "fallback_best_ratio": {"operator": ">", "threshold": 0.50},
+        "year_ratio": {"operator": "<", "threshold": 0.20},
+        "warning_density": {"operator": ">", "threshold": 1.0},
+        "numbering_anomaly": {"operator": "==", "threshold": 1.0},
+        "empty_title_ratio": {"operator": ">", "threshold": 0.30},
+    }
+    triggered_signals: list[str] = []
+    if fallback_best_ratio > 0.50:
+        triggered_signals.append("fallback_best_ratio")
+    if year_ratio < 0.20:
+        triggered_signals.append("year_ratio")
+    if warning_density > 1.0:
+        triggered_signals.append("warning_density")
+    if has_numbering_anomaly:
+        triggered_signals.append("numbering_anomaly")
+    if empty_title_ratio > 0.30:
+        triggered_signals.append("empty_title_ratio")
+
+    return {
+        "schema": REFERENCE_PREPROCESS_QUALITY_SCHEMA,
+        "preprocess_version": REFERENCE_PREPROCESS_VERSION,
+        "metrics": metrics,
+        "thresholds": thresholds,
+        "triggered_signals": triggered_signals,
+        "trigger_count": len(triggered_signals),
+        "trigger_min": 4,
+        "file_quality_low": len(triggered_signals) >= 4,
+    }
+
+
+def _public_reference_preprocess_quality(quality: dict[str, Any] | None) -> dict[str, Any]:
+    if not quality:
+        return {}
+    public_quality = dict(quality)
+    public_quality.pop("preprocess_version", None)
+    return public_quality
+
+
+def _prepare_reference_workset_state(
+    *,
+    lines: list[str],
+    scope: Scope,
+    reviewed_raw_entries: list[str] | None = None,
+) -> dict[str, Any]:
+    if reviewed_raw_entries is None:
+        blocks = _split_reference_blocks(lines, scope)
+        entries = _split_reference_entries(lines, scope)
+    else:
+        blocks = [
+            {
+                "block_index": block_index,
+                "source_text": _normalize_reference_entry_text(raw),
+                "line_start": scope.line_start,
+                "line_end": scope.line_end,
+                "proposed_entries": [_normalize_reference_entry_text(raw)],
+            }
+            for block_index, raw in enumerate(reviewed_raw_entries)
+            if _normalize_reference_entry_text(raw)
+        ]
+        entries = _build_reference_entries_from_blocks(blocks)
+    normalized_entries, numbering_warnings, has_numbering_anomaly = _detect_reference_numbering(entries)
+    normalized_entries = _merge_bilingual_reference_entries(normalized_entries)
+    candidates: list[dict[str, Any]] = []
+    ambiguity_warnings: list[str] = []
+    boundary_warnings: list[str] = []
+    for entry in normalized_entries:
+        entry_candidates = _generate_reference_candidates_v171(entry)
+        _validate_reference_candidate_years(entry_candidates)
+        if len(entry_candidates) > 1:
+            ambiguity_warnings.append(f"{WARNING_REFERENCE_PATTERN_AMBIGUOUS}: entry_index={entry['entry_index']}")
+        for candidate in entry_candidates:
+            title_candidate = str(candidate.get("title_candidate", "")).strip()
+            if not title_candidate or LEADING_PUNCTUATION_RE.match(title_candidate):
+                boundary_warnings.append(
+                    f"{WARNING_REFERENCE_TITLE_BOUNDARY_SUSPECT}: entry_index={entry['entry_index']} pattern={candidate['pattern']}"
+                )
+            candidates.append(candidate)
+    entry_style = _detect_reference_entry_style(normalized_entries)
+    suspect_blocks = _detect_reference_block_suspicions(blocks=blocks, entries=normalized_entries, candidates=candidates, entry_style=entry_style)
+    grouping_warnings = [
+        f"{WARNING_REFERENCE_ENTRY_GROUPING_SUSPECT}: block_index={block['block_index']}"
+        for block in suspect_blocks
+    ]
+    batches = _build_reference_batches(normalized_entries)
+    warnings = list(dict.fromkeys([*numbering_warnings, *ambiguity_warnings, *boundary_warnings, *grouping_warnings]))
+    file_quality = _detect_reference_file_quality(
+        entries=normalized_entries,
+        candidates=candidates,
+        has_numbering_anomaly=has_numbering_anomaly,
+        warnings=warnings,
+    )
+    if file_quality["file_quality_low"]:
+        warnings.append(
+            f"{REFERENCE_FILE_QUALITY_LOW_WARNING}: {file_quality['trigger_count']}/5 signals crossed thresholds "
+            f"({', '.join(file_quality['triggered_signals'])})"
+        )
+    warnings = list(dict.fromkeys(warnings))
+    return {
+        "blocks": blocks,
+        "entries": normalized_entries,
+        "candidates": candidates,
+        "batches": batches,
+        "entry_style": entry_style,
+        "suspect_blocks": suspect_blocks,
+        "requires_split_review": bool(suspect_blocks),
+        "numbering_warnings": numbering_warnings,
+        "has_numbering_anomaly": has_numbering_anomaly,
+        "warnings": warnings,
+        "file_quality": file_quality,
+        "file_quality_low": bool(file_quality["file_quality_low"]),
+    }
+
+
+def _build_reference_workset_export(
+    *,
+    blocks: list[dict[str, Any]],
+    entries: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    batches: list[dict[str, Any]],
+    entry_style: str,
+    suspect_blocks: list[dict[str, Any]],
+    requires_split_review: bool,
+    file_quality: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    candidates_by_entry: dict[int, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        candidates_by_entry.setdefault(int(candidate["entry_index"]), []).append(candidate)
+    export_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        metadata = dict(entry.get("metadata", {}))
+        numbering = dict(metadata.get("numbering", {}))
+        export_entries.append(
+            {
+                "entry_index": int(entry["entry_index"]),
+                "raw": str(entry["raw"]),
+                "detected_ref_number": numbering.get("detected_ref_number"),
+                "numbering": numbering,
+                "patterns": candidates_by_entry.get(int(entry["entry_index"]), []),
+            }
+        )
+    return {
+        "meta": {
+            "generated_at": utc_now_iso(),
+            "entry_count": len(export_entries),
+            "candidate_count": len(candidates),
+            "batch_count": len(batches),
+            "entry_style": entry_style,
+            "split_mode": "line-first",
+            "grouping_suspect_count": len(suspect_blocks),
+            "requires_split_review": requires_split_review,
+            "review_generation_id": _reference_review_generation_id(suspect_blocks) if suspect_blocks else "",
+        },
+        "file_quality": _public_reference_preprocess_quality(file_quality),
+        "file_quality_low": bool((file_quality or {}).get("file_quality_low")),
+        "blocks": [
+            {
+                "block_index": int(block["block_index"]),
+                "source_text": str(block["source_text"]),
+                "line_start": int(block["line_start"]),
+                "line_end": int(block["line_end"]),
+                "proposed_entries": [str(item) for item in block.get("proposed_entries", []) if str(item)],
+            }
+            for block in blocks
+        ],
+        "entries": export_entries,
+        "batches": batches,
+        "suspect_blocks": [
+            {
+                "block_index": int(block["block_index"]),
+                "source_text": str(block["source_text"]),
+                "line_start": int(block["line_start"]),
+                "line_end": int(block["line_end"]),
+                "reasons": list(block.get("reasons", [])),
+                "proposed_entries": list(block.get("proposed_entries", [])),
+                "suspicion_kind": str(block.get("suspicion_kind", "")),
+            }
+            for block in suspect_blocks
+        ],
+    }
+
+
+def _build_reference_review_view(workset_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "meta": dict(workset_payload.get("meta", {})),
+        "suspect_blocks": list(workset_payload.get("suspect_blocks", [])),
+        "blocks": [
+            {
+                "block_index": block.get("block_index"),
+                "source_text": block.get("source_text", ""),
+                "line_start": block.get("line_start"),
+                "line_end": block.get("line_end"),
+                "proposed_entries": list(block.get("proposed_entries", [])),
+            }
+            for block in workset_payload.get("blocks", [])
+        ],
+        "entries": [
+            {
+                "entry_index": entry.get("entry_index"),
+                "detected_ref_number": entry.get("detected_ref_number"),
+                "raw": entry.get("raw", ""),
+                "pattern_summaries": [
+                    {
+                        "candidate_index": pattern.get("candidate_index"),
+                        "pattern": pattern.get("pattern"),
+                        "author_text": pattern.get("author_text", ""),
+                        "title_candidate": pattern.get("title_candidate", ""),
+                        "year_candidate": pattern.get("year_candidate"),
+                        "confidence": pattern.get("confidence"),
+                    }
+                    for pattern in entry.get("patterns", [])
+                ],
+            }
+            for entry in workset_payload.get("entries", [])
+        ],
+    }
+
+
+def _build_citation_review_view(workset_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "meta": {
+            "generated_at": workset_payload.get("meta", {}).get("generated_at", ""),
+            "scope": workset_payload.get("meta", {}).get("scope"),
+            "scope_source": workset_payload.get("meta", {}).get("scope_source", ""),
+            "total_items": len(workset_payload.get("workset_items", [])),
+        },
+        "items": [
+            {
+                "ref_index": item.get("ref_index"),
+                "title": dict(item.get("reference", {})).get("title", ""),
+                "mention_count": item.get("mention_count", len(item.get("mentions", []))),
+                "snippets": [str(mention.get("snippet", "")).strip() for mention in item.get("mentions", []) if str(mention.get("snippet", "")).strip()],
+            }
+            for item in workset_payload.get("workset_items", [])
+        ],
+    }
+
+
+def _expand_numeric_part(part: str) -> list[int]:
+    cleaned = part.strip()
+    if not cleaned:
+        return []
+    range_match = RANGE_RE.match(cleaned)
+    if range_match:
+        start = int(range_match.group(1))
+        end = int(range_match.group(2))
+        if start > end:
+            start, end = end, start
+        if end - start > 200:
+            return []
+        return list(range(start, end + 1))
+    if NUMBER_RE.match(cleaned):
+        return [int(cleaned)]
+    return []
+
+
+def _extract_numeric_mentions(line: str, line_no: int, mention_seed: int) -> tuple[list[dict[str, Any]], int]:
+    mentions: list[dict[str, Any]] = []
+    current = mention_seed
+    for bracket_match in BRACKET_NUMERIC_RE.finditer(line):
+        inside = bracket_match.group(1)
+        if not re.search(r"\d", inside):
+            continue
+        expanded: list[int] = []
+        for part in re.split(r"[;,]", inside):
+            expanded.extend(_expand_numeric_part(part))
+        for ref_number in expanded:
+            mentions.append(
+                {
+                    "mention_id": f"m{current:05d}",
+                    "marker": f"[{ref_number}]",
+                    "style": "numeric",
+                    "line_start": line_no,
+                    "line_end": line_no,
+                    "snippet": line.strip(),
+                    "ref_number_hint": ref_number,
+                }
+            )
+            current += 1
+    return mentions, current
+
+
+def _extract_surname(segment: str) -> str | None:
+    candidate = segment.strip()
+    if not candidate:
+        return None
+    candidate = candidate.split(",")[0].strip()
+    candidate = re.split(r"\bet al\.?\b", candidate, flags=re.IGNORECASE)[0].strip()
+    candidate = re.split(r"\band\b|&", candidate, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    surname_matches = SURNAME_RE.findall(candidate)
+    if not surname_matches:
+        return None
+    return surname_matches[-1]
+
+
+def _extract_author_year_mentions(line: str, line_no: int, mention_seed: int) -> tuple[list[dict[str, Any]], int]:
+    mentions: list[dict[str, Any]] = []
+    current = mention_seed
+    seen: set[tuple[str, int]] = set()
+    for parenthetical in AUTHOR_YEAR_PARENS_RE.finditer(line):
+        for segment in [seg.strip() for seg in parenthetical.group(1).split(";") if seg.strip()]:
+            year_match = YEAR_RE.search(segment)
+            if year_match is None:
+                continue
+            year = int(year_match.group(1))
+            marker = f"({segment})"
+            key = (marker, year)
+            if key in seen:
+                continue
+            seen.add(key)
+            mentions.append(
+                {
+                    "mention_id": f"m{current:05d}",
+                    "marker": marker,
+                    "style": "author-year",
+                    "line_start": line_no,
+                    "line_end": line_no,
+                    "snippet": line.strip(),
+                    "year_hint": year,
+                    "surname_hint": _extract_surname(segment),
+                }
+            )
+            current += 1
+
+    for narrative in AUTHOR_YEAR_NARRATIVE_RE.finditer(line):
+        surname_candidate = narrative.group(1).strip()
+        year_text = narrative.group(2)
+        year = int(year_text[:4])
+        marker = f"{surname_candidate} ({year_text})"
+        key = (marker, year)
+        if key in seen:
+            continue
+        seen.add(key)
+        mentions.append(
+            {
+                "mention_id": f"m{current:05d}",
+                "marker": marker,
+                "style": "author-year",
+                "line_start": line_no,
+                "line_end": line_no,
+                "snippet": line.strip(),
+                "year_hint": year,
+                "surname_hint": _extract_surname(surname_candidate),
+            }
+        )
+        current += 1
+    return mentions, current
+
+
+def _extract_latex_cite_mentions(line: str, line_no: int, mention_seed: int) -> tuple[list[dict[str, Any]], int]:
+    mentions: list[dict[str, Any]] = []
+    current = mention_seed
+    for match in LATEX_CITE_RE.finditer(line):
+        cite_group = match.group(1)
+        for citekey in [item.strip() for item in cite_group.split(",") if item.strip()]:
+            mentions.append(
+                {
+                    "mention_id": f"m{current:05d}",
+                    "marker": f"\\cite{{{citekey}}}",
+                    "style": "latex-cite",
+                    "line_start": line_no,
+                    "line_end": line_no,
+                    "snippet": line.strip(),
+                    "citekey_hint": citekey,
+                }
+            )
+            current += 1
+    return mentions, current
+
+
+def _extract_mentions(lines: list[str], scope: Scope) -> tuple[list[dict[str, Any]], int]:
+    mentions: list[dict[str, Any]] = []
+    filtered_count = 0
+    counter = 1
+    for line_no in range(scope.line_start, scope.line_end + 1):
+        original_line = lines[line_no - 1]
+        filtered_count += _count_false_positive_noise(original_line)
+        line = _sanitize_citation_line(original_line)
+        numeric_mentions, counter = _extract_numeric_mentions(line, line_no, counter)
+        author_year_mentions, counter = _extract_author_year_mentions(line, line_no, counter)
+        latex_mentions, counter = _extract_latex_cite_mentions(line, line_no, counter)
+        for mention in [*numeric_mentions, *author_year_mentions, *latex_mentions]:
+            mention["snippet"] = original_line.strip()
+            if _is_false_positive_mention(mention):
+                filtered_count += 1
+                continue
+            mentions.append(mention)
+    return mentions, filtered_count
+
+
+def _build_citation_workset(
+    *,
+    scope: Scope,
+    mentions: list[dict[str, Any]],
+    reference_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    reference_index: list[dict[str, Any]] = []
+    by_ref_number: dict[int, dict[str, Any]] = {}
+    by_author_year: list[dict[str, Any]] = []
+    by_citekey: dict[str, dict[str, Any]] = {}
+    for item in reference_items:
+        ref_number = item.get("detected_ref_number")
+        if ref_number is None:
+            numbering = dict(item.get("numbering", {}))
+            ref_number = numbering.get("detected_ref_number")
+        if ref_number is None:
+            ref_number = _extract_detected_reference_number(str(item.get("raw", "")))
+        entry = {
+            "ref_index": item.get("entry_index", item.get("ref_index")),
+            "ref_number": ref_number,
+            "title": item.get("title", ""),
+            "author": item.get("author", []),
+            "year": item.get("year"),
+        }
+        metadata_value = item.get("metadata")
+        if isinstance(metadata_value, dict):
+            metadata = dict(metadata_value)
+        else:
+            metadata = {
+                key: value
+                for key, value in item.items()
+                if key not in {"ref_index", "ref_number", "title", "author", "year", "raw", "confidence"}
+            }
+        pattern_candidate = dict(metadata.get("pattern_candidate", {}))
+        pattern_metadata = dict(pattern_candidate.get("metadata", {})) if isinstance(pattern_candidate.get("metadata"), dict) else {}
+        citekey_aliases: set[str] = set()
+        for value in (
+            metadata.get("citekey"),
+            metadata.get("bibitem_key"),
+            pattern_metadata.get("citekey"),
+            pattern_metadata.get("bibitem_key"),
+        ):
+            if isinstance(value, str) and value.strip():
+                citekey_aliases.add(value.strip())
+        entry["citekey_aliases"] = sorted(citekey_aliases)
+        reference_index.append(entry)
+        if isinstance(ref_number, int):
+            by_ref_number[ref_number] = entry
+        authors = entry.get("author", [])
+        if isinstance(authors, list) and authors and entry.get("year") is not None:
+            by_author_year.append({**entry, "surname_aliases": sorted(_first_author_aliases(authors))})
+        for alias in entry["citekey_aliases"]:
+            by_citekey[alias] = entry
+
+    grouped: dict[int, dict[str, Any]] = {}
+    mention_links: list[dict[str, Any]] = []
+    unresolved_mentions: list[dict[str, Any]] = []
+    for mention in mentions:
+        candidate_reference: dict[str, Any] | None = None
+        resolution_method = "unresolved"
+        resolution_confidence = 0.0
+        citekey_hint = str(mention.get("citekey_hint", "")).strip()
+        if citekey_hint and citekey_hint in by_citekey:
+            candidate_reference = by_citekey[citekey_hint]
+            resolution_method = "citekey_hint"
+            resolution_confidence = 1.0
+        elif mention.get("ref_number_hint") in by_ref_number:
+            candidate_reference = by_ref_number[int(mention["ref_number_hint"])]
+            resolution_method = "ref_number_hint"
+            resolution_confidence = 1.0
+        elif mention.get("surname_hint") and mention.get("year_hint") is not None:
+            surname = str(mention["surname_hint"]).lower()
+            year = int(mention["year_hint"])
+            for candidate in by_author_year:
+                surname_aliases = candidate.get("surname_aliases", [])
+                if surname in surname_aliases and candidate.get("year") == year:
+                    candidate_reference = candidate
+                    resolution_method = "author_year_hint"
+                    resolution_confidence = 0.85
+                    break
+        if candidate_reference is None:
+            mention_links.append(
+                {
+                    "mention_id": str(mention["mention_id"]),
+                    "ref_index": None,
+                    "status": "unmapped",
+                    "resolution_method": resolution_method,
+                    "resolution_confidence": resolution_confidence,
+                    "evidence": {
+                        "marker": mention.get("marker"),
+                        "citekey_hint": mention.get("citekey_hint"),
+                        "ref_number_hint": mention.get("ref_number_hint"),
+                        "year_hint": mention.get("year_hint"),
+                        "surname_hint": mention.get("surname_hint"),
+                    },
+                }
+            )
+            unresolved_mentions.append(mention)
+            continue
+        ref_index = int(candidate_reference["ref_index"])
+        mention_links.append(
+            {
+                "mention_id": str(mention["mention_id"]),
+                "ref_index": ref_index,
+                "status": "mapped",
+                "resolution_method": resolution_method,
+                "resolution_confidence": resolution_confidence,
+                "evidence": {
+                    "marker": mention.get("marker"),
+                    "citekey_hint": mention.get("citekey_hint"),
+                    "ref_number_hint": mention.get("ref_number_hint"),
+                    "year_hint": mention.get("year_hint"),
+                    "surname_hint": mention.get("surname_hint"),
+                },
+            }
+        )
+        if ref_index not in grouped:
+            grouped[ref_index] = {
+                "ref_index": ref_index,
+                "ref_number": candidate_reference.get("ref_number"),
+                "reference": {
+                    "author": candidate_reference.get("author", []),
+                    "title": candidate_reference.get("title", ""),
+                    "year": candidate_reference.get("year"),
+                },
+                "mentions": [],
+                "metadata": {
+                    "resolution_methods": [],
+                    "resolution_confidence_max": resolution_confidence,
+                },
+            }
+        grouped[ref_index]["mentions"].append(mention)
+        grouped[ref_index]["metadata"]["resolution_methods"].append(resolution_method)
+        grouped[ref_index]["metadata"]["resolution_confidence_max"] = max(
+            float(grouped[ref_index]["metadata"]["resolution_confidence_max"]),
+            resolution_confidence,
+        )
+
+    suggested_items = [grouped[key] for key in sorted(grouped)]
+    suggested_batches: list[dict[str, Any]] = []
+    batch_index = 0
+    item_start = 0
+    while item_start < len(suggested_items):
+        item_end = item_start
+        mention_total = 0
+        while item_end < len(suggested_items):
+            next_mentions = len(suggested_items[item_end]["mentions"])
+            item_count = item_end - item_start + 1
+            if item_count > 12 or (mention_total + next_mentions) > 30:
+                break
+            mention_total += next_mentions
+            item_end += 1
+        if item_end == item_start:
+            mention_total = len(suggested_items[item_start]["mentions"])
+            item_end += 1
+        batch = {
+            "batch_index": batch_index,
+            "item_start": item_start,
+            "item_end": item_end - 1,
+            "mention_start": 0 if not suggested_items[item_start]["mentions"] else int(suggested_items[item_start]["mentions"][0]["line_start"]),
+            "mention_end": 0 if not suggested_items[item_end - 1]["mentions"] else int(suggested_items[item_end - 1]["mentions"][-1]["line_end"]),
+            "item_count": item_end - item_start,
+            "mention_count": mention_total,
+        }
+        suggested_batches.append(batch)
+        for grouped_item in suggested_items[item_start:item_end]:
+            grouped_item["batch_hint"] = batch_index
+            grouped_item["mention_count"] = len(grouped_item["mentions"])
+        batch_index += 1
+        item_start = item_end
+
+    return {
+        "meta": {
+            "scope": {
+                "section_title": scope.section_title,
+                "line_start": scope.line_start,
+                "line_end": scope.line_end,
+            },
+            "generated_at": utc_now_iso(),
+            "total_mentions": len(mentions),
+        },
+        "mentions": mentions,
+        "mention_links": mention_links,
+        "reference_index": reference_index,
+        "workset_items": suggested_items,
+        "unresolved_mentions": unresolved_mentions,
+        "suggested_batches": suggested_batches,
+    }
+
+
+def _schema(schema_name: str) -> dict[str, Any]:
+    return json.loads((RENDER_SCHEMAS_DIR / schema_name).read_text(encoding="utf-8"))
+
+
+def _template_env(template_root: Path | None = None) -> Environment:
+    env = Environment(
+        loader=FileSystemLoader(str((template_root or TEMPLATES_DIR).resolve())),
+        autoescape=False,
+        trim_blocks=False,
+        lstrip_blocks=False,
+        keep_trailing_newline=False,
+        undefined=StrictUndefined,
+    )
+    env.filters["to_pretty_json"] = lambda value: json.dumps(value, ensure_ascii=False, indent=2)
+    return env
+
+
+def _render_template(template_name: str, context: dict[str, Any], *, template_root: Path | None = None) -> str:
+    return _template_env(template_root).get_template(template_name).render(**context)
+
+
+def _validate_context(context: dict[str, Any], schema_name: str) -> None:
+    validate(instance=context, schema=_schema(schema_name))
+
+
+def _render_json(template_name: str, context: dict[str, Any], schema_name: str) -> str:
+    _validate_context(context, schema_name)
+    rendered = _render_template(template_name, context)
+    json.loads(rendered)
+    return rendered + ("" if rendered.endswith("\n") else "\n")
+
+
+def _render_markdown(
+    template_name: str,
+    context: dict[str, Any],
+    schema_name: str,
+    *,
+    ensure_trailing_newline: bool,
+    template_root: Path | None = None,
+) -> str:
+    _validate_context(context, schema_name)
+    rendered = _render_template(template_name, context, template_root=template_root)
+    if ensure_trailing_newline:
+        rendered = rendered.rstrip("\n")
+        if rendered:
+            rendered += "\n"
+    return rendered
+
+
+def _resolve_output_root(explicit_out_dir: Path | None, source_path: Path | None) -> Path:
+    if source_path is not None:
+        return source_path.parent
+    if explicit_out_dir is not None:
+        return explicit_out_dir
+    env = os.environ.get("LITERATURE_DIGEST_OUTPUT_DIR")
+    if env:
+        return Path(env).expanduser()
+    return Path.cwd()
+
+
+def _as_str_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value if v is not None]
+    if isinstance(value, str):
+        return [value]
+    return [str(value)]
+
+
+def _as_int_or_none(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer():
+            return int(value)
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if re.fullmatch(r"(19|20)\d{2}", s):
+            return int(s)
+    return None
+
+
+def _as_confidence(value: object, default: float = 0.1) -> float:
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        f = float(value)
+        if math.isfinite(f):
+            return float(min(1.0, max(0.0, f)))
+        return default
+    if isinstance(value, str):
+        try:
+            f = float(value.strip())
+        except ValueError:
+            return default
+        if math.isfinite(f):
+            return float(min(1.0, max(0.0, f)))
+    return default
+
+
+def _require_string_list(value: object, field_name: str) -> tuple[list[str] | None, str | None]:
+    if not isinstance(value, list):
+        return None, f"{field_name} must be an array of strings"
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return None, f"{field_name} must be an array of strings"
+        out.append(item)
+    return out, None
+
+
+def _normalize_keyword_list(value: object, field_name: str) -> tuple[list[str] | None, str | None]:
+    keywords, error = _require_string_list(value, field_name)
+    if error is not None or keywords is None:
+        return None, error
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for keyword in keywords:
+        stripped = keyword.strip()
+        if not stripped:
+            continue
+        dedupe_key = stripped.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(stripped)
+    if not normalized:
+        return None, f"{field_name} must contain at least one non-empty keyword"
+    return normalized, None
+
+
+def _validate_representative_image_obj(value: object, *, field_name: str = "representative_image") -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(value, dict):
+        return None, f"{field_name} must be object"
+    status = value.get("status")
+    if status not in {"selected", "none"}:
+        return None, f"{field_name}.status must be selected or none"
+    if status == "none":
+        return {"status": "none"}, None
+
+    source_kind = value.get("source_kind")
+    if source_kind not in {"markdown_image_ref", "pdf_figure_caption"}:
+        return None, f"{field_name}.source_kind must be markdown_image_ref or pdf_figure_caption"
+
+    normalized: dict[str, Any] = {"status": "selected", "source_kind": source_kind}
+    for key in ("label", "caption_quote", "selection_reason"):
+        item = value.get(key)
+        if not isinstance(item, str) or not item.strip():
+            return None, f"{field_name}.{key} must be non-empty string"
+        normalized[key] = item.strip()
+
+    confidence = value.get("confidence")
+    if confidence not in {"high", "medium", "low"}:
+        return None, f"{field_name}.confidence must be high, medium, or low"
+    normalized["confidence"] = confidence
+
+    section_hint = value.get("section_hint")
+    if isinstance(section_hint, str) and section_hint.strip():
+        normalized["section_hint"] = section_hint.strip()
+    elif section_hint not in (None, ""):
+        return None, f"{field_name}.section_hint must be string when present"
+
+    page_hint = value.get("page_hint")
+    if page_hint is not None:
+        normalized_page = _as_int_or_none(page_hint)
+        if normalized_page is None or normalized_page <= 0:
+            return None, f"{field_name}.page_hint must be positive integer when present"
+        normalized["page_hint"] = normalized_page
+
+    markdown_src_hint = value.get("markdown_src_hint")
+    if source_kind == "markdown_image_ref":
+        if not isinstance(markdown_src_hint, str) or not markdown_src_hint.strip():
+            return None, f"{field_name}.markdown_src_hint must be non-empty string for markdown_image_ref"
+        normalized["markdown_src_hint"] = markdown_src_hint.strip()
+    elif "markdown_src_hint" in value:
+        return None, f"{field_name}.markdown_src_hint is only valid for markdown_image_ref"
+
+    return normalized, None
+
+
+def _validate_digest_payload(
+    payload: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]] | None, list[dict[str, Any]] | None, dict[str, Any] | None, str | None]:
+    if "sections" in payload:
+        return None, None, None, "deprecated payload key 'sections' is not supported; use digest_slots + section_summaries"
+
+    digest_slots_obj = payload.get("digest_slots")
+    section_summaries_obj = payload.get("section_summaries")
+    if not isinstance(digest_slots_obj, dict):
+        return None, None, None, "digest_slots must be object"
+    if not isinstance(section_summaries_obj, list):
+        return None, None, None, "section_summaries must be array"
+
+    representative_image = None
+    if "representative_image" in payload:
+        representative_image, error = _validate_representative_image_obj(payload.get("representative_image"))
+        if error is not None:
+            return None, None, None, error
+
+    normalized_slots: dict[str, dict[str, Any]] = {}
+
+    tldr = digest_slots_obj.get("tldr")
+    if not isinstance(tldr, dict):
+        return None, None, None, "digest_slots.tldr must be object"
+    paragraphs, error = _require_string_list(tldr.get("paragraphs"), "digest_slots.tldr.paragraphs")
+    if error is not None:
+        return None, None, None, error
+    normalized_slots["tldr"] = {"paragraphs": paragraphs}
+
+    research = digest_slots_obj.get("research_question_and_contributions")
+    if not isinstance(research, dict):
+        return None, None, None, "digest_slots.research_question_and_contributions must be object"
+    research_question = research.get("research_question")
+    if not isinstance(research_question, str):
+        return None, None, None, "digest_slots.research_question_and_contributions.research_question must be string"
+    contributions, error = _require_string_list(
+        research.get("contributions"),
+        "digest_slots.research_question_and_contributions.contributions",
+    )
+    if error is not None:
+        return None, None, None, error
+    normalized_slots["research_question_and_contributions"] = {
+        "research_question": research_question,
+        "contributions": contributions,
+    }
+
+    for slot_key in ("method_highlights", "key_results", "limitations_and_reproducibility"):
+        slot_value = digest_slots_obj.get(slot_key)
+        if not isinstance(slot_value, dict):
+            return None, None, None, f"digest_slots.{slot_key} must be object"
+        items, error = _require_string_list(slot_value.get("items"), f"digest_slots.{slot_key}.items")
+        if error is not None:
+            return None, None, None, error
+        normalized_slots[slot_key] = {"items": items}
+
+    normalized_summaries: list[dict[str, Any]] = []
+    for index, summary in enumerate(section_summaries_obj, start=1):
+        if not isinstance(summary, dict):
+            return None, None, None, "section_summaries items must be objects"
+        source_heading = summary.get("source_heading")
+        if not isinstance(source_heading, str):
+            return None, None, None, "section_summaries.source_heading must be string"
+        items, error = _require_string_list(summary.get("items"), "section_summaries.items")
+        if error is not None:
+            return None, None, None, error
+        normalized_summaries.append(
+            {
+                "position": int(summary.get("position", index)),
+                "source_heading": source_heading,
+                "items": items,
+            }
+        )
+
+    return normalized_slots, normalized_summaries, representative_image, None
+
+
+def _validate_digest_coverage(connection, digest_slots: dict[str, dict[str, Any]], section_summaries: list[dict[str, Any]]) -> tuple[list[str], str | None]:  # type: ignore[no-untyped-def]
+    for slot_key, slot_value in digest_slots.items():
+        if slot_key == "tldr":
+            if not slot_value.get("paragraphs"):
+                return [], f"digest slot '{slot_key}' must be non-empty"
+        elif slot_key == "research_question_and_contributions":
+            if not str(slot_value.get("research_question", "")).strip():
+                return [], "digest slot 'research_question_and_contributions.research_question' must be non-empty"
+            if not slot_value.get("contributions"):
+                return [], "digest slot 'research_question_and_contributions.contributions' must be non-empty"
+        else:
+            if not slot_value.get("items"):
+                return [], f"digest slot '{slot_key}.items' must be non-empty"
+
+    outline_rows = connection.execute(
+        "SELECT title, heading_level FROM outline_nodes ORDER BY position ASC"
+    ).fetchall()
+    major_headings = [
+        str(row["title"])
+        for row in outline_rows
+        if int(row["heading_level"]) == 1 and not REFERENCES_RE.search(str(row["title"]))
+    ]
+    if not major_headings:
+        return [], None
+
+    covered = {
+        str(summary.get("source_heading", "")).strip()
+        for summary in section_summaries
+        if str(summary.get("source_heading", "")).strip()
+    }
+    minimum_required = min(3, len(major_headings))
+    if len(covered) < minimum_required:
+        return [], f"section_summaries must cover at least {minimum_required} major headings"
+
+    warnings: list[str] = []
+    if len(covered) < len(major_headings):
+        warnings.append(WARNING_DIGEST_UNDERCOVERAGE)
+    return warnings, None
+
+
+def _normalize_function_value(function_value: object) -> tuple[str, str | None]:
+    normalized = str(function_value or "").strip().lower()
+    if normalized in ALLOWED_CITATION_FUNCTIONS:
+        return normalized, None
+    allowed = ", ".join(sorted(ALLOWED_CITATION_FUNCTIONS))
+    if not normalized:
+        return "uncategorized", f"citation function missing; normalized to uncategorized; allowed values: {allowed}"
+    return "uncategorized", f"citation function '{function_value}' normalized to uncategorized; allowed values: {allowed}"
+
+
+def _validate_citation_semantics_payload(
+    payload: dict[str, Any],
+    workset_items: list[dict[str, Any]],
+    *,
+    reference_free_mode: bool = False,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    if "report_md" in payload:
+        return None, "deprecated payload key 'report_md' is not supported; report_md is renderer-derived"
+    if "batches" in payload or "unmapped_mentions" in payload:
+        return None, "persist_citation_semantics now accepts only items[] keyed by ref_index"
+
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        return None, "items must be array"
+    if reference_free_mode and not items:
+        return [], None
+
+    expected_ref_indexes = {int(item["ref_index"]) for item in workset_items}
+    normalized_items: list[dict[str, Any]] = []
+    seen_ref_indexes: set[int] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            return None, "items entries must be objects"
+        if "reference" in item or "mentions" in item or "ref_number" in item:
+            return None, "persist_citation_semantics items must not include reference/mentions/ref_number; those come from DB workset"
+        ref_index = item.get("ref_index")
+        if not isinstance(ref_index, int):
+            return None, "items.ref_index must be integer"
+        topic = item.get("topic")
+        if not isinstance(topic, str) or not topic.strip():
+            return None, "items.topic must be non-empty string"
+        usage = item.get("usage")
+        if not isinstance(usage, str) or not usage.strip():
+            return None, "items.usage must be non-empty string"
+        summary = item.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            return None, "items.summary must be non-empty string"
+        keywords, keyword_error = _normalize_keyword_list(item.get("keywords"), "items.keywords")
+        if keyword_error is not None or keywords is None:
+            return None, keyword_error or "items.keywords invalid"
+        is_key_reference = item.get("is_key_reference")
+        if not isinstance(is_key_reference, bool):
+            return None, "items.is_key_reference must be boolean"
+        if ref_index in seen_ref_indexes:
+            return None, "duplicate ref_index in citation semantics payload"
+        seen_ref_indexes.add(ref_index)
+        normalized_item = dict(item)
+        normalized_item["topic"] = topic.strip()
+        normalized_item["usage"] = usage.strip()
+        normalized_item["summary"] = summary.strip()
+        normalized_item["keywords"] = keywords
+        normalized_items.append(normalized_item)
+
+    if seen_ref_indexes != expected_ref_indexes:
+        missing = sorted(expected_ref_indexes - seen_ref_indexes)
+        extra = sorted(seen_ref_indexes - expected_ref_indexes)
+        details: list[str] = []
+        if missing:
+            details.append(f"missing ref_index values: {missing}")
+        if extra:
+            details.append(f"unknown ref_index values: {extra}")
+        return None, "; ".join(details) if details else "citation semantics payload does not match workset items"
+    return normalized_items, None
+
+
+def _validate_citation_summary_basis(
+    basis: object,
+    citation_items: list[dict[str, Any]],
+    *,
+    reference_free_mode: bool = False,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(basis, dict):
+        return None, "basis must be object"
+
+    research_threads_raw = basis.get("research_threads")
+    if not isinstance(research_threads_raw, list):
+        return None, "basis.research_threads must be array"
+    research_threads = [str(item).strip() for item in research_threads_raw if str(item).strip()]
+    if len(research_threads) < 2:
+        return None, "basis.research_threads must contain at least 2 non-empty strings"
+
+    argument_shape_raw = basis.get("argument_shape")
+    if not isinstance(argument_shape_raw, list):
+        return None, "basis.argument_shape must be array"
+    argument_shape = [str(item).strip() for item in argument_shape_raw if str(item).strip()]
+    if len(argument_shape) < 2:
+        return None, "basis.argument_shape must contain at least 2 non-empty strings"
+
+    key_ref_indexes_raw = basis.get("key_ref_indexes")
+    if not isinstance(key_ref_indexes_raw, list) or (not key_ref_indexes_raw and not reference_free_mode):
+        return None, "basis.key_ref_indexes must be non-empty integer array"
+    key_ref_indexes: list[int] = []
+    for item in key_ref_indexes_raw:
+        if not isinstance(item, int):
+            return None, "basis.key_ref_indexes must be non-empty integer array"
+        key_ref_indexes.append(item)
+
+    expected_ref_indexes = {int(item["ref_index"]) for item in citation_items}
+    unknown = sorted(index for index in key_ref_indexes if index not in expected_ref_indexes)
+    if unknown:
+        return None, f"basis.key_ref_indexes contains unknown ref_index values: {unknown}"
+
+    normalized_basis = dict(basis)
+    normalized_basis["research_threads"] = research_threads
+    normalized_basis["argument_shape"] = argument_shape
+    normalized_basis["key_ref_indexes"] = key_ref_indexes
+    return normalized_basis, None
+
+
+def _validate_citation_timeline_payload(
+    payload: dict[str, Any],
+    workset_items: list[dict[str, Any]],
+    citation_items: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[str], str | None]:
+    timeline = payload.get("timeline")
+    if not isinstance(timeline, dict):
+        return None, [], "timeline must be object"
+
+    known_ref_indexes = {int(item["ref_index"]) for item in citation_items}
+    dated_ref_indexes: set[int] = set()
+    undated_ref_indexes: set[int] = set()
+    for item in workset_items:
+        reference = dict(item.get("reference", {}))
+        ref_index = int(item["ref_index"])
+        if ref_index not in known_ref_indexes:
+            continue
+        if isinstance(reference.get("year"), int):
+            dated_ref_indexes.add(ref_index)
+        else:
+            undated_ref_indexes.add(ref_index)
+
+    normalized_timeline: dict[str, Any] = {}
+    seen_ref_indexes: dict[int, str] = {}
+    bucketed_ref_indexes: set[int] = set()
+
+    for bucket_name in ("early", "mid", "recent"):
+        bucket = timeline.get(bucket_name)
+        if not isinstance(bucket, dict):
+            return None, [], f"timeline.{bucket_name} must be object"
+        summary = bucket.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            return None, [], f"timeline.{bucket_name}.summary must be non-empty string"
+        ref_indexes = bucket.get("ref_indexes")
+        if not isinstance(ref_indexes, list):
+            return None, [], f"timeline.{bucket_name}.ref_indexes must be array"
+        normalized_ref_indexes: list[int] = []
+        for ref_index in ref_indexes:
+            if not isinstance(ref_index, int):
+                return None, [], f"timeline.{bucket_name}.ref_indexes must contain integers"
+            if ref_index not in known_ref_indexes:
+                return None, [], f"timeline.{bucket_name}.ref_indexes contains unknown ref_index {ref_index}"
+            if ref_index in seen_ref_indexes:
+                return None, [], f"ref_index {ref_index} appears in multiple timeline buckets: {seen_ref_indexes[ref_index]} and {bucket_name}"
+            seen_ref_indexes[ref_index] = bucket_name
+            normalized_ref_indexes.append(ref_index)
+            bucketed_ref_indexes.add(ref_index)
+        normalized_timeline[bucket_name] = {
+            "summary": summary.strip(),
+            "ref_indexes": normalized_ref_indexes,
+        }
+
+    missing_dated = sorted(dated_ref_indexes - bucketed_ref_indexes)
+    if missing_dated:
+        return None, [], f"timeline must include every dated citation item exactly once; missing ref_index values: {missing_dated}"
+
+    warnings: list[str] = []
+    missing_year_refs = sorted(undated_ref_indexes - bucketed_ref_indexes)
+    if missing_year_refs:
+        warnings.append(f"{WARNING_CITATION_TIMELINE_MISSING_YEAR}: ref_indexes={missing_year_refs}")
+    return normalized_timeline, warnings, None
+
+
+def _collect_render_semantic_warnings(connection) -> list[str]:  # type: ignore[no-untyped-def]
+    warnings: list[str] = []
+    scope = fetch_section_scope(connection, "citation_scope")
+    if scope is not None:
+        metadata = dict(scope.get("metadata", {}))
+        if metadata.get("fallback_from"):
+            warnings.append(WARNING_SCOPE_FALLBACK_USED)
+
+    reference_items = fetch_reference_items(connection)
+    if any(dict(item).get("numbering", {}).get("has_anomaly") for item in reference_items):
+        warnings.append("reference_numbering_anomaly_detected")
+
+    scope_title = str(scope["section_title"]).lower() if scope is not None else ""
+    if any(token in scope_title for token in ("related", "review", "background", "prior", "survey")):
+        mention_count = connection.execute("SELECT COUNT(*) AS count FROM citation_mentions").fetchone()
+        if mention_count is not None and int(mention_count["count"]) == 0:
+            warnings.append("no_mentions_found_in_review_scope")
+
+    outline_rows = connection.execute(
+        "SELECT title, heading_level FROM outline_nodes ORDER BY position ASC"
+    ).fetchall()
+    major_headings = [
+        str(row["title"])
+        for row in outline_rows
+        if int(row["heading_level"]) == 1 and not REFERENCES_RE.search(str(row["title"]))
+    ]
+    summary_count = connection.execute("SELECT COUNT(*) AS count FROM digest_section_summaries").fetchone()
+    if major_headings and summary_count is not None and int(summary_count["count"]) < len(major_headings):
+        warnings.append(WARNING_DIGEST_UNDERCOVERAGE)
+    return warnings
+
+
+def _validate_error_obj(error_val: object) -> list[str]:
+    if error_val is None:
+        return []
+    if not isinstance(error_val, dict):
+        return ["error must be object or null"]
+    code = error_val.get("code")
+    message = error_val.get("message")
+    errors: list[str] = []
+    if not isinstance(code, str) or not code.strip():
+        errors.append("error.code must be non-empty string")
+    if not isinstance(message, str) or not message.strip():
+        errors.append("error.message must be non-empty string")
+    if isinstance(code, str) and code and code not in STAGE_ERROR_CODES:
+        pass
+    return errors
+
+
+def _quality_first_string(item: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _quality_title(item: dict[str, Any]) -> str:
+    return _quality_first_string(item, ("title", "parsed_title", "parsedTitle", "paper_title"))
+
+
+def _quality_raw(item: dict[str, Any]) -> str:
+    return _quality_first_string(item, ("raw", "raw_reference", "reference"))
+
+
+def _quality_authors(item: dict[str, Any]) -> list[str]:
+    if "authors" in item:
+        return [author.strip() for author in _as_str_list(item.get("authors")) if author.strip()]
+    return [author.strip() for author in _as_str_list(item.get("author")) if author.strip()]
+
+
+def _quality_year(item: dict[str, Any], raw: str) -> int | None:
+    explicit = _as_int_or_none(item.get("year"))
+    if explicit is not None:
+        return explicit
+    match = YEAR_RE.search(raw)
+    return int(match.group(1)) if match is not None else None
+
+
+def _reference_metadata_value_is_empty(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) == 0
+    return False
+
+
+def _sanitize_reference_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key == "citationKey":
+            continue
+        if key in REFERENCE_RICH_METADATA_FIELDS and _reference_metadata_value_is_empty(value):
+            continue
+        sanitized[key] = value
+    return sanitized
+
+
+def _reference_rich_metadata_from_payload(item: dict[str, Any]) -> dict[str, Any]:
+    rich: dict[str, Any] = {}
+    for field in REFERENCE_RICH_METADATA_FIELDS:
+        if field in item and not _reference_metadata_value_is_empty(item.get(field)):
+            rich[field] = item[field]
+    for alias, canonical in REFERENCE_RICH_METADATA_ALIASES.items():
+        if alias in item and canonical not in rich and not _reference_metadata_value_is_empty(item.get(alias)):
+            rich[canonical] = item[alias]
+    return rich
+
+
+def _reference_rich_field_present(item: dict[str, Any], field: str) -> bool:
+    if field in item and not _reference_metadata_value_is_empty(item.get(field)):
+        return True
+    metadata = item.get("metadata")
+    return isinstance(metadata, dict) and field in metadata and not _reference_metadata_value_is_empty(metadata.get(field))
+
+
+def _reference_missing_rich_metadata_fields(item: dict[str, Any]) -> list[str]:
+    raw = _quality_raw(item)
+    if not raw:
+        return []
+    missing: set[str] = set()
+    if re.search(r"\bdoi\s*[:=]\s*10\.\d{4,9}/\S+|https?://doi\.org/10\.\d{4,9}/\S+|\b10\.\d{4,9}/\S+", raw, flags=re.IGNORECASE):
+        missing.add("DOI")
+    if re.search(r"https?://(?!doi\.org)\S+", raw, flags=re.IGNORECASE):
+        missing.add("url")
+    if re.search(r"\barxiv\s*(?:preprint)?\s*(?:arxiv:)?\s*\d{4}\.\d{4,5}", raw, flags=re.IGNORECASE):
+        missing.add("archiveID")
+    if re.search(r"\b(?:pages?|pp)\.?\s+\d+[–-]\d+|\b\d+\s*[–-]\s*\d+\b", raw, flags=re.IGNORECASE):
+        missing.add("pages")
+    if re.search(r"\b(?:vol\.?|volume)\s*\d+", raw, flags=re.IGNORECASE):
+        missing.add("volume")
+    if re.search(r"\b(?:no\.?|issue)\s*\d+|\b\d+\s*\(\s*\d+\s*\)", raw, flags=re.IGNORECASE):
+        missing.add("issue")
+    if re.search(r"(?:^|[.;]\s+)In\s*:?\s+[A-Z][^.,;()]{2,80}", raw):
+        missing.add("conferenceName")
+    if re.search(r"\b[A-Z][A-Za-z&\s]+University\b|\bUniversity of [A-Z][A-Za-z&\s]+", raw):
+        missing.add("university")
+    return sorted(field for field in missing if not _reference_rich_field_present(item, field))
+
+
+def _normalize_reference_quality_title(title: str) -> str:
+    collapsed = re.sub(r"\s+", " ", str(title)).strip()
+    normalized = unicodedata.normalize("NFKC", collapsed).lower()
+    chars: list[str] = []
+    for char in normalized:
+        category = unicodedata.category(char)
+        chars.append(" " if category.startswith(("P", "S")) else char)
+    return re.sub(r"\s+", " ", "".join(chars)).strip()
+
+
+def _reference_quality_token_runs(normalized_title: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in normalized_title:
+        category = unicodedata.category(char)
+        if category.startswith("L") or category.startswith("N"):
+            current.append(char)
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _reference_quality_has_letter(token: str) -> bool:
+    return any(unicodedata.category(char).startswith("L") for char in token)
+
+
+def _reference_quality_non_ascii_letter_count(text: str) -> int:
+    return sum(1 for char in text if ord(char) > 127 and unicodedata.category(char).startswith("L"))
+
+
+def _reference_quality_content_tokens(normalized_title: str) -> list[str]:
+    tokens: list[str] = []
+    for token in _reference_quality_token_runs(normalized_title):
+        if not _reference_quality_has_letter(token):
+            continue
+        if token.isascii() and len(token) < 2:
+            continue
+        if token.isascii() and token in REFERENCE_QUALITY_STOPWORDS:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _reference_quality_bibliographic_marker(normalized_title: str) -> str | None:
+    padded = f" {normalized_title} "
+    for marker in REFERENCE_QUALITY_BIBLIOGRAPHIC_MARKERS:
+        normalized_marker = _normalize_reference_quality_title(marker)
+        if f" {normalized_marker} " in padded:
+            return marker
+    return None
+
+
+def _reference_quality_is_bare_identifier_or_url(title: str, normalized_title: str) -> bool:
+    stripped = title.strip()
+    if REFERENCE_IDENTIFIER_TITLE_RE.match(stripped):
+        return True
+    compact = normalized_title.replace(" ", "")
+    if re.fullmatch(r"(?:doi)?10\d{4,9}\S+", compact):
+        return True
+    if re.fullmatch(r"arxiv\d{4}\d{4,5}v?\d*", compact):
+        return True
+    return False
+
+
+def _reference_quality_is_placeholder_title(normalized_title: str) -> bool:
+    compact = normalized_title.replace(" ", "")
+    return (
+        normalized_title in REFERENCE_QUALITY_PLACEHOLDER_TITLES
+        or compact in REFERENCE_QUALITY_COMPACT_PLACEHOLDER_TITLES
+    )
+
+
+def _reference_quality_is_publication_metadata_only(normalized_title: str, content_tokens: list[str]) -> bool:
+    marker = _reference_quality_bibliographic_marker(normalized_title)
+    if marker is None:
+        return False
+    if len(content_tokens) <= 1:
+        return True
+    metadata_tokens = {
+        "cvpr",
+        "iccv",
+        "eccv",
+        "neurips",
+        "nips",
+        "icml",
+        "iclr",
+        "aaai",
+        "ijcai",
+        "acl",
+        "emnlp",
+        "naacl",
+        "sigir",
+        "kdd",
+        "www",
+        "jmlr",
+        "tmlr",
+    }
+    return bool(content_tokens) and all(token in metadata_tokens for token in content_tokens)
+
+
+def _reference_quality_is_author_only(title: str, normalized_title: str, authors: list[str]) -> bool:
+    if not authors:
+        return False
+    author_tokens: set[str] = set()
+    for author in authors:
+        author_tokens.update(_reference_quality_content_tokens(_normalize_reference_quality_title(author)))
+    title_tokens = set(_reference_quality_content_tokens(normalized_title))
+    if title_tokens and title_tokens.issubset(author_tokens):
+        return True
+    stripped = title.strip()
+    if len(stripped) <= 80 and re.fullmatch(r"[A-Z][A-Za-z'`-]+(?:,\s*[A-Z](?:\.)?)*(?:\s+(?:and|&)\s+[A-Z][A-Za-z'`-]+(?:,\s*[A-Z](?:\.)?)*)?", stripped):
+        return True
+    return False
+
+
+def _reference_quality_has_bibliographic_suffix(title: str, normalized_title: str, content_tokens: list[str]) -> bool:
+    if len(content_tokens) < 2:
+        return False
+    marker = _reference_quality_bibliographic_marker(normalized_title)
+    if marker is None:
+        return False
+    marker_index = normalized_title.find(_normalize_reference_quality_title(marker))
+    return marker_index > 0 and any(separator in title for separator in (". ", ", In ", " In ", "; "))
+
+
+def _reference_quality_has_author_prefix_noise(title: str, authors: list[str]) -> bool:
+    stripped = title.strip()
+    if re.match(r"^[A-Z][A-Za-z'`-]+,\s*(?:[A-Z](?:\.)?\s*){1,4}[:.;]\s+\S", stripped):
+        return True
+    for author in authors:
+        author_text = str(author).strip()
+        if len(author_text) >= 3 and stripped.lower().startswith(author_text.lower()):
+            remainder = stripped[len(author_text) :].lstrip()
+            if remainder.startswith((".", ":", ";", ",")):
+                return True
+    return False
+
+
+def _classify_reference_quality(item: dict[str, Any]) -> list[dict[str, Any]]:
+    title = _quality_title(item)
+    raw = _quality_raw(item)
+    authors = _quality_authors(item)
+    year = _quality_year(item, raw)
+    normalized_title = _normalize_reference_quality_title(title)
+    content_tokens = _reference_quality_content_tokens(normalized_title)
+
+    reasons: list[tuple[str, str, str]] = []
+    if not title:
+        reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "empty_title", "title"))
+    else:
+        is_placeholder_title = _reference_quality_is_placeholder_title(normalized_title)
+        if is_placeholder_title:
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "placeholder_title", "title"))
+        if _reference_quality_is_bare_identifier_or_url(title, normalized_title):
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "bare_identifier_or_url_title", "title"))
+        if _reference_quality_is_publication_metadata_only(normalized_title, content_tokens):
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "publication_metadata_only_title", "title"))
+        if _reference_quality_is_author_only(title, normalized_title, authors):
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "author_only_title", "title"))
+        if not content_tokens and not is_placeholder_title:
+            reasons.append((REFERENCE_QUALITY_HARD_BLOCK, "no_usable_title_tokens", "title"))
+
+    if title:
+        if _reference_quality_has_bibliographic_suffix(title, normalized_title, content_tokens):
+            reasons.append((REFERENCE_QUALITY_WARNING, "bibliographic_suffix_in_title", "title"))
+        if _reference_quality_has_author_prefix_noise(title, authors):
+            reasons.append((REFERENCE_QUALITY_WARNING, "possible_author_prefix_noise", "title"))
+        if len(title) > REFERENCE_QUALITY_LONG_TITLE_CHARS:
+            reasons.append((REFERENCE_QUALITY_WARNING, "very_long_title", "title"))
+        if 0 < len(content_tokens) < 2 and _reference_quality_non_ascii_letter_count(normalized_title) < 4:
+            reasons.append((REFERENCE_QUALITY_WARNING, "short_title_requires_context", "title"))
+    if year is None:
+        reasons.append((REFERENCE_QUALITY_WARNING, "missing_year", "year"))
+    if not authors:
+        reasons.append((REFERENCE_QUALITY_WARNING, "missing_authors", "authors"))
+
+    seen: set[tuple[str, str]] = set()
+    issues: list[dict[str, Any]] = []
+    for severity, reason_code, field in reasons:
+        key = (severity, reason_code)
+        if key in seen:
+            continue
+        seen.add(key)
+        issues.append(
+            _build_reference_quality_issue(
+                item,
+                severity=severity,
+                reason_code=reason_code,
+                field=field,
+                title=title,
+                raw=raw,
+                authors=authors,
+                year=year,
+            )
+        )
+    return issues
+
+
+def _reference_quality_recommendation(reason_code: str) -> str:
+    recommendations = {
+        "empty_title": "Recover the cited work title from the raw reference or prepared candidates in its original language/script; if impossible, omit this row from the next persist_references payload.",
+        "placeholder_title": "Replace the placeholder with the cited work title from the raw reference or prepared candidates in its original language/script; if the title cannot be recovered reliably, omit this row from the next persist_references payload.",
+        "bare_identifier_or_url_title": "Use the raw reference and prepared candidates to recover the cited work title in its original language/script; keep DOI/URL only as metadata, or omit this row if unrecoverable.",
+        "publication_metadata_only_title": "Replace venue, publisher, page, or proceedings text with the cited work title from the raw reference, preserving the original language/script.",
+        "author_only_title": "Move author text to author[] and recover the cited work title from raw/candidates in its original language/script.",
+        "no_usable_title_tokens": "Recover the cited work title in its original language/script, not only punctuation, numbers, or generic bibliography terms.",
+        "bibliographic_suffix_in_title": "Inspect whether the title accidentally includes venue/proceedings/page suffix; strip suffix when the actual title is clear.",
+        "possible_author_prefix_noise": "Inspect whether author text was included at the start of title; move it to author[] and keep only the work title.",
+        "very_long_title": "Inspect the title boundary; split away venue, abstract, or neighboring reference text if included.",
+        "short_title_requires_context": "Verify the short title against raw/candidates; correct it if it is only a fragment, preserving the original language/script, otherwise explicitly accept the warning.",
+        "missing_year": "Recover the publication year from raw/candidates when available; otherwise explicitly accept the warning.",
+        "missing_authors": "Recover authors from raw/candidates when available; otherwise explicitly accept the warning.",
+    }
+    return recommendations.get(reason_code, "Inspect the raw reference and prepared candidates, then correct or explicitly accept according to severity.")
+
+
+def _build_reference_quality_issue(
+    item: dict[str, Any],
+    *,
+    severity: str,
+    reason_code: str,
+    field: str,
+    title: str,
+    raw: str,
+    authors: list[str],
+    year: int | None,
+) -> dict[str, Any]:
+    entry_index = item.get("entry_index", item.get("ref_index", 0))
+    ref_index = item.get("ref_index", entry_index)
+    if field == "year":
+        current_value = "" if year is None else str(year)
+    elif field == "authors":
+        current_value = json.dumps(authors, ensure_ascii=False)
+    else:
+        current_value = title
+    return {
+        "entry_index": int(entry_index),
+        "ref_index": int(ref_index) if ref_index is not None else None,
+        "severity": severity,
+        "reason_code": reason_code,
+        "field": field,
+        "current_value": current_value,
+        "raw_excerpt": raw.strip()[:320],
+        "recommendation": _reference_quality_recommendation(reason_code),
+    }
+
+
+def _normalize_reference_item(item: object, warnings: list[str]) -> dict[str, Any]:
+    out = dict(item) if isinstance(item, dict) else {"raw": str(item)}
+    if "doi" in out and "DOI" not in out:
+        out["DOI"] = out.pop("doi")
+        warnings.append("references: migrated field 'doi' -> 'DOI'")
+    out.setdefault("author", [])
+    out.setdefault("title", "")
+    out.setdefault("year", None)
+    out.setdefault("raw", "")
+    out.setdefault("confidence", 0.1)
+    out["author"] = _as_str_list(out.get("author"))
+    out["title"] = "" if out.get("title") is None else str(out.get("title"))
+    out["year"] = _as_int_or_none(out.get("year"))
+    out["raw"] = "" if out.get("raw") is None else str(out.get("raw"))
+    out["confidence"] = _as_confidence(out.get("confidence"), 0.1)
+    metadata_value = out.get("metadata", {})
+    metadata = _sanitize_reference_metadata(dict(metadata_value) if isinstance(metadata_value, dict) else {})
+    metadata.update(_reference_rich_metadata_from_payload(out))
+    out["metadata"] = metadata
+    return out
+
+
+def _reference_metadata_locked_reference(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "author": list(item.get("author", [])),
+        "title": str(item.get("title", "")),
+        "year": item.get("year"),
+        "raw": str(item.get("raw", "")),
+        "confidence": float(item.get("confidence", 0.0)),
+    }
+
+
+def _reference_item_flat_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(item.get("metadata", {})) if isinstance(item.get("metadata"), dict) else {}
+    for key, value in item.items():
+        if key not in {"ref_index", "author", "title", "year", "raw", "confidence", "metadata"}:
+            metadata[key] = value
+    return metadata
+
+
+def _remove_once_case_insensitive(text: str, needle: str) -> str:
+    needle = str(needle).strip()
+    if not needle:
+        return text
+    pattern = re.compile(re.escape(needle), re.IGNORECASE)
+    return pattern.sub(" ", text, count=1)
+
+
+def _reference_metadata_context_text(item: dict[str, Any]) -> str:
+    raw = str(item.get("raw", "")).strip()
+    context = REFERENCE_ENTRY_START_RE.sub("", raw).strip()
+    for author in _as_str_list(item.get("author")):
+        context = _remove_once_case_insensitive(context, author)
+    title = str(item.get("title", "")).strip()
+    if title:
+        context = _remove_once_case_insensitive(context, title)
+    year = _as_int_or_none(item.get("year"))
+    if year is not None:
+        context = re.sub(rf"\(?\b{year}\b\)?", " ", context, count=1)
+    context = re.sub(r"\s+", " ", context)
+    context = re.sub(r"^[\s,.;:()\[\]-]+|[\s,.;:()\[\]-]+$", "", context).strip()
+    return context or raw
+
+
+def _build_reference_metadata_enrichment_rows(reference_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for position, item in enumerate(reference_items):
+        metadata = _reference_item_flat_metadata(item)
+        existing_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key in REFERENCE_RICH_METADATA_FIELDS and not _reference_metadata_value_is_empty(value)
+        }
+        rows.append(
+            {
+                "ref_index": int(item["ref_index"]),
+                "reference_key": f"reference-{int(item['ref_index'])}",
+                "locked_reference": _reference_metadata_locked_reference(item),
+                "existing_metadata": existing_metadata,
+                "metadata_context_text": _reference_metadata_context_text(item),
+                "batch_id": f"metadata-batch-{position // 10}",
+                "batch_index": position // 10,
+                "status": "pending",
+                "evidence_note": "",
+            }
+        )
+    return rows
+
+
+def _reference_metadata_enrichment_public_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    public_rows: list[dict[str, Any]] = []
+    for row in rows:
+        ref_index = int(row["ref_index"])
+        public_rows.append(
+            {
+                "reference_key": str(row.get("reference_key", f"reference-{ref_index}")),
+                "locked_reference": dict(row.get("locked_reference", {})),
+                "existing_metadata": dict(row.get("existing_metadata", {})),
+                "metadata_context_text": str(row.get("metadata_context_text", "")),
+                "batch_id": str(row.get("batch_id", f"metadata-batch-{int(row.get('batch_index', 0))}")),
+                "status": str(row.get("status", "pending")),
+                "evidence_note": str(row.get("evidence_note", "")),
+            }
+        )
+    return public_rows
+
+
+def _normalize_reference_enrichment_metadata(metadata: object) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(metadata, dict):
+        return {}, ["metadata must be object"]
+    normalized: dict[str, Any] = {}
+    errors: list[str] = []
+    source = dict(metadata)
+    for alias, canonical in REFERENCE_RICH_METADATA_ALIASES.items():
+        if alias in source and canonical not in source:
+            source[canonical] = source.pop(alias)
+    for key, value in source.items():
+        if key not in REFERENCE_RICH_METADATA_FIELDS:
+            errors.append(f"metadata.{key} is not an allowed enrichment field")
+            continue
+        if _reference_metadata_value_is_empty(value):
+            continue
+        normalized[key] = value
+    return normalized, errors
+
+
+def _extract_detected_reference_number(raw: str) -> int | None:
+    text = raw.strip()
+    for pattern in (
+        re.compile(r"^\[(\d{1,3})\]"),
+        re.compile(r"^(\d{1,3})[\.\)]"),
+        re.compile(r"^(\d{1,3})\s"),
+    ):
+        match = pattern.match(text)
+        if match is not None:
+            return int(match.group(1))
+    return None
+
+
+def _detect_reference_numbering(entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str], bool]:
+    numbered: list[tuple[int, int]] = []
+    for entry in entries:
+        detected = _extract_detected_reference_number(str(entry.get("raw", "")))
+        if detected is not None:
+            numbered.append((int(entry["entry_index"]), detected))
+
+    warnings: list[str] = []
+    numbering_by_index = {entry_index: detected for entry_index, detected in numbered}
+    anomaly_indices: set[int] = set()
+    if len(numbered) > 1:
+        previous: int | None = None
+        for entry_index, detected in numbered:
+            entry_warnings: list[str] = []
+            if previous is None:
+                if detected != 1:
+                    entry_warnings.append("reference numbering does not start at 1")
+            else:
+                if detected <= previous:
+                    entry_warnings.append("reference numbering is not strictly increasing")
+                if detected != previous + 1:
+                    entry_warnings.append("reference numbering is not continuous")
+            previous = detected
+            if entry_warnings:
+                anomaly_indices.add(entry_index)
+                warnings.extend(
+                    [f"reference entry {entry_index}: {message} (detected_ref_number={detected})" for message in entry_warnings]
+                )
+
+    normalized_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        entry_obj = dict(entry)
+        entry_index = int(entry_obj["entry_index"])
+        metadata = dict(entry_obj.get("metadata", {}))
+        numbering_warning_messages = [
+            warning for warning in warnings if warning.startswith(f"reference entry {entry_index}:")
+        ]
+        numbering = {
+            "detected_ref_number": numbering_by_index.get(entry_index),
+            "has_anomaly": entry_index in anomaly_indices,
+            "warnings": numbering_warning_messages,
+        }
+        metadata["numbering"] = numbering
+        entry_obj["metadata"] = metadata
+        normalized_entries.append(entry_obj)
+    return normalized_entries, warnings, bool(anomaly_indices)
+
+
+def _normalize_reference_items_with_entry_metadata(
+    items: list[dict[str, Any]],
+    entries: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    entry_metadata = {
+        int(entry["entry_index"]): dict(dict(entry.get("metadata", {})).get("numbering", {}))
+        for entry in entries
+    }
+    normalized_items: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for index, item in enumerate(items):
+        item_obj = _normalize_reference_item(item, warnings)
+        ref_index = int(item_obj.get("ref_index", index))
+        metadata = dict(item_obj.get("metadata", {}))
+        numbering = dict(entry_metadata.get(ref_index, {}))
+        if numbering:
+            metadata["numbering"] = numbering
+            metadata.setdefault("entry_index", ref_index)
+            if numbering.get("detected_ref_number") is not None:
+                metadata.setdefault("detected_ref_number", numbering.get("detected_ref_number"))
+            if numbering.get("warnings"):
+                metadata.setdefault("warnings", list(numbering["warnings"]))
+        raw = str(item_obj.get("raw", ""))
+        detected_terminal_year = _extract_terminal_publication_year(raw)
+        existing_year = _as_int_or_none(item_obj.get("year"))
+        if detected_terminal_year is not None and existing_year != detected_terminal_year:
+            metadata.setdefault("normalization_notes", []).append(
+                f"publication year normalized from {existing_year} to trailing year {detected_terminal_year}"
+            )
+            item_obj["year"] = detected_terminal_year
+        elif existing_year is not None:
+            item_obj["year"] = existing_year
+
+        if item_obj.get("confidence", 0.0) < 0.6 or not item_obj.get("title") or item_obj.get("year") is None:
+            metadata.setdefault("warnings", []).append(WARNING_REFERENCE_LOW_CONFIDENCE)
+            warnings.append(WARNING_REFERENCE_LOW_CONFIDENCE)
+        author_list = _as_str_list(item_obj.get("author"))
+        if len(author_list) <= 1:
+            metadata.setdefault("author_parse_mode", "conservative")
+        item_obj["author"] = author_list
+        item_obj["metadata"] = metadata
+        normalized_items.append(item_obj)
+    deduped_warnings = list(dict.fromkeys(warnings))
+    return normalized_items, deduped_warnings
+
+
+def _validate_references_items(items: object) -> list[str]:
+    if not isinstance(items, list):
+        return ["references must be a JSON array"]
+    errors: list[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append(f"references[{index}] must be object")
+            continue
+        if not isinstance(item.get("author"), list):
+            errors.append(f"references[{index}].author must be array")
+        if not isinstance(item.get("title"), str):
+            errors.append(f"references[{index}].title must be string")
+        year = item.get("year")
+        if year is not None and _as_int_or_none(year) is None:
+            errors.append(f"references[{index}].year must be int|null")
+        if not isinstance(item.get("raw"), str):
+            errors.append(f"references[{index}].raw must be string")
+        confidence = item.get("confidence")
+        if not isinstance(confidence, (int, float)):
+            errors.append(f"references[{index}].confidence must be number")
+    return errors
+
+
+def _validate_citation_analysis_obj(obj: object) -> list[str]:
+    if not isinstance(obj, dict):
+        return ["citation_analysis must be a JSON object"]
+    errors: list[str] = []
+    meta = obj.get("meta")
+    if not isinstance(meta, dict):
+        return ["citation_analysis.meta must be object"]
+    scope = meta.get("scope")
+    if not isinstance(scope, dict):
+        errors.append("citation_analysis.meta.scope must be object")
+        scope = {}
+    if not isinstance(meta.get("language"), str):
+        errors.append("citation_analysis.meta.language must be string")
+    if not isinstance(scope.get("section_title"), str):
+        errors.append("citation_analysis.meta.scope.section_title must be string")
+    line_start = _as_int_or_none(scope.get("line_start"))
+    line_end = _as_int_or_none(scope.get("line_end"))
+    if line_start is None or line_end is None:
+        errors.append("citation_analysis.meta.scope.line_start/line_end must be int")
+    elif line_start <= 0 or line_end <= 0 or line_start > line_end:
+        errors.append("citation_analysis.meta.scope line range invalid")
+
+    items = obj.get("items")
+    unmapped = obj.get("unmapped_mentions")
+    if not isinstance(items, list):
+        errors.append("citation_analysis.items must be array")
+        items = []
+    if not isinstance(unmapped, list):
+        errors.append("citation_analysis.unmapped_mentions must be array")
+        unmapped = []
+    if not isinstance(obj.get("summary"), str) or not str(obj.get("summary", "")).strip():
+        errors.append("citation_analysis.summary must be non-empty string")
+    if not isinstance(obj.get("report_md"), str):
+        errors.append("citation_analysis.report_md must be string")
+
+    seen_mention_ids: set[str] = set()
+    for ref_pos, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append(f"citation_analysis.items[{ref_pos}] must be object")
+            continue
+        mentions = item.get("mentions")
+        if not isinstance(mentions, list):
+            errors.append(f"citation_analysis.items[{ref_pos}].mentions must be array")
+            continue
+        for mention in mentions:
+            if not isinstance(mention, dict):
+                errors.append(f"citation_analysis.items[{ref_pos}].mentions item must be object")
+                continue
+            mention_id = mention.get("mention_id")
+            if not isinstance(mention_id, str):
+                errors.append("citation mention_id must be string")
+                continue
+            if mention_id in seen_mention_ids:
+                errors.append("mention_id must be unique")
+            seen_mention_ids.add(mention_id)
+
+    for mention in unmapped:
+        if not isinstance(mention, dict):
+            errors.append("citation_analysis.unmapped_mentions item must be object")
+            continue
+        mention_id = mention.get("mention_id")
+        if not isinstance(mention_id, str):
+            errors.append("unmapped mention_id must be string")
+            continue
+        if mention_id in seen_mention_ids:
+            errors.append("mention_id must be unique")
+        seen_mention_ids.add(mention_id)
+    return errors
+
+
+def _count_citation_mentions(citation_analysis_obj: object) -> int | None:
+    if not isinstance(citation_analysis_obj, dict):
+        return None
+    items = citation_analysis_obj.get("items")
+    unmapped = citation_analysis_obj.get("unmapped_mentions")
+    if not isinstance(items, list) or not isinstance(unmapped, list):
+        return None
+    consumed = 0
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("mentions"), list):
+            return None
+        consumed += len(item["mentions"])
+    return consumed + len(unmapped)
+
+
+def _extract_preprocess_expected_mentions(preprocess_artifact: Path | None) -> tuple[int | None, str | None]:
+    if preprocess_artifact is None:
+        return None, None
+    if not preprocess_artifact.exists():
+        return None, f"preprocess artifact does not exist: {preprocess_artifact}"
+    try:
+        obj = json.loads(preprocess_artifact.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return None, f"preprocess artifact unreadable JSON: {exc}"
+    stats = obj.get("stats")
+    if not isinstance(stats, dict):
+        return None, "preprocess artifact missing stats"
+    total_mentions = _as_int_or_none(stats.get("total_mentions"))
+    if total_mentions is None:
+        return None, "preprocess artifact missing stats.total_mentions"
+    return total_mentions, None
+
+
+def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, output_root: Path, warnings: list[str]) -> dict[str, Any]:
+    digest_content = ""
+    references_items: list[dict[str, Any]] = []
+    citation_obj: dict[str, Any] = {
+        "meta": {"language": "zh-CN", "scope": {"section_title": "Introduction", "line_start": 1, "line_end": 1}},
+        "summary": "",
+        "items": [],
+        "unmapped_mentions": [],
+        "report_md": "",
+    }
+
+    digest_val = candidate.get("digest")
+    if isinstance(digest_val, dict):
+        digest_content = str(digest_val.get("md", ""))
+    elif isinstance(candidate.get("digest_path"), str) and candidate["digest_path"]:
+        try:
+            digest_content = Path(candidate["digest_path"]).read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            digest_content = ""
+
+    refs_val = candidate.get("references")
+    if isinstance(refs_val, dict) and isinstance(refs_val.get("items"), list):
+        references_items = [_normalize_reference_item(item, warnings) for item in refs_val["items"]]
+    elif isinstance(refs_val, list):
+        references_items = [_normalize_reference_item(item, warnings) for item in refs_val]
+
+    citation_val = candidate.get("citation_analysis")
+    if isinstance(citation_val, dict):
+        citation_obj = citation_val
+
+    digest_path = output_root / DIGEST_FILENAME
+    references_path = output_root / REFERENCES_FILENAME
+    citation_path = output_root / CITATION_ANALYSIS_FILENAME
+    citation_report_path = output_root / CITATION_ANALYSIS_REPORT_FILENAME
+    matching_metadata_path = output_root / LITERATURE_MATCHING_METADATA_FILENAME
+
+    _write_text(digest_path, digest_content)
+    _write_json(references_path, references_items)
+    _write_json(citation_path, citation_obj)
+    matching_metadata = candidate.get("literature_matching_metadata")
+    normalized_matching_metadata, matching_error = _validate_literature_matching_metadata_payload(matching_metadata)
+    if normalized_matching_metadata is None:
+        normalized_matching_metadata = {
+            "schema": LITERATURE_MATCHING_METADATA_SCHEMA,
+            "key_terms": [],
+            "methods": [],
+            "problems": [],
+            "datasets": [],
+            "exclude_terms": [],
+        }
+        if matching_error is not None:
+            warnings.append(f"literature_matching_metadata ignored: {matching_error}")
+    _write_json(matching_metadata_path, normalized_matching_metadata)
+    if str(citation_obj.get("report_md", "")).strip():
+        _write_text(citation_report_path, str(citation_obj["report_md"]))
+
+    provenance = candidate.get("provenance")
+    provenance_obj = provenance if isinstance(provenance, dict) else {}
+    model = provenance_obj.get("model", "")
+    generated_at = provenance_obj.get("generated_at", utc_now_iso())
+    input_hash = provenance_obj.get("input_hash", "")
+    if source_path is not None and source_path.exists() and (not isinstance(input_hash, str) or not input_hash.startswith("sha256:")):
+        input_hash = sha256_path(source_path)
+
+    out: dict[str, Any] = {
+        "digest_path": str(digest_path),
+        "references_path": str(references_path),
+        "citation_analysis_path": str(citation_path),
+        "literature_matching_metadata_path": str(matching_metadata_path),
+        "provenance": {
+            "generated_at": str(generated_at),
+            "input_hash": str(input_hash),
+            "model": str(model),
+        },
+        "warnings": _as_str_list(candidate.get("warnings")) + warnings,
+        "error": candidate.get("error"),
+    }
+    if citation_report_path.exists():
+        out["citation_analysis_report_path"] = str(citation_report_path)
+    if "representative_image" in candidate:
+        representative_image, representative_error = _validate_representative_image_obj(candidate.get("representative_image"))
+        if representative_error is None and representative_image is not None:
+            out["representative_image"] = representative_image
+        else:
+            out["warnings"] = _as_str_list(out.get("warnings")) + [f"representative_image ignored: {representative_error}"]
+    return out
+
+
+def _validate_public_output(
+    payload: dict[str, Any],
+    *,
+    preprocess_artifact: Path | None,
+    db_path: Path | None,
+) -> list[str]:
+    required = [
+        "digest_path",
+        "references_path",
+        "citation_analysis_path",
+        "literature_matching_metadata_path",
+        "provenance",
+        "warnings",
+        "error",
+    ]
+    errors: list[str] = []
+    for key in required:
+        if key not in payload:
+            errors.append(f"missing required key: {key}")
+    provenance = payload.get("provenance")
+    if isinstance(provenance, dict):
+        for key in ["generated_at", "input_hash", "model"]:
+            if key not in provenance:
+                errors.append(f"missing required key: provenance.{key}")
+    else:
+        errors.append("provenance must be object")
+
+    errors.extend(_validate_error_obj(payload.get("error")))
+    if "representative_image" in payload:
+        _, representative_error = _validate_representative_image_obj(payload.get("representative_image"))
+        if representative_error is not None:
+            errors.append(representative_error)
+
+    references_path = payload.get("references_path", "")
+    if isinstance(references_path, str) and references_path:
+        path = Path(references_path)
+        if not path.exists():
+            errors.append(f"references_path does not exist: {path}")
+        else:
+            try:
+                refs_obj = json.loads(path.read_text(encoding="utf-8"))
+                errors.extend(_validate_references_items(refs_obj))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"references_path unreadable JSON: {exc}")
+
+    citation_path = payload.get("citation_analysis_path", "")
+    citation_obj: dict[str, Any] | None = None
+    if isinstance(citation_path, str) and citation_path:
+        path = Path(citation_path)
+        if not path.exists():
+            errors.append(f"citation_analysis_path does not exist: {path}")
+        else:
+            try:
+                citation_obj = json.loads(path.read_text(encoding="utf-8"))
+                errors.extend(_validate_citation_analysis_obj(citation_obj))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"citation_analysis_path unreadable JSON: {exc}")
+
+    if citation_obj is not None and "citation_analysis_report_path" in payload:
+        report_path_value = payload.get("citation_analysis_report_path")
+        if isinstance(report_path_value, str) and report_path_value:
+            report_path = Path(report_path_value)
+            if not report_path.exists():
+                errors.append(f"citation_analysis_report_path does not exist: {report_path}")
+            else:
+                try:
+                    if report_path.read_text(encoding="utf-8") != str(citation_obj.get("report_md", "")):
+                        errors.append("citation_analysis_report_path content must equal citation_analysis.report_md")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"citation_analysis_report_path unreadable text: {exc}")
+
+    matching_path = payload.get("literature_matching_metadata_path", "")
+    if isinstance(matching_path, str) and matching_path:
+        path = Path(matching_path)
+        if not path.exists():
+            errors.append(f"literature_matching_metadata_path does not exist: {path}")
+        else:
+            try:
+                matching_obj = json.loads(path.read_text(encoding="utf-8"))
+                _, matching_error = _validate_literature_matching_metadata_payload(matching_obj)
+                if matching_error is not None:
+                    errors.append(matching_error)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"literature_matching_metadata_path unreadable JSON: {exc}")
+
+    expected_mentions, preprocess_error = _extract_preprocess_expected_mentions(preprocess_artifact)
+    if preprocess_error is not None:
+        errors.append(preprocess_error)
+    if expected_mentions is not None and citation_obj is not None:
+        actual_mentions = _count_citation_mentions(citation_obj)
+        if actual_mentions is None or actual_mentions != expected_mentions:
+            errors.append("mention coverage mismatch")
+
+    if db_path is not None and db_path.exists():
+        try:
+            with connect_db(db_path) as connection:
+                db_payload = build_public_output_payload(connection)
+            for key in [
+                "digest_path",
+                "references_path",
+                "citation_analysis_path",
+                "literature_matching_metadata_path",
+                "citation_analysis_report_path",
+            ]:
+                if key in db_payload and payload.get(key, "") != db_payload.get(key, ""):
+                    errors.append(f"{key} does not match runtime DB artifact registry")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"runtime DB unreadable: {exc}")
+
+    return errors
+
+
+def _set_success_state(connection, *, stage: str, substep: str, next_action: str, status: str) -> None:  # type: ignore[no-untyped-def]
+    resolve_runtime_errors(connection, stage=stage)
+    set_workflow_state(
+        connection,
+        current_stage=stage,
+        current_substep=substep,
+        stage_gate="ready",
+        next_action=next_action,
+        status_summary=status,
+    )
+
+
+def _validate_render_templates_payload(payload: dict[str, Any]) -> tuple[dict[str, str] | None, str | None]:
+    target_language = payload.get("target_language")
+    digest_template = payload.get("digest_template")
+    citation_template = payload.get("citation_analysis_template")
+    if not isinstance(target_language, str) or not target_language.strip():
+        return None, "target_language must be non-empty string"
+    if not isinstance(digest_template, str) or not digest_template.strip():
+        return None, "digest_template must be non-empty string"
+    if not isinstance(citation_template, str) or not citation_template.strip():
+        return None, "citation_analysis_template must be non-empty string"
+    return {
+        "target_language": target_language.strip(),
+        "digest_template": digest_template,
+        "citation_analysis_template": citation_template,
+    }, None
+
+
+def _default_render_templates_payload(language: str) -> dict[str, str] | None:
+    normalized = language.strip().lower()
+    if not normalized.startswith(("zh", "en")):
+        return None
+    digest_template_path = _repo_digest_template_path(language)
+    citation_template_path = _repo_citation_template_path(language)
+    return {
+        "target_language": language,
+        "digest_template": digest_template_path.read_text(encoding="utf-8"),
+        "citation_analysis_template": citation_template_path.read_text(encoding="utf-8"),
+    }
+
+
+def _handle_confirm_runtime_paths(args: argparse.Namespace) -> int:
+    working_dir = Path(args.working_dir).expanduser().resolve()
+    db_path = _resolve_cli_path(args.db_path) or (working_dir / TMP_DIRNAME / "literature_analysis.db").resolve()
+    output_dir = _resolve_cli_path(args.output_dir) or working_dir
+    runtime_paths = _runtime_paths_from_values(
+        working_dir_value=str(working_dir),
+        tmp_dir_value=str(db_path.parent),
+        db_path_value=str(db_path),
+        result_json_path_value=str((working_dir / RESULT_JSON_FILENAME).resolve()),
+        output_dir_value=str(output_dir),
+        fallback_db_path=db_path,
+    )
+    initialize_database(runtime_paths.db_path)
+    with connect_db(runtime_paths.db_path) as connection:
+        set_runtime_input(connection, "working_dir", str(runtime_paths.working_dir))
+        set_runtime_input(connection, "tmp_dir", str(runtime_paths.tmp_dir))
+        set_runtime_input(connection, "db_path", str(runtime_paths.db_path))
+        set_runtime_input(connection, "result_json_path", str(runtime_paths.result_json_path))
+        set_runtime_input(connection, "output_dir", str(runtime_paths.output_dir))
+        _set_success_state(
+            connection,
+            stage="stage_0_bootstrap",
+            substep="bootstrap_runtime_db",
+            next_action="bootstrap_runtime_db",
+            status="runtime paths confirmed",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="confirm_runtime_paths",
+            stage="stage_0_bootstrap",
+            metadata={
+                "working_dir": str(runtime_paths.working_dir),
+                "tmp_dir": str(runtime_paths.tmp_dir),
+                "db_path": str(runtime_paths.db_path),
+                "result_json_path": str(runtime_paths.result_json_path),
+                "output_dir": str(runtime_paths.output_dir),
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "working_dir": str(runtime_paths.working_dir),
+                "tmp_dir": str(runtime_paths.tmp_dir),
+                "db_path": str(runtime_paths.db_path),
+                "result_json_path": str(runtime_paths.result_json_path),
+                "output_dir": str(runtime_paths.output_dir),
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    initialize_database(db_path)
+    with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        if has_action_receipt(connection, "confirm_runtime_paths"):
+            runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        else:
+            runtime_paths = _compat_runtime_paths_from_db_path(db_path)
+            set_runtime_input(connection, "working_dir", str(runtime_paths.working_dir))
+            set_runtime_input(connection, "tmp_dir", str(runtime_paths.tmp_dir))
+            set_runtime_input(connection, "db_path", str(runtime_paths.db_path))
+            set_runtime_input(connection, "result_json_path", str(runtime_paths.result_json_path))
+            set_runtime_input(connection, "output_dir", str(runtime_paths.output_dir))
+        source_path = Path(args.source_path).expanduser().resolve() if args.source_path else None
+        if source_path is not None:
+            set_runtime_input(connection, "source_path", str(source_path))
+        if args.language:
+            set_runtime_input(connection, "language", args.language)
+        if args.input_hash:
+            set_runtime_input(connection, "input_hash", args.input_hash)
+        elif source_path is not None and source_path.exists():
+            set_runtime_input(connection, "input_hash", sha256_path(source_path))
+        if args.generated_at:
+            set_runtime_input(connection, "generated_at", args.generated_at)
+        else:
+            set_runtime_input(connection, "generated_at", utc_now_iso())
+        if args.model:
+            set_runtime_input(connection, "model", args.model)
+        _set_success_state(
+            connection,
+            stage="stage_1_normalize_source",
+            substep="persist_render_templates",
+            next_action="persist_render_templates",
+            status="runtime database bootstrapped",
+        )
+        _record_action_receipt(connection, action_name="bootstrap_runtime_db", stage="stage_0_bootstrap")
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "db_path": str(db_path),
+                "working_dir": str(runtime_paths.working_dir),
+                "output_dir": str(runtime_paths.output_dir),
+                "source_path": str(source_path) if source_path is not None else "",
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _repair_state_from_receipts(connection) -> tuple[str, str, str, str]:  # type: ignore[no-untyped-def]
+    if has_action_receipt(connection, "render_and_validate"):
+        return ("stage_7_completed", "completed", "completed", "workflow completed")
+    if has_action_receipt(connection, "persist_citation_summary"):
+        return ("stage_6_render_and_validate", "render_and_validate", "render_and_validate", "ready to render final artifacts")
+    if has_action_receipt(connection, "persist_citation_timeline"):
+        return ("stage_5_citation", "persist_citation_summary", "persist_citation_summary", "ready to persist citation summary")
+    if has_action_receipt(connection, "persist_citation_semantics"):
+        return ("stage_5_citation", "persist_citation_timeline", "persist_citation_timeline", "ready to persist citation timeline")
+    if has_action_receipt(connection, "prepare_citation_workset"):
+        return ("stage_5_citation", "persist_citation_semantics", "persist_citation_semantics", "ready to persist citation semantics")
+    if has_action_receipt(connection, "persist_reference_metadata_enrichment"):
+        return ("stage_5_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
+    if has_action_receipt(connection, "prepare_reference_metadata_enrichment"):
+        if is_reference_extraction_abandoned(connection):
+            return ("stage_5_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
+        return ("stage_4_references", "persist_reference_metadata_enrichment", "persist_reference_metadata_enrichment", "ready to persist reference metadata enrichment")
+    if has_action_receipt(connection, "review_reference_quality"):
+        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata enrichment")
+    if has_action_receipt(connection, "persist_references"):
+        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata enrichment")
+    if has_action_receipt(connection, "persist_reference_entry_splits"):
+        return ("stage_4_references", "persist_references", "persist_references", "ready to persist references")
+    if has_action_receipt(connection, "prepare_references_workset"):
+        return ("stage_4_references", "persist_references", "persist_references", "ready to persist references")
+    if has_action_receipt(connection, "persist_digest"):
+        return ("stage_4_references", "prepare_references_workset", "prepare_references_workset", "ready to prepare references workset")
+    if has_action_receipt(connection, "persist_outline_and_scopes"):
+        return ("stage_3_digest", "persist_digest", "persist_digest", "ready to persist digest")
+    if has_action_receipt(connection, "normalize_source"):
+        return ("stage_2_outline_and_scopes", "persist_outline_and_scopes", "persist_outline_and_scopes", "ready to persist outline and scopes")
+    if has_action_receipt(connection, "persist_render_templates"):
+        return ("stage_1_normalize_source", "normalize_source", "normalize_source", "ready to normalize source")
+    if has_action_receipt(connection, "bootstrap_runtime_db"):
+        return ("stage_1_normalize_source", "persist_render_templates", "persist_render_templates", "ready to persist render templates")
+    if has_action_receipt(connection, "confirm_runtime_paths"):
+        return ("stage_0_bootstrap", "bootstrap_runtime_db", "bootstrap_runtime_db", "ready to bootstrap runtime database")
+    return ("stage_0_bootstrap", "confirm_runtime_paths", "confirm_runtime_paths", "runtime paths must be confirmed")
+
+
+def _handle_repair_db_state(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    initialize_database(db_path)
+    repairs: list[str] = []
+    with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        source_path_value = inputs.get("source_path", "")
+        if source_path_value and not inputs.get("input_hash"):
+            source_path = Path(source_path_value).expanduser().resolve()
+            if source_path.exists():
+                set_runtime_input(connection, "input_hash", sha256_path(source_path))
+                repairs.append("filled input_hash")
+
+        state = fetch_workflow_state(connection)
+        if state is not None:
+            active_error = fetch_latest_error(connection)
+            if active_error is not None:
+                resolved = resolve_runtime_errors(connection, stage=str(active_error["stage"]))
+                if resolved:
+                    repairs.append(f"resolved {resolved} active runtime error(s)")
+            stage, substep, next_action, status = _repair_state_from_receipts(connection)
+            set_workflow_state(
+                connection,
+                current_stage=stage,
+                current_substep=substep,
+                stage_gate="ready",
+                next_action=next_action,
+                status_summary=status,
+                last_error_code=None,
+            )
+            repairs.append(f"restored workflow_state to {stage}/{next_action}")
+        connection.commit()
+    print(json.dumps({"repairs": repairs, "db_path": str(db_path), "error": None}, ensure_ascii=False))
+    return 0
+
+
+def _handle_persist_render_templates(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        payload = _read_json_payload(args.payload_file)
+        if not payload:
+            default_payload = _default_render_templates_payload(str(inputs.get("language", "zh-CN") or "zh-CN"))
+            if default_payload is not None:
+                payload = default_payload
+        normalized_payload, error = _validate_render_templates_payload(payload)
+        if error is not None or normalized_payload is None:
+            set_runtime_error(connection, "render_templates_failed", error or "invalid render template payload", "stage_1_normalize_source")
+            connection.commit()
+            print(json.dumps({"error": {"code": "render_templates_failed", "message": error or "invalid render template payload"}}, ensure_ascii=False))
+            return 2
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        templates_dir = _runtime_templates_dir(runtime_paths)
+        digest_template_path = (templates_dir / RUNTIME_DIGEST_TEMPLATE_FILENAME).resolve()
+        citation_template_path = (templates_dir / RUNTIME_CITATION_TEMPLATE_FILENAME).resolve()
+        stored_language = str(inputs.get("language", "")).strip()
+        target_language = normalized_payload["target_language"]
+        if stored_language and stored_language != target_language:
+            message = f"target_language {target_language!r} does not match runtime_inputs.language {stored_language!r}"
+            set_runtime_error(connection, "render_templates_failed", message, "stage_1_normalize_source")
+            connection.commit()
+            print(json.dumps({"error": {"code": "render_templates_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        if not stored_language:
+            set_runtime_input(connection, "language", target_language)
+        _write_text(digest_template_path, normalized_payload["digest_template"])
+        _write_text(citation_template_path, normalized_payload["citation_analysis_template"])
+        set_runtime_input(connection, "digest_template_path", str(digest_template_path))
+        set_runtime_input(connection, "citation_analysis_template_path", str(citation_template_path))
+        _set_success_state(
+            connection,
+            stage="stage_1_normalize_source",
+            substep="normalize_source",
+            next_action="normalize_source",
+            status="runtime render templates persisted",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="persist_render_templates",
+            stage="stage_1_normalize_source",
+            metadata={
+                "target_language": target_language,
+                "digest_template_path": str(digest_template_path),
+                "citation_analysis_template_path": str(citation_template_path),
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "target_language": target_language,
+                "digest_template_path": str(digest_template_path),
+                "citation_analysis_template_path": str(citation_template_path),
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_normalize_source(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    initialize_database(db_path)
+
+    with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        defaults = _default_dispatch_paths(runtime_paths)
+        output_paths = DispatchPaths(
+            source_md_path=Path(args.out_md).expanduser().resolve() if args.out_md else defaults.source_md_path,
+            source_meta_path=Path(args.out_meta).expanduser().resolve() if args.out_meta else defaults.source_meta_path,
+        )
+        source_path_value = inputs.get("source_path", "")
+        language = inputs.get("language", "zh-CN")
+        model = inputs.get("model", "")
+    if not source_path_value:
+        payload = {
+            "source_md_path": str(output_paths.source_md_path),
+            "source_meta_path": str(output_paths.source_meta_path),
+            "warnings": [],
+            "error": {
+                "code": "normalize_source_failed",
+                "message": "runtime_inputs.source_path missing; gate should have blocked normalize_source",
+            },
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return 2
+    source_path = Path(source_path_value) if source_path_value else Path()
+
+    payload, code = _dispatch_source(
+        source_path=source_path,
+        output_paths=output_paths,
+        disable_pymupdf4llm=bool(os.environ.get("LITERATURE_DIGEST_DISABLE_PYMUPDF4LLM")),
+        db_path=db_path,
+        persist_db_only=args.persist_db_only,
+        language=language,
+        model=model,
+    )
+    print(json.dumps(payload, ensure_ascii=False))
+    return code
+
+
+def _dispatch_source(
+    *,
+    source_path: Path,
+    output_paths: DispatchPaths,
+    disable_pymupdf4llm: bool,
+    db_path: Path,
+    persist_db_only: bool,
+    language: str,
+    model: str,
+) -> tuple[dict[str, Any], int]:
+    warnings: list[str] = []
+    meta: dict[str, Any] = {
+        "generated_at": utc_now_iso(),
+        "source_path": str(source_path),
+        "source_type": "",
+        "detection_method": "",
+        "conversion_backend": "",
+        "fallback_reason": "",
+        "main_tex_path": "",
+        "included_tex_files": [],
+        "bib_files": [],
+        "quality": {"char_count": 0, "non_empty_lines": 0, "heading_lines": 0, "references_keyword_hits": 0},
+        "error": None,
+    }
+    payload: dict[str, Any] = {
+        "source_md_path": str(output_paths.source_md_path),
+        "source_meta_path": str(output_paths.source_meta_path),
+        "warnings": warnings,
+        "error": None,
+    }
+    if not source_path.exists():
+        missing_message = "runtime_inputs.source_path missing; gate should have blocked normalize_source"
+        if not str(source_path):
+            error = {"code": "normalize_source_failed", "message": missing_message}
+        else:
+            error = {"code": "FILE_NOT_FOUND", "message": f"source_path not found: {source_path}"}
+        meta["error"] = error
+        payload["error"] = error
+        if not persist_db_only:
+            _write_json(output_paths.source_meta_path, meta)
+        with connect_db(db_path) as connection:
+            set_runtime_error(connection, error["code"], error["message"], "stage_1_normalize_source")
+            connection.commit()
+        return payload, 2
+
+    source_type, detection_method, detect_error = _detect_source_type(source_path)
+    if detect_error is not None or source_type is None or detection_method is None:
+        error = {"code": "UNSUPPORTED_INPUT", "message": detect_error or "unable to detect source format"}
+        meta["error"] = error
+        payload["error"] = error
+        if not persist_db_only:
+            _write_json(output_paths.source_meta_path, meta)
+        with connect_db(db_path) as connection:
+            set_runtime_error(connection, error["code"], error["message"], "stage_1_normalize_source")
+            connection.commit()
+        return payload, 2
+
+    warnings.extend(_extension_warning(source_path, source_type))
+    meta["source_type"] = source_type
+    meta["detection_method"] = detection_method
+    try:
+        if source_type == "markdown":
+            markdown = _convert_markdown_source(source_path)
+            meta["conversion_backend"] = "direct_copy"
+        elif source_type in {"latex_tex", "latex_project"}:
+            markdown, latex_meta = _normalize_latex_source(source_path)
+            meta.update(latex_meta)
+        else:
+            warnings.append("source input detected as PDF")
+            markdown = ""
+            fallback_reason = ""
+            if disable_pymupdf4llm:
+                fallback_reason = "pymupdf4llm disabled by environment"
+            else:
+                try:
+                    markdown = _convert_pdf_with_pymupdf4llm(source_path)
+                    meta["conversion_backend"] = "pymupdf4llm"
+                except Exception as exc:  # noqa: BLE001
+                    fallback_reason = str(exc)
+            if not markdown:
+                warnings.append("PDF conversion fell back to stdlib text extraction")
+                warnings.append("fallback markdown quality may be low for multi-column/layout-heavy PDFs")
+                markdown = _convert_pdf_with_stdlib(source_path)
+                meta["conversion_backend"] = "stdlib_fallback"
+                meta["fallback_reason"] = fallback_reason
+    except Exception as exc:  # noqa: BLE001
+        error = {"code": "CONVERT_FAILED", "message": str(exc)}
+        meta["error"] = error
+        payload["error"] = error
+        if not persist_db_only:
+            _write_json(output_paths.source_meta_path, meta)
+        with connect_db(db_path) as connection:
+            set_runtime_error(connection, error["code"], error["message"], "stage_1_normalize_source")
+            connection.commit()
+        return payload, 2
+
+    if not persist_db_only:
+        _write_text(output_paths.source_md_path, markdown)
+    meta["quality"] = _quality_metrics(markdown)
+    meta.update(_quality_markers(markdown))
+    if not persist_db_only:
+        _write_json(output_paths.source_meta_path, meta)
+
+    with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        if not inputs.get("generated_at"):
+            set_runtime_input(connection, "generated_at", meta["generated_at"])
+        if not inputs.get("input_hash"):
+            set_runtime_input(connection, "input_hash", sha256_path(source_path))
+        if not inputs.get("language"):
+            set_runtime_input(connection, "language", language or "zh-CN")
+        if model and not inputs.get("model"):
+            set_runtime_input(connection, "model", model)
+        store_source_document(connection, doc_key="normalized_source", content=markdown, metadata=meta)
+        _set_success_state(
+            connection,
+            stage="stage_2_outline_and_scopes",
+            substep="persist_outline_and_scopes",
+            next_action="persist_outline_and_scopes",
+            status="normalized source persisted",
+        )
+        _record_action_receipt(connection, action_name="normalize_source", stage="stage_1_normalize_source")
+        connection.commit()
+    return payload, 0
+
+
+def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    outline_nodes, outline_error = _validate_outline_nodes_payload(payload.get("outline_nodes", []))
+    references_scope, references_scope_error = _validate_scope_payload(payload.get("references_scope"), "references_scope")
+    citation_scope, citation_scope_error = _validate_scope_payload(payload.get("citation_scope"), "citation_scope")
+    literature_matching_metadata, literature_matching_metadata_error = _validate_literature_matching_metadata_payload(
+        payload.get("literature_matching_metadata")
+    )
+
+    with connect_db(db_path) as connection:
+        first_error = outline_error or references_scope_error or citation_scope_error or literature_matching_metadata_error
+        if (
+            first_error is not None
+            or outline_nodes is None
+            or references_scope is None
+            or citation_scope is None
+            or literature_matching_metadata is None
+        ):
+            set_runtime_error(connection, "citation_scope_failed", first_error or "invalid outline/scope payload", "stage_2_outline_and_scopes")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_scope_failed", "message": first_error or "invalid outline/scope payload"}}, ensure_ascii=False))
+            return 2
+        store_outline_nodes(connection, outline_nodes)
+        store_literature_matching_metadata(connection, literature_matching_metadata)
+        store_section_scope(
+            connection,
+            scope_key="references_scope",
+            section_title=str(references_scope["section_title"]),
+            line_start=int(references_scope["line_start"]),
+            line_end=int(references_scope["line_end"]),
+            metadata=_coerce_scope_metadata(
+                references_scope.get("metadata", {}),
+                section_title=str(references_scope["section_title"]),
+                source="agent",
+            ),
+        )
+        store_section_scope(
+            connection,
+            scope_key="citation_scope",
+            section_title=str(citation_scope["section_title"]),
+            line_start=int(citation_scope["line_start"]),
+            line_end=int(citation_scope["line_end"]),
+            metadata=_coerce_scope_metadata(
+                citation_scope.get("metadata", {}),
+                section_title=str(citation_scope["section_title"]),
+                source="agent",
+            ),
+        )
+        _set_success_state(connection, stage="stage_3_digest", substep="persist_digest", next_action="persist_digest", status="outline and scopes persisted")
+        _record_action_receipt(connection, action_name="persist_outline_and_scopes", stage="stage_2_outline_and_scopes")
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "stored_outline_nodes": len(outline_nodes),
+                "references_scope": references_scope,
+                "citation_scope": citation_scope,
+                "literature_matching_metadata": literature_matching_metadata,
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_persist_digest(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    digest_slots, section_summaries, representative_image, error = _validate_digest_payload(payload)
+    with connect_db(db_path) as connection:
+        if error is not None or digest_slots is None or section_summaries is None:
+            set_runtime_error(connection, "digest_stage_failed", error or "invalid digest payload", "stage_3_digest")
+            connection.commit()
+            print(json.dumps({"error": {"code": "digest_stage_failed", "message": error or "invalid digest payload"}}, ensure_ascii=False))
+            return 2
+        coverage_warnings, coverage_error = _validate_digest_coverage(connection, digest_slots, section_summaries)
+        if coverage_error is not None:
+            set_runtime_error(connection, "digest_stage_failed", coverage_error, "stage_3_digest")
+            connection.commit()
+            print(json.dumps({"error": {"code": "digest_stage_failed", "message": coverage_error}}, ensure_ascii=False))
+            return 2
+        store_digest_slots(connection, digest_slots)
+        store_digest_section_summaries(connection, section_summaries)
+        if representative_image is not None:
+            store_representative_image(connection, representative_image)
+        for warning in coverage_warnings:
+            add_runtime_warning_once(connection, warning)
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep="prepare_references_workset",
+            next_action="prepare_references_workset",
+            status="digest sections persisted",
+        )
+        _record_action_receipt(connection, action_name="persist_digest", stage="stage_3_digest")
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "stored_digest_slots": len(digest_slots),
+                "stored_section_summaries": len(section_summaries),
+                "representative_image": representative_image,
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        out_path = Path(args.out_path).expanduser().resolve() if args.out_path else (runtime_paths.tmp_dir / REFERENCES_EXPORT_FILENAME)
+        review_path = out_path.with_name(
+            REFERENCES_REVIEW_EXPORT_FILENAME if out_path.name == REFERENCES_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}"
+        )
+        source_doc = fetch_source_document(connection, "normalized_source")
+        scope_row = fetch_section_scope(connection, "references_scope")
+        if source_doc is None:
+            set_runtime_error(connection, "references_stage_failed", "normalized source missing", "stage_4_references")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": "normalized source missing"}}, ensure_ascii=False))
+            return 2
+        if scope_row is None:
+            set_runtime_error(connection, "references_stage_failed", "references_scope missing", "stage_4_references")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": "references_scope missing"}}, ensure_ascii=False))
+            return 2
+        scope = _db_scope_to_scope(scope_row)
+        lines = str(source_doc["content"]).splitlines()
+        if scope.line_start < 1 or scope.line_end < scope.line_start or scope.line_end > len(lines):
+            message = "references_scope is out of bounds for normalized source"
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        prepared = _prepare_reference_workset_state(lines=lines, scope=scope)
+        normalized_entries = list(prepared["entries"])
+        candidates = list(prepared["candidates"])
+        batches = list(prepared["batches"])
+        numbering_warnings = list(prepared["numbering_warnings"])
+        warnings = list(prepared["warnings"])
+        blocks = list(prepared["blocks"])
+        suspect_blocks = list(prepared["suspect_blocks"])
+        requires_split_review = bool(prepared["requires_split_review"])
+        file_quality = dict(prepared["file_quality"])
+        file_quality_low = bool(prepared["file_quality_low"])
+        review_generation_id = _reference_review_generation_id(suspect_blocks) if suspect_blocks else ""
+        _replace_reference_workset(connection, entries=normalized_entries, candidates=candidates, batches=batches)
+        store_reference_preprocess_quality(connection, file_quality)
+        for warning in warnings:
+            add_runtime_warning_once(connection, warning)
+        metadata = dict(source_doc.get("metadata", {}))
+        metadata["reference_numbering_reliability"] = "low" if prepared["has_numbering_anomaly"] else "high"
+        store_source_document(connection, doc_key="normalized_source", content=str(source_doc["content"]), metadata=metadata)
+        next_action = "decide_reference_extraction" if file_quality_low else ("persist_reference_entry_splits" if requires_split_review else "persist_references")
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep=next_action,
+            next_action=next_action,
+            status=(
+                "reference preprocess quality is low; choose whether to continue or abandon"
+                if file_quality_low
+                else ("reference entry split review required" if requires_split_review else "reference workset prepared")
+            ),
+        )
+        _record_action_receipt(
+            connection,
+            action_name="prepare_references_workset",
+            stage="stage_4_references",
+            metadata={
+                "requires_split_review": requires_split_review,
+                "entry_style": str(prepared["entry_style"]),
+                "grouping_suspect_count": len(suspect_blocks),
+                "review_generation_id": review_generation_id,
+                "file_quality_low": file_quality_low,
+                "triggered_signals": list(file_quality.get("triggered_signals", [])),
+            },
+        )
+        connection.commit()
+
+    workset_payload = _build_reference_workset_export(
+        entries=normalized_entries,
+        candidates=candidates,
+        batches=batches,
+        entry_style=str(prepared["entry_style"]),
+        blocks=blocks,
+        suspect_blocks=suspect_blocks,
+        requires_split_review=requires_split_review,
+        file_quality=file_quality,
+    )
+    review_payload = _build_reference_review_view(workset_payload)
+    if not args.persist_db_only:
+        _write_json(out_path, workset_payload)
+        _write_json(review_path, review_payload)
+    print(
+        json.dumps(
+            {
+                "stored_reference_entries": len(normalized_entries),
+                "stored_reference_candidates": len(candidates),
+                "numbering_warnings": numbering_warnings,
+                "warnings": warnings,
+                "workset_path": str(out_path) if not args.persist_db_only else "",
+                "review_path": str(review_path) if not args.persist_db_only else "",
+                "entry_style": str(prepared["entry_style"]),
+                "split_mode": "line-first",
+                "grouping_suspect_count": len(suspect_blocks),
+                "requires_split_review": requires_split_review,
+                "file_quality": _public_reference_preprocess_quality(file_quality),
+                "file_quality_low": file_quality_low,
+                "review_generation_id": review_generation_id,
+                "suspect_blocks": [
+                    {
+                        "block_index": block["block_index"],
+                        "source_text": block["source_text"],
+                        "line_start": block["line_start"],
+                        "line_end": block["line_end"],
+                        "reasons": block["reasons"],
+                        "proposed_entries": block["proposed_entries"],
+                        "suspicion_kind": block["suspicion_kind"],
+                    }
+                    for block in suspect_blocks
+                ],
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _canonical_reference_scope_text(lines: list[str], scope: Scope) -> str:
+    scoped_lines, _ = _scope_lines_without_heading(lines, scope)
+    return _normalize_reference_entry_text(" ".join(line.strip() for line in scoped_lines if line.strip()))
+
+
+def _reference_review_generation_id(suspect_blocks: list[dict[str, Any]]) -> str:
+    basis = json.dumps(
+        [
+            {
+                "block_index": block.get("block_index"),
+                "source_text": block.get("source_text"),
+                "member_block_indexes": block.get("member_block_indexes", []),
+            }
+            for block in suspect_blocks
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return f"review-{zlib.crc32(basis.encode('utf-8')) & 0xFFFFFFFF:08x}"
+
+
+def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    blocks_payload = payload.get("blocks", [])
+    with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        out_path = Path(args.out_path).expanduser().resolve() if args.out_path else (runtime_paths.tmp_dir / REFERENCES_EXPORT_FILENAME)
+        review_path = out_path.with_name(
+            REFERENCES_REVIEW_EXPORT_FILENAME if out_path.name == REFERENCES_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}"
+        )
+        source_doc = fetch_source_document(connection, "normalized_source")
+        scope_row = fetch_section_scope(connection, "references_scope")
+        if source_doc is None or scope_row is None:
+            message = "reference split review requires normalized_source and references_scope"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        if not isinstance(blocks_payload, list) or not blocks_payload:
+            message = "blocks must be a non-empty array of reviewed suspect blocks"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        scope = _db_scope_to_scope(scope_row)
+        lines = str(source_doc["content"]).splitlines()
+        prepared_before_review = _prepare_reference_workset_state(lines=lines, scope=scope)
+        current_blocks = list(prepared_before_review["blocks"])
+        suspect_blocks = list(prepared_before_review["suspect_blocks"])
+        if not suspect_blocks:
+            message = "reference split review is only valid when prepare_references_workset reported suspect_blocks"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+            return 2
+
+        review_generation_id = _reference_review_generation_id(suspect_blocks)
+        submitted_generation_id = str(payload.get("review_generation_id", "")).strip()
+        if submitted_generation_id and submitted_generation_id != review_generation_id:
+            message = "review_generation_id is stale; reload the current suspect_blocks and resubmit"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "error": {"code": "reference_entry_splitting_failed", "message": message},
+                        "review_generation_id": review_generation_id,
+                        "suspect_blocks": suspect_blocks,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
+        suspect_by_index = {int(block["block_index"]): block for block in suspect_blocks}
+        if {int(block["block_index"]) for block in suspect_blocks} != {
+            int(block.get("block_index", -1)) for block in blocks_payload if isinstance(block, dict)
+        }:
+            message = "blocks must cover every suspect block exactly once"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}, "review_generation_id": review_generation_id, "suspect_blocks": suspect_blocks}, ensure_ascii=False))
+            return 2
+
+        reviewed_blocks: dict[int, dict[str, Any]] = {}
+        force_kept_sources: set[str] = set()
+        for index, block in enumerate(blocks_payload):
+            if not isinstance(block, dict):
+                message = f"blocks[{index}] must be object"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            block_index = block.get("block_index")
+            normalized_block_index = block_index if isinstance(block_index, int) else -1
+            if normalized_block_index not in suspect_by_index:
+                message = f"blocks[{index}].block_index must refer to a current suspect block"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            resolution = str(block.get("resolution", "")).strip()
+            if resolution not in {"split", "keep", "merge", "force_keep"}:
+                message = f"blocks[{index}].resolution must be split, keep, merge, or force_keep"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            entries = block.get("entries", [])
+            if not isinstance(entries, list) or not entries:
+                message = f"blocks[{index}].entries must be a non-empty array"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            reviewed_entries: list[str] = []
+            for entry_pos, entry_text in enumerate(entries):
+                normalized = _normalize_reference_entry_text(str(entry_text))
+                if not normalized:
+                    message = f"blocks[{index}].entries[{entry_pos}] must be non-empty"
+                    set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                    connection.commit()
+                    print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                    return 2
+                reviewed_entries.append(normalized)
+            if resolution in {"merge", "force_keep"} and len(reviewed_entries) != 1:
+                message = f"blocks[{index}].resolution={resolution} requires exactly one entry"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            if resolution == "split" and len(reviewed_entries) < 2:
+                message = f"blocks[{index}].resolution=split requires at least two entries"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            suspect_block = suspect_by_index[normalized_block_index]
+            canonical_review = _normalize_reference_entry_text(" ".join(reviewed_entries))
+            canonical_source = _normalize_reference_entry_text(str(suspect_block["source_text"]))
+            if canonical_review != canonical_source:
+                message = "reviewed entries must preserve each suspect block's original text exactly, changing only entry boundaries"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            reviewed_blocks[normalized_block_index] = {
+                "resolution": resolution,
+                "entries": reviewed_entries,
+            }
+            if resolution == "force_keep":
+                force_kept_sources.add(canonical_source)
+
+        reviewed_raw_entries: list[str] = []
+        consumed_block_indexes: set[int] = set()
+        suspect_blocks_by_start = {int(block["member_block_indexes"][0]): block for block in suspect_blocks}
+        suspect_member_lookup = {
+            member_block_index: int(block["member_block_indexes"][0])
+            for block in suspect_blocks
+            for member_block_index in block["member_block_indexes"]
+        }
+        for block in current_blocks:
+            block_index = int(block["block_index"])
+            if block_index in consumed_block_indexes:
+                continue
+            review_start_index = suspect_member_lookup.get(block_index)
+            if review_start_index is None:
+                reviewed_raw_entries.extend([str(item) for item in block.get("proposed_entries", []) if str(item)])
+                continue
+            suspect_block = suspect_blocks_by_start[review_start_index]
+            if block_index != int(suspect_block["member_block_indexes"][0]):
+                continue
+            reviewed_raw_entries.extend(list(reviewed_blocks[review_start_index]["entries"]))
+            consumed_block_indexes.update(int(item) for item in suspect_block["member_block_indexes"])
+
+        if not reviewed_raw_entries:
+            message = "reviewed entries must produce at least one reference entry"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+            return 2
+
+        prepared = _prepare_reference_workset_state(lines=lines, scope=scope, reviewed_raw_entries=reviewed_raw_entries)
+        suspect_blocks = list(prepared["suspect_blocks"])
+        if force_kept_sources:
+            suspect_blocks = [
+                block
+                for block in suspect_blocks
+                if _normalize_reference_entry_text(str(block.get("source_text", ""))) not in force_kept_sources
+            ]
+            if not suspect_blocks:
+                prepared["suspect_blocks"] = []
+                prepared["requires_split_review"] = False
+                prepared["warnings"] = [
+                    warning
+                    for warning in list(prepared["warnings"])
+                    if not warning.startswith(WARNING_REFERENCE_ENTRY_GROUPING_SUSPECT)
+                ]
+                for source in sorted(force_kept_sources):
+                    add_runtime_warning_once(connection, f"reference_entry_force_kept: {source[:120]}")
+        if suspect_blocks:
+            message = "reviewed entries still contain reference-boundary suspicion; resolve each suspect block into stable single references before persisting"
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            for warning in prepared["warnings"]:
+                add_runtime_warning_once(connection, warning)
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "error": {"code": "reference_entry_splitting_failed", "message": message},
+                        "review_generation_id": _reference_review_generation_id(suspect_blocks),
+                        "suspect_blocks": [
+                            {
+                                "block_index": block["block_index"],
+                                "source_text": block["source_text"],
+                                "line_start": block["line_start"],
+                                "line_end": block["line_end"],
+                                "reasons": block["reasons"],
+                                "proposed_entries": block["proposed_entries"],
+                                "suspicion_kind": block["suspicion_kind"],
+                            }
+                            for block in suspect_blocks
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
+        normalized_entries = list(prepared["entries"])
+        candidates = list(prepared["candidates"])
+        batches = list(prepared["batches"])
+        file_quality = dict(prepared["file_quality"])
+        file_quality_low = bool(prepared["file_quality_low"])
+        _replace_reference_workset(connection, entries=normalized_entries, candidates=candidates, batches=batches)
+        store_reference_preprocess_quality(connection, file_quality)
+        for warning in prepared["warnings"]:
+            add_runtime_warning_once(connection, warning)
+        existing_decision = fetch_reference_extraction_decision(connection)
+        next_action = "decide_reference_extraction" if file_quality_low and existing_decision is None else "persist_references"
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep=next_action,
+            next_action=next_action,
+            status=(
+                "reference preprocess quality is low; choose whether to continue or abandon"
+                if next_action == "decide_reference_extraction"
+                else "reference entries re-split and candidates regenerated"
+            ),
+        )
+        _record_action_receipt(
+            connection,
+            action_name="persist_reference_entry_splits",
+            stage="stage_4_references",
+            metadata={
+                "stored_reference_entries": len(normalized_entries),
+                "file_quality_low": file_quality_low,
+                "triggered_signals": list(file_quality.get("triggered_signals", [])),
+            },
+        )
+        connection.commit()
+
+    workset_payload = _build_reference_workset_export(
+        entries=normalized_entries,
+        candidates=candidates,
+        batches=batches,
+        entry_style=str(prepared["entry_style"]),
+        blocks=list(prepared["blocks"]),
+        suspect_blocks=[],
+        requires_split_review=False,
+        file_quality=file_quality,
+    )
+    review_payload = _build_reference_review_view(workset_payload)
+    if not args.persist_db_only:
+        _write_json(out_path, workset_payload)
+        _write_json(review_path, review_payload)
+    print(
+        json.dumps(
+            {
+                "stored_reference_entries": len(normalized_entries),
+                "stored_reference_candidates": len(candidates),
+                "warnings": list(prepared["warnings"]),
+                "workset_path": str(out_path) if not args.persist_db_only else "",
+                "review_path": str(review_path) if not args.persist_db_only else "",
+                "entry_style": str(prepared["entry_style"]),
+                "split_mode": "line-first",
+                "grouping_suspect_count": 0,
+                "requires_split_review": False,
+                "file_quality": _public_reference_preprocess_quality(file_quality),
+                "file_quality_low": file_quality_low,
+                "review_generation_id": "",
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_decide_reference_extraction(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    decision = str(payload.get("decision", "")).strip()
+    reason = str(payload.get("reason", "")).strip()
+    acknowledged = payload.get("acknowledged_file_quality_low")
+
+    with connect_db(db_path) as connection:
+        quality = fetch_reference_preprocess_quality(connection)
+        if quality is None:
+            message = "reference preprocess quality missing; run prepare_references_workset first"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        if (
+            quality.get("schema") != REFERENCE_PREPROCESS_QUALITY_SCHEMA
+            or quality.get("preprocess_version") != REFERENCE_PREPROCESS_VERSION
+        ):
+            message = "reference preprocess quality was not produced by the deterministic preprocess"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+        if decision not in {"continue", "abandon"}:
+            message = "decision must be continue or abandon"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+        if acknowledged is not True:
+            message = "acknowledged_file_quality_low must be true"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+        if not reason:
+            message = "reason must be a non-empty string"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+        if not bool(quality.get("file_quality_low")):
+            message = "reference extraction can only be decided here when deterministic file_quality_low is true"
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
+            return 2
+
+        receipts = fetch_action_receipts(connection)
+        prepare_receipt = receipts.get("prepare_references_workset", {})
+        prepare_metadata = dict(prepare_receipt.get("metadata", {}))
+        requires_split_review = bool(prepare_metadata.get("requires_split_review")) and not has_action_receipt(connection, "persist_reference_entry_splits")
+
+        if decision == "abandon":
+            store_reference_extraction_decision(connection, status="abandoned", reason=reason, quality=quality)
+            store_reference_items(connection, [])
+            replace_reference_quality_issues(connection, [])
+            connection.execute("DELETE FROM citation_mentions")
+            connection.execute("DELETE FROM citation_mention_links")
+            connection.execute("DELETE FROM citation_workset_items")
+            connection.execute("DELETE FROM citation_unmapped_mentions")
+            connection.execute("DELETE FROM citation_batches")
+            connection.execute("DELETE FROM citation_items")
+            connection.execute("DELETE FROM citation_timeline")
+            connection.execute("DELETE FROM citation_summary")
+            _set_success_state(
+                connection,
+                stage="stage_5_citation",
+                substep="prepare_citation_workset",
+                next_action="prepare_citation_workset",
+                status="reference extraction abandoned after deterministic low-quality preprocess signal",
+            )
+        else:
+            store_reference_extraction_decision(connection, status="continue", reason=reason, quality=quality)
+            _set_success_state(
+                connection,
+                stage="stage_4_references",
+                substep="persist_reference_entry_splits" if requires_split_review else "persist_references",
+                next_action="persist_reference_entry_splits" if requires_split_review else "persist_references",
+                status="reference extraction will continue despite low file-quality signal",
+            )
+        _record_action_receipt(
+            connection,
+            action_name="decide_reference_extraction",
+            stage="stage_4_references",
+            metadata={
+                "decision": decision,
+                "file_quality_low": bool(quality.get("file_quality_low")),
+                "triggered_signals": list(quality.get("triggered_signals", [])),
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "decision": decision,
+                "file_quality": _public_reference_preprocess_quality(quality),
+                "next_action": "prepare_citation_workset" if decision == "abandon" else ("persist_reference_entry_splits" if requires_split_review else "persist_references"),
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_persist_references(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    items = payload.get("items", [])
+    with connect_db(db_path) as connection:
+        if "entries" in payload or "batches" in payload:
+            message = "persist_references now accepts only items[] keyed by entry_index + selected_pattern"
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        if not isinstance(items, list):
+            set_runtime_error(connection, "references_stage_failed", "items must be array", "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "references_stage_failed", "message": "items must be array"}}, ensure_ascii=False))
+            return 2
+
+        entries = fetch_reference_entries(connection)
+        candidates = fetch_reference_parse_candidates(connection)
+        if not entries or not candidates:
+            message = "reference workset missing; prepare_references_workset must run first"
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+
+        entry_metadata = {int(entry["entry_index"]): dict(entry.get("metadata", {})) for entry in entries}
+        candidates_by_entry: dict[int, dict[str, dict[str, Any]]] = {}
+        for candidate in candidates:
+            candidates_by_entry.setdefault(int(candidate["entry_index"]), {})[str(candidate["pattern"])] = candidate
+
+        normalized_items: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                message = f"items[{index}] must be object"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            required_keys = ("entry_index", "selected_pattern", "author", "title", "year", "raw", "confidence")
+            missing = [key for key in required_keys if key not in item]
+            if missing:
+                message = f"items[{index}] missing required keys: {missing}"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            entry_index = item.get("entry_index")
+            selected_pattern = str(item.get("selected_pattern"))
+            if not isinstance(entry_index, int):
+                message = f"items[{index}].entry_index must be integer"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            if entry_index not in candidates_by_entry:
+                message = f"items[{index}].entry_index has no prepared candidates"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            if not selected_pattern:
+                message = f"items[{index}].selected_pattern must be non-empty"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            if selected_pattern not in candidates_by_entry[entry_index]:
+                message = f"items[{index}].selected_pattern does not match prepared candidates"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+
+            title_value = item.get("title", "")
+            title = "" if title_value is None else str(title_value).strip()
+            if LEADING_PUNCTUATION_RE.match(title):
+                message = f"items[{index}].title has suspicious leading punctuation"
+                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+                return 2
+
+            candidate_obj = candidates_by_entry[entry_index][selected_pattern]
+            author = _as_str_list(item.get("author"))
+            candidate_confidence = _as_confidence(candidate_obj.get("confidence"), 0.0)
+            oversplit_message = (
+                _detect_reference_author_oversplit(
+                    author,
+                    _as_str_list(candidate_obj.get("author_candidates")),
+                )
+                if candidate_confidence >= 0.6
+                else None
+            )
+            if oversplit_message is not None:
+                warning = f"{WARNING_REFERENCE_AUTHOR_OVERSPLIT}: entry_index={entry_index} pattern={selected_pattern}"
+                add_runtime_warning_once(connection, warning)
+                message = f"items[{index}].author invalid: {oversplit_message}"
+                set_runtime_error(connection, "reference_author_refinement_invalid", message, "stage_4_references")
+                connection.commit()
+                print(
+                    json.dumps(
+                        {
+                            "error": {
+                                "code": "reference_author_refinement_invalid",
+                                "message": message,
+                            }
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            year = _as_int_or_none(item.get("year"))
+            raw = str(item.get("raw", ""))
+            confidence = _as_confidence(item.get("confidence"), 0.1)
+            item_metadata = item.get("metadata", {})
+            metadata = _sanitize_reference_metadata(dict(item_metadata) if isinstance(item_metadata, dict) else {})
+            metadata.update(_reference_rich_metadata_from_payload(item))
+            metadata["entry_index"] = entry_index
+            metadata["selected_pattern"] = selected_pattern
+            metadata["pattern_candidate"] = candidate_obj
+            candidate_metadata = dict(candidate_obj.get("metadata", {}))
+            if isinstance(candidate_metadata.get("citekey"), str) and candidate_metadata["citekey"].strip():
+                metadata.setdefault("citekey", candidate_metadata["citekey"].strip())
+            if isinstance(candidate_metadata.get("bibitem_key"), str) and candidate_metadata["bibitem_key"].strip():
+                metadata.setdefault("bibitem_key", candidate_metadata["bibitem_key"].strip())
+            numbering = dict(entry_metadata.get(entry_index, {}).get("numbering", {}))
+            if numbering:
+                metadata["numbering"] = numbering
+                metadata["detected_ref_number"] = numbering.get("detected_ref_number")
+                if numbering.get("warnings"):
+                    metadata.setdefault("warnings", []).extend(list(numbering.get("warnings", [])))
+            normalized_item = {
+                "ref_index": entry_index,
+                "author": author,
+                "title": title,
+                "year": year,
+                "raw": raw,
+                "confidence": confidence,
+                "metadata": metadata,
+            }
+            normalized_item = _normalize_reference_item(normalized_item, warnings)
+            normalized_metadata_obj = normalized_item.get("metadata", {})
+            normalized_metadata = dict(normalized_metadata_obj) if isinstance(normalized_metadata_obj, dict) else {}
+            detected_terminal_year = _extract_terminal_publication_year(raw)
+            if detected_terminal_year is not None and normalized_item.get("year") != detected_terminal_year:
+                normalized_metadata.setdefault("normalization_notes", []).append(
+                    f"publication year normalized from {normalized_item.get('year')} to trailing year {detected_terminal_year}"
+                )
+                normalized_item["year"] = detected_terminal_year
+            normalized_confidence = _as_confidence(normalized_item.get("confidence"), 0.1)
+            normalized_item["confidence"] = normalized_confidence
+            if normalized_confidence < 0.6 or normalized_item.get("year") is None:
+                normalized_metadata.setdefault("warnings", []).append(WARNING_REFERENCE_LOW_CONFIDENCE)
+                warnings.append(WARNING_REFERENCE_LOW_CONFIDENCE)
+            normalized_item["metadata"] = normalized_metadata
+            normalized_items.append(normalized_item)
+
+        quality_issues: list[dict[str, Any]] = []
+        for normalized_item in normalized_items:
+            item_issues = _classify_reference_quality(normalized_item)
+            warning_flags = [issue["reason_code"] for issue in item_issues if issue["severity"] == REFERENCE_QUALITY_WARNING]
+            if warning_flags:
+                normalized_metadata = dict(normalized_item.get("metadata", {}))
+                normalized_metadata["title_quality"] = {
+                    "status": "warning",
+                    "flags": warning_flags,
+                }
+                normalized_item["metadata"] = normalized_metadata
+                warnings.extend(warning_flags)
+            quality_issues.extend(item_issues)
+
+        hard_issues = [issue for issue in quality_issues if issue["severity"] == REFERENCE_QUALITY_HARD_BLOCK]
+        if hard_issues:
+            replace_reference_quality_issues(connection, quality_issues)
+            active_issues = fetch_active_reference_quality_issues(connection)
+            set_runtime_error(
+                connection,
+                "reference_quality_hard_block",
+                "Stage 4 reference quality hard block; repair quality_directives.issues before continuing.",
+                "stage_4_references",
+            )
+            set_workflow_state(
+                connection,
+                current_stage="stage_4_references",
+                current_substep="persist_references",
+                stage_gate="ready",
+                next_action="persist_references",
+                status_summary="reference quality hard blocks require corrected persist_references payload",
+                last_error_code="reference_quality_hard_block",
+            )
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "stored_reference_items": 0,
+                        "quality_issues": active_issues,
+                        "warnings": list(dict.fromkeys(warnings)),
+                        "error": {
+                            "code": "reference_quality_hard_block",
+                            "message": "Repair the listed reference rows before continuing.",
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
+        store_reference_items(connection, normalized_items)
+        if quality_issues:
+            replace_reference_quality_issues(connection, quality_issues)
+            active_issues = fetch_active_reference_quality_issues(connection)
+            for warning in list(dict.fromkeys(warnings)):
+                add_runtime_warning_once(connection, warning)
+            _set_success_state(
+                connection,
+                stage="stage_4_references",
+                substep="review_reference_quality",
+                next_action="review_reference_quality",
+                status="reference quality warnings require explicit review",
+            )
+            _record_action_receipt(
+                connection,
+                action_name="persist_references",
+                stage="stage_4_references",
+                metadata={"stored_reference_items": len(normalized_items), "quality_issue_count": len(active_issues)},
+            )
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "stored_reference_items": len(normalized_items),
+                        "quality_issues": active_issues,
+                        "warnings": list(dict.fromkeys(warnings)),
+                        "error": None,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+
+        resolve_reference_quality_issues(connection)
+        for warning in list(dict.fromkeys(warnings)):
+            add_runtime_warning_once(connection, warning)
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep="prepare_reference_metadata_enrichment",
+            next_action="prepare_reference_metadata_enrichment",
+            status="references persisted; prepare metadata enrichment",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="persist_references",
+            stage="stage_4_references",
+            metadata={"stored_reference_items": len(normalized_items)},
+        )
+        connection.commit()
+    print(json.dumps({"stored_reference_items": len(normalized_items), "warnings": list(dict.fromkeys(warnings)), "error": None}, ensure_ascii=False))
+    return 0
+
+
+def _handle_review_reference_quality(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    resolutions = payload.get("resolutions", [])
+    with connect_db(db_path) as connection:
+        active_issues = fetch_active_reference_quality_issues(connection)
+        if not active_issues:
+            _set_success_state(
+                connection,
+                stage="stage_4_references",
+                substep="prepare_reference_metadata_enrichment",
+                next_action="prepare_reference_metadata_enrichment",
+                status="reference quality review already complete",
+            )
+            _record_action_receipt(connection, action_name="review_reference_quality", stage="stage_4_references")
+            connection.commit()
+            print(json.dumps({"resolved_issue_ids": [], "remaining_quality_issues": [], "error": None}, ensure_ascii=False))
+            return 0
+        if not isinstance(resolutions, list) or not resolutions:
+            message = "resolutions must be a non-empty array"
+            set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+            return 2
+
+        issue_by_id = {int(issue["issue_id"]): issue for issue in active_issues}
+        submitted_ids: set[int] = set()
+        reference_items = fetch_reference_items(connection)
+        reference_by_index = {int(item["ref_index"]): item for item in reference_items}
+        resolved_issue_ids: list[int] = []
+        accepted_issue_ids: list[int] = []
+        omitted_issue_ids: list[int] = []
+
+        for index, resolution_obj in enumerate(resolutions):
+            if not isinstance(resolution_obj, dict):
+                message = f"resolutions[{index}] must be object"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            issue_id = resolution_obj.get("issue_id")
+            if not isinstance(issue_id, int) or issue_id not in issue_by_id:
+                message = f"resolutions[{index}].issue_id must refer to an active quality issue"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            if issue_id in submitted_ids:
+                message = f"resolutions[{index}].issue_id is duplicated"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            submitted_ids.add(issue_id)
+            issue = issue_by_id[issue_id]
+            resolution = str(resolution_obj.get("resolution", "")).strip()
+            if resolution == "accept_warning":
+                if issue["severity"] != REFERENCE_QUALITY_WARNING:
+                    message = f"issue_id {issue_id} is hard_block and cannot be accept_warning"
+                    set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                    connection.commit()
+                    print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                    return 2
+                accepted_issue_ids.append(issue_id)
+                continue
+
+            if resolution == "omit":
+                if issue["severity"] != REFERENCE_QUALITY_HARD_BLOCK:
+                    message = f"issue_id {issue_id} is warning and cannot be omit"
+                    set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                    connection.commit()
+                    print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                    return 2
+                ref_index = issue.get("ref_index")
+                if ref_index is not None and int(ref_index) in reference_by_index:
+                    reference_items = [item for item in reference_items if int(item["ref_index"]) != int(ref_index)]
+                    reference_by_index.pop(int(ref_index), None)
+                    store_reference_items(connection, reference_items)
+                omitted_issue_ids.append(issue_id)
+                continue
+
+            if resolution != "corrected":
+                message = f"resolutions[{index}].resolution must be corrected, accept_warning, or omit"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+
+            corrected = resolution_obj.get("reference")
+            if corrected is None:
+                corrected = resolution_obj.get("corrected_reference")
+            if not isinstance(corrected, dict):
+                message = f"resolutions[{index}].reference must be object for corrected"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            ref_index = issue.get("ref_index")
+            if ref_index is None or int(ref_index) not in reference_by_index:
+                message = f"issue_id {issue_id} has no persisted reference item to correct; resubmit persist_references instead"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            current_item = dict(reference_by_index[int(ref_index)])
+            metadata = dict(current_item.get("metadata", {}))
+            corrected_item = dict(current_item)
+            corrected_passthrough_keys = (
+                "author",
+                "authors",
+                "title",
+                "parsed_title",
+                "parsedTitle",
+                "paper_title",
+                "year",
+                "raw",
+                "raw_reference",
+                "reference",
+                "confidence",
+                *REFERENCE_RICH_METADATA_FIELDS,
+                *REFERENCE_RICH_METADATA_ALIASES.keys(),
+            )
+            for key in corrected_passthrough_keys:
+                if key in corrected:
+                    corrected_item[key] = corrected[key]
+            if "metadata" in corrected and isinstance(corrected["metadata"], dict):
+                metadata.update(dict(corrected["metadata"]))
+            corrected_item["metadata"] = metadata
+            normalized = _normalize_reference_item(corrected_item, [])
+            normalized["ref_index"] = int(ref_index)
+            normalized_metadata = dict(normalized.get("metadata", {}))
+            normalized_metadata.pop("title_quality", None)
+            normalized["metadata"] = normalized_metadata
+            remaining_issues = _classify_reference_quality(normalized)
+            remaining_hard_issues = [item for item in remaining_issues if item["severity"] == REFERENCE_QUALITY_HARD_BLOCK]
+            if remaining_hard_issues:
+                message = f"corrected reference for issue_id {issue_id} still has hard quality issues: {[issue['reason_code'] for issue in remaining_hard_issues]}"
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                connection.commit()
+                print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+                return 2
+            remaining_warning_flags = [item["reason_code"] for item in remaining_issues if item["severity"] == REFERENCE_QUALITY_WARNING]
+            if remaining_warning_flags:
+                normalized_metadata = dict(normalized.get("metadata", {}))
+                normalized_metadata["title_quality"] = {
+                    "status": "warning",
+                    "flags": remaining_warning_flags,
+                }
+                normalized["metadata"] = normalized_metadata
+            reference_by_index[int(ref_index)] = normalized
+            reference_items = [reference_by_index[int(item["ref_index"])] for item in reference_items if int(item["ref_index"]) in reference_by_index]
+            store_reference_items(connection, reference_items)
+            resolved_issue_ids.append(issue_id)
+
+        missing_issue_ids = sorted(set(issue_by_id) - submitted_ids)
+        if missing_issue_ids:
+            message = f"resolutions must cover every active quality issue exactly once; missing issue_ids: {missing_issue_ids}"
+            set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
+            return 2
+
+        if resolved_issue_ids:
+            resolve_reference_quality_issues(connection, issue_ids=resolved_issue_ids, status="resolved")
+        if accepted_issue_ids:
+            resolve_reference_quality_issues(connection, issue_ids=accepted_issue_ids, status="accepted")
+        if omitted_issue_ids:
+            resolve_reference_quality_issues(connection, issue_ids=omitted_issue_ids, status="omitted")
+
+        remaining_issues = fetch_active_reference_quality_issues(connection)
+        if remaining_issues:
+            _set_success_state(
+                connection,
+                stage="stage_4_references",
+                substep="review_reference_quality",
+                next_action="review_reference_quality",
+                status="reference quality warnings remain active",
+            )
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "resolved_issue_ids": resolved_issue_ids,
+                        "accepted_issue_ids": accepted_issue_ids,
+                        "omitted_issue_ids": omitted_issue_ids,
+                        "remaining_quality_issues": remaining_issues,
+                        "error": {"code": "reference_quality_review_incomplete", "message": "Resolve every active quality issue before continuing."},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
+        if not fetch_reference_items(connection):
+            set_workflow_state(
+                connection,
+                current_stage="stage_4_references",
+                current_substep="persist_references",
+                stage_gate="ready",
+                next_action="persist_references",
+                status_summary="reference quality review omitted all rows; resubmit persist_references with recoverable references",
+                last_error_code="reference_quality_review_failed",
+            )
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "resolved_issue_ids": resolved_issue_ids,
+                        "accepted_issue_ids": accepted_issue_ids,
+                        "omitted_issue_ids": omitted_issue_ids,
+                        "remaining_quality_issues": [],
+                        "error": {"code": "reference_quality_review_failed", "message": "No reference_items remain; resubmit persist_references with at least one recoverable reference."},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep="prepare_reference_metadata_enrichment",
+            next_action="prepare_reference_metadata_enrichment",
+            status="reference quality review complete",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="review_reference_quality",
+            stage="stage_4_references",
+            metadata={
+                "resolved_issue_ids": resolved_issue_ids,
+                "accepted_issue_ids": accepted_issue_ids,
+                "omitted_issue_ids": omitted_issue_ids,
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "resolved_issue_ids": resolved_issue_ids,
+                "accepted_issue_ids": accepted_issue_ids,
+                "omitted_issue_ids": omitted_issue_ids,
+                "remaining_quality_issues": [],
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    with connect_db(db_path) as connection:
+        if is_reference_extraction_abandoned(connection):
+            _set_success_state(
+                connection,
+                stage="stage_5_citation",
+                substep="prepare_citation_workset",
+                next_action="prepare_citation_workset",
+                status="reference extraction abandoned; metadata enrichment skipped",
+            )
+            _record_action_receipt(
+                connection,
+                action_name="prepare_reference_metadata_enrichment",
+                stage="stage_4_references",
+                status="skipped",
+                metadata={"reason": "reference_extraction_abandoned"},
+            )
+            connection.commit()
+            print(json.dumps({"workset_path": "", "item_count": 0, "skipped": True, "error": None}, ensure_ascii=False))
+            return 0
+
+        reference_items = fetch_reference_items(connection)
+        if not reference_items:
+            message = "reference_items missing; persist_references must run before metadata enrichment"
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        out_path = Path(args.out_path).expanduser().resolve() if args.out_path else (runtime_paths.tmp_dir / REFERENCE_METADATA_ENRICHMENT_EXPORT_FILENAME)
+        rows = _build_reference_metadata_enrichment_rows(reference_items)
+        store_reference_metadata_enrichment_workset(connection, rows)
+        workset_payload = {
+            "kind": "reference_metadata_enrichment",
+            "instructions": {
+                "locked_fields": ["author", "title", "year", "raw", "confidence"],
+                "allowed_metadata_fields": list(REFERENCE_RICH_METADATA_FIELDS),
+                "single_writer": "Subagents may draft per-batch metadata, but the main agent must merge and submit one persist_reference_metadata_enrichment payload.",
+            },
+            "items": _reference_metadata_enrichment_public_rows(rows),
+        }
+        _write_json(out_path, workset_payload)
+        _set_success_state(
+            connection,
+            stage="stage_4_references",
+            substep="persist_reference_metadata_enrichment",
+            next_action="persist_reference_metadata_enrichment",
+            status="reference metadata enrichment workset prepared",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="prepare_reference_metadata_enrichment",
+            stage="stage_4_references",
+            metadata={"item_count": len(rows), "batch_count": len({int(row["batch_index"]) for row in rows})},
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "workset_path": str(out_path),
+                "item_count": len(rows),
+                "batch_count": len({int(row["batch_index"]) for row in rows}),
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_persist_reference_metadata_enrichment(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    items = payload.get("items")
+    with connect_db(db_path) as connection:
+        workset_rows = fetch_reference_metadata_enrichment_workset(connection)
+        reference_items = fetch_reference_items(connection)
+
+        def fail(message: str) -> int:
+            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            connection.commit()
+            print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
+            return 2
+
+        if not workset_rows:
+            return fail("reference metadata enrichment workset missing; run prepare_reference_metadata_enrichment first")
+        if not isinstance(items, list):
+            return fail("items must be an array")
+
+        workset_by_ref = {int(row["ref_index"]): row for row in workset_rows}
+        reference_by_ref = {int(item["ref_index"]): dict(item) for item in reference_items}
+        submitted: set[int] = set()
+        metadata_by_ref: dict[int, dict[str, Any]] = {}
+        status_updates: dict[int, dict[str, Any]] = {}
+        enriched_count = 0
+        no_metadata_count = 0
+        confirmed_existing_count = 0
+        forbidden_core_fields = {"author", "authors", "title", "year", "raw", "raw_reference", "reference", "confidence"}
+
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                return fail(f"items[{index}] must be object")
+            ref_index = item.get("ref_index")
+            if not isinstance(ref_index, int):
+                return fail(f"items[{index}].ref_index must be integer")
+            if ref_index not in workset_by_ref:
+                return fail(f"items[{index}].ref_index does not belong to the current enrichment workset")
+            if ref_index in submitted:
+                return fail(f"items[{index}].ref_index is duplicated")
+            submitted.add(ref_index)
+            forbidden = sorted(field for field in forbidden_core_fields if field in item)
+            if forbidden:
+                return fail(f"items[{index}] attempts to modify locked reference fields: {forbidden}")
+            status = str(item.get("status", "")).strip()
+            if status not in {"enriched", "confirmed_existing", "no_metadata_found"}:
+                return fail(f"items[{index}].status must be enriched, confirmed_existing, or no_metadata_found")
+            evidence_note = str(item.get("evidence_note") or item.get("reason") or "").strip()
+            if status == "enriched":
+                normalized_metadata, metadata_errors = _normalize_reference_enrichment_metadata(item.get("metadata"))
+                if metadata_errors:
+                    return fail(f"items[{index}] invalid metadata: {'; '.join(metadata_errors)}")
+                if not normalized_metadata:
+                    return fail(f"items[{index}].metadata must contain at least one non-empty allowed field when status=enriched")
+                metadata_by_ref[ref_index] = normalized_metadata
+                enriched_count += 1
+            elif "metadata" in item and item.get("metadata") not in ({}, None):
+                return fail(f"items[{index}].metadata is only allowed when status=enriched")
+            elif status == "confirmed_existing":
+                confirmed_existing_count += 1
+            else:
+                no_metadata_count += 1
+            status_updates[ref_index] = {"status": status, "evidence_note": evidence_note}
+
+        missing = sorted(set(workset_by_ref) - submitted)
+        if missing:
+            return fail(f"items must cover every enrichment workset ref_index exactly once; missing ref_indexes: {missing}")
+        stale_refs = sorted(set(workset_by_ref) - set(reference_by_ref))
+        if stale_refs:
+            return fail(f"reference_items missing for enrichment workset ref_indexes: {stale_refs}")
+
+        merged_items: list[dict[str, Any]] = []
+        for existing in reference_items:
+            ref_index = int(existing["ref_index"])
+            merged = dict(existing)
+            metadata = _reference_item_flat_metadata(merged)
+            metadata.update(metadata_by_ref.get(ref_index, {}))
+            merged["metadata"] = _sanitize_reference_metadata(metadata)
+            merged_items.append(merged)
+        store_reference_items(connection, merged_items)
+        update_reference_metadata_enrichment_statuses(connection, status_updates)
+        _set_success_state(
+            connection,
+            stage="stage_5_citation",
+            substep="prepare_citation_workset",
+            next_action="prepare_citation_workset",
+            status="reference metadata enrichment persisted",
+        )
+        _record_action_receipt(
+            connection,
+            action_name="persist_reference_metadata_enrichment",
+            stage="stage_4_references",
+            metadata={
+                "item_count": len(items),
+                "enriched_count": enriched_count,
+                "confirmed_existing_count": confirmed_existing_count,
+                "no_metadata_found_count": no_metadata_count,
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "stored_reference_items": len(reference_items),
+                "enriched_count": enriched_count,
+                "confirmed_existing_count": confirmed_existing_count,
+                "no_metadata_found_count": no_metadata_count,
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+
+    with connect_db(db_path) as connection:
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        out_path = Path(args.out_path).expanduser().resolve() if args.out_path else (runtime_paths.tmp_dir / CITATION_EXPORT_FILENAME)
+        review_path = out_path.with_name(CITATION_REVIEW_EXPORT_FILENAME if out_path.name == CITATION_EXPORT_FILENAME else f"{out_path.stem}_review{out_path.suffix or '.json'}")
+        source_doc = fetch_source_document(connection, "normalized_source")
+        scope_row = fetch_section_scope(connection, "citation_scope")
+        reference_items = fetch_reference_items(connection)
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if not reference_free_mode and not has_action_receipt(connection, "persist_reference_metadata_enrichment"):
+            message = "reference metadata enrichment missing; run prepare_reference_metadata_enrichment and persist_reference_metadata_enrichment before citation workset"
+            set_runtime_error(connection, "citation_scope_failed", message, "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        if source_doc is None:
+            set_runtime_error(connection, "citation_scope_failed", "normalized source missing", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": "normalized source missing"}}, ensure_ascii=False))
+            return 2
+        if "scope" in payload:
+            message = "prepare_citation_workset no longer accepts scope override payload; use section_scopes.citation_scope from DB"
+            set_runtime_error(connection, "citation_scope_failed", message, "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": message}}, ensure_ascii=False))
+            return 2
+        text = str(source_doc["content"])
+        md_path = Path(inputs.get("source_path", "")) if inputs.get("source_path", "") else None
+
+    lines = text.splitlines()
+    scope, scope_metadata, scope_error = _resolve_db_citation_scope(scope_row=scope_row, lines=lines)
+    workset_payload: dict[str, Any] = {
+        "meta": {
+            "generated_at": utc_now_iso(),
+            "md_path": str(md_path) if md_path is not None else "",
+            "language": inputs.get("language", "zh-CN"),
+            "scope": None,
+            "scope_source": "",
+            "scope_decision": {},
+            "reference_free_mode": reference_free_mode,
+        },
+        "mentions": [],
+        "mention_links": [],
+        "workset_items": [],
+        "reference_index": [],
+        "suggested_batches": [],
+        "unresolved_mentions": [],
+        "stats": {
+            "total_mentions": 0,
+            "numeric_mentions": 0,
+            "author_year_mentions": 0,
+            "resolved_items": 0,
+            "unresolved_mentions": 0,
+            "filtered_false_positive_mentions": 0,
+        },
+        "error": None,
+    }
+    if scope_error is not None or scope is None:
+        workset_payload["error"] = {"code": "citation_scope_failed", "message": scope_error or "analysis scope not found."}
+    else:
+        mentions, filtered_false_positive_mentions = _extract_mentions(lines, scope)
+        workset = _build_citation_workset(
+            scope=scope,
+            mentions=mentions,
+            reference_items=reference_items,
+        )
+        workset_payload["meta"]["scope"] = {
+            "section_title": scope.section_title,
+            "line_start": scope.line_start,
+            "line_end": scope.line_end,
+        }
+        workset_payload["meta"]["scope_source"] = str(scope_metadata.get("scope_source", scope.source))
+        workset_payload["meta"]["scope_decision"] = {
+            "selection_reason": str(scope_metadata.get("selection_reason", "")),
+            "covered_sections": list(scope_metadata.get("covered_sections", [scope.section_title])),
+            "fallback_from": scope_metadata.get("fallback_from"),
+            "fallback_reason": str(scope_metadata.get("fallback_reason", "")),
+        }
+        if reference_free_mode:
+            for mention in workset["unresolved_mentions"]:
+                mention["reason"] = REFERENCE_FREE_UNMAPPED_REASON
+            for link in workset["mention_links"]:
+                if link.get("status") == "unmapped":
+                    link.setdefault("evidence", {})["reason"] = REFERENCE_FREE_UNMAPPED_REASON
+        workset_payload.update(
+            {
+                "mentions": workset["mentions"],
+                "mention_links": workset["mention_links"],
+                "workset_items": workset["workset_items"],
+                "reference_index": workset["reference_index"],
+                "suggested_batches": workset["suggested_batches"],
+                "unresolved_mentions": workset["unresolved_mentions"],
+            }
+        )
+        workset_payload["stats"]["total_mentions"] = len(mentions)
+        workset_payload["stats"]["numeric_mentions"] = sum(1 for mention in mentions if mention.get("style") == "numeric")
+        workset_payload["stats"]["author_year_mentions"] = sum(1 for mention in mentions if mention.get("style") == "author-year")
+        workset_payload["stats"]["resolved_items"] = len(workset["workset_items"])
+        workset_payload["stats"]["unresolved_mentions"] = len(workset["unresolved_mentions"])
+        workset_payload["stats"]["filtered_false_positive_mentions"] = filtered_false_positive_mentions
+        workset_payload["review_items"] = _build_citation_review_view(workset_payload)["items"]
+        if (
+            not workset_payload["mentions"]
+            or not workset_payload["workset_items"]
+        ) and not reference_free_mode and (_is_review_like_scope(scope) or _scope_contains_citation_signals(lines, scope)):
+            workset_payload["error"] = {
+                "code": "citation_mentions_not_found",
+                "message": "citation scope contains citation-like signals but prepare_citation_workset produced no stable mentions/workset items",
+            }
+
+    if not args.persist_db_only:
+        _write_json(out_path, workset_payload)
+        _write_json(review_path, _build_citation_review_view(workset_payload))
+
+    with connect_db(db_path) as connection:
+        if workset_payload["error"] is not None:
+            error = dict(workset_payload["error"])
+            set_runtime_error(connection, str(error["code"]), str(error["message"]), "stage_5_citation")
+            connection.commit()
+            print(
+                json.dumps(
+                    {
+                        "workset_path": str(out_path) if not args.persist_db_only else "",
+                        "review_path": str(review_path) if not args.persist_db_only else "",
+                        "error": error,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        scope_payload = dict(workset_payload["meta"]["scope"])
+        store_section_scope(
+            connection,
+            scope_key="citation_scope",
+            section_title=str(scope_payload["section_title"]),
+            line_start=int(scope_payload["line_start"]),
+            line_end=int(scope_payload["line_end"]),
+            metadata=_coerce_scope_metadata(
+                workset_payload["meta"]["scope_decision"],
+                section_title=str(scope_payload["section_title"]),
+                source=workset_payload["meta"]["scope_source"],
+                fallback_from=workset_payload["meta"]["scope_decision"].get("fallback_from"),
+                fallback_reason=str(workset_payload["meta"]["scope_decision"].get("fallback_reason", "")),
+            ),
+        )
+        connection.execute("DELETE FROM citation_batches")
+        connection.execute("DELETE FROM citation_items")
+        connection.execute("DELETE FROM citation_timeline")
+        connection.execute("DELETE FROM citation_summary")
+        store_citation_mentions(connection, [dict(mention) for mention in workset_payload["mentions"]])
+        store_citation_mention_links(connection, [dict(link) for link in workset_payload["mention_links"]])
+        store_citation_workset_items(connection, [dict(item) for item in workset_payload["workset_items"]])
+        store_citation_unmapped_mentions(connection, [dict(mention) for mention in workset_payload["unresolved_mentions"]])
+        for batch in workset_payload["suggested_batches"]:
+            batch_obj = dict(batch)
+            store_citation_batch(
+                connection,
+                batch_kind="citation_workset",
+                batch_index=int(batch_obj["batch_index"]),
+                status="prepared",
+                mention_start=int(batch_obj["mention_start"]),
+                mention_end=int(batch_obj["mention_end"]),
+                metadata={
+                    "item_start": int(batch_obj["item_start"]),
+                    "item_end": int(batch_obj["item_end"]),
+                    "item_count": int(batch_obj["item_count"]),
+                    "mention_count": int(batch_obj["mention_count"]),
+                },
+            )
+        reference_items = fetch_reference_items(connection)
+        numeric_mentions_present = workset_payload["stats"]["numeric_mentions"] > 0
+        if numeric_mentions_present and any(dict(item).get("numbering", {}).get("has_anomaly") for item in reference_items):
+            add_runtime_warning_once(connection, "reference_numbering_anomaly_detected")
+            add_runtime_warning_once(connection, WARNING_REFERENCE_LOW_CONFIDENCE)
+        if int(workset_payload["stats"].get("filtered_false_positive_mentions", 0)) > 0:
+            add_runtime_warning_once(connection, WARNING_CITATION_FALSE_POSITIVE_FILTERED)
+        if workset_payload["meta"]["scope_decision"].get("fallback_reason"):
+            add_runtime_warning_once(connection, WARNING_SCOPE_FALLBACK_USED)
+        _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_semantics", next_action="persist_citation_semantics", status="citation workset prepared")
+        _record_action_receipt(
+            connection,
+            action_name="prepare_citation_workset",
+            stage="stage_5_citation",
+            metadata={
+                "total_mentions": workset_payload["stats"]["total_mentions"],
+                "resolved_items": workset_payload["stats"]["resolved_items"],
+                "unresolved_mentions": workset_payload["stats"]["unresolved_mentions"],
+            },
+        )
+        connection.commit()
+    print(
+        json.dumps(
+            {
+                "workset_path": str(out_path) if not args.persist_db_only else "",
+                "review_path": str(review_path) if not args.persist_db_only else "",
+                "scope": workset_payload["meta"]["scope"],
+                "scope_source": workset_payload["meta"]["scope_source"],
+                "scope_decision": workset_payload["meta"]["scope_decision"],
+                "resolved_items": workset_payload["stats"]["resolved_items"],
+                "unresolved_mentions": workset_payload["stats"]["unresolved_mentions"],
+                "filtered_false_positive_mentions": workset_payload["stats"].get("filtered_false_positive_mentions", 0),
+                "reference_free_mode": reference_free_mode,
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _handle_export_citation_workset(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    with connect_db(db_path) as connection:
+        scope_row = fetch_section_scope(connection, "citation_scope")
+        if scope_row is None:
+            error = {"code": "citation_scope_failed", "message": "citation_scope missing"}
+            print(json.dumps({"error": error}, ensure_ascii=False))
+            return 2
+        mentions = fetch_citation_mentions(connection)
+        workset_items = fetch_citation_workset_items(connection)
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if (not mentions or not workset_items) and not reference_free_mode:
+            error = {"code": "citation_scope_failed", "message": "citation workset missing; prepare_citation_workset must run first"}
+            print(json.dumps({"error": error}, ensure_ascii=False))
+            return 2
+        scope = _db_scope_to_scope(scope_row)
+        workset = {
+            "meta": {
+                "scope": {
+                    "section_title": scope.section_title,
+                    "line_start": scope.line_start,
+                    "line_end": scope.line_end,
+                },
+                "generated_at": utc_now_iso(),
+                "total_mentions": len(mentions),
+            },
+            "mentions": mentions,
+            "mention_links": fetch_citation_mention_links(connection),
+            "reference_index": fetch_reference_items(connection),
+            "workset_items": workset_items,
+            "unresolved_mentions": fetch_citation_unmapped_mentions(connection),
+            "suggested_batches": [
+                {
+                    "batch_index": int(row["batch_index"]),
+                    "batch_kind": str(row["batch_kind"]),
+                    "status": str(row["status"]),
+                    "mention_start": int(row["mention_start"]),
+                    "mention_end": int(row["mention_end"]),
+                    "metadata": json.loads(str(row["metadata_json"])),
+                }
+                for row in connection.execute(
+                    "SELECT batch_kind, batch_index, status, mention_start, mention_end, metadata_json FROM citation_batches ORDER BY batch_index ASC"
+                ).fetchall()
+            ],
+        }
+        review_view = _build_citation_review_view(workset)
+    if args.out_path:
+        _write_json(Path(args.out_path), workset)
+        review_out = Path(args.out_path).with_name(f"{Path(args.out_path).stem}_review{Path(args.out_path).suffix or '.json'}")
+        _write_json(review_out, review_view)
+    workset["review_items"] = review_view["items"]
+    print(json.dumps(workset, ensure_ascii=False))
+    return 0
+
+
+def _handle_persist_citation_semantics(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+
+    with connect_db(db_path) as connection:
+        workset_items = fetch_citation_workset_items(connection)
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if not workset_items and not reference_free_mode:
+            set_runtime_error(connection, "citation_semantics_failed", "citation workset missing; prepare_citation_workset must run first", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation workset missing; prepare_citation_workset must run first"}}, ensure_ascii=False))
+            return 2
+        normalized_items, error = _validate_citation_semantics_payload(payload, workset_items, reference_free_mode=reference_free_mode)
+        if error is not None or normalized_items is None:
+            set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation semantics payload", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": error or "invalid citation semantics payload"}}, ensure_ascii=False))
+            return 2
+        final_items: list[dict[str, Any]] = []
+        for item in normalized_items:
+            item_obj = dict(item)
+            normalized_function, warning = _normalize_function_value(item_obj.get("function"))
+            metadata = dict(item_obj.get("metadata", {}))
+            if warning is not None:
+                metadata["original_function"] = item_obj.get("function")
+                add_runtime_warning_once(connection, warning)
+            item_obj["function"] = normalized_function
+            item_obj["metadata"] = metadata
+            final_items.append(item_obj)
+        store_citation_items(connection, final_items)
+        _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_timeline", next_action="persist_citation_timeline", status="citation semantics persisted")
+        _record_action_receipt(
+            connection,
+            action_name="persist_citation_semantics",
+            stage="stage_5_citation",
+            metadata={"stored_citation_items": len(final_items)},
+        )
+        connection.commit()
+    print(json.dumps({"stored_citation_items": len(final_items), "error": None}, ensure_ascii=False))
+    return 0
+
+
+def _handle_persist_citation_timeline(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+
+    with connect_db(db_path) as connection:
+        citation_items = fetch_citation_items(connection)
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if not citation_items and not reference_free_mode:
+            set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
+            return 2
+        workset_items = fetch_citation_workset_items(connection)
+        normalized_timeline, warnings, error = _validate_citation_timeline_payload(payload, workset_items, citation_items)
+        if error is not None or normalized_timeline is None:
+            set_runtime_error(connection, "citation_timeline_failed", error or "invalid citation timeline payload", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_timeline_failed", "message": error or "invalid citation timeline payload"}}, ensure_ascii=False))
+            return 2
+        store_citation_timeline(connection, normalized_timeline)
+        for warning in warnings:
+            add_runtime_warning_once(connection, warning)
+        _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_summary", next_action="persist_citation_summary", status="citation timeline persisted")
+        _record_action_receipt(connection, action_name="persist_citation_timeline", stage="stage_5_citation")
+        connection.commit()
+    print(json.dumps({"stored_citation_timeline": True, "warnings": warnings, "error": None}, ensure_ascii=False))
+    return 0
+
+
+def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    payload = _read_json_payload(args.payload_file)
+    summary = payload.get("summary")
+    basis = payload.get("basis")
+
+    with connect_db(db_path) as connection:
+        citation_items = fetch_citation_items(connection)
+        reference_free_mode = is_reference_extraction_abandoned(connection)
+        if not citation_items and not reference_free_mode:
+            set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
+            return 2
+        citation_timeline = fetch_citation_timeline(connection)
+        if citation_timeline is None:
+            set_runtime_error(connection, "citation_timeline_failed", "citation timeline missing; persist_citation_timeline must run first", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_timeline_failed", "message": "citation timeline missing; persist_citation_timeline must run first"}}, ensure_ascii=False))
+            return 2
+        if not isinstance(summary, str) or not summary.strip():
+            set_runtime_error(connection, "citation_semantics_failed", "summary must be non-empty string", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "summary must be non-empty string"}}, ensure_ascii=False))
+            return 2
+        normalized_basis, error = _validate_citation_summary_basis(basis, citation_items, reference_free_mode=reference_free_mode)
+        if error is not None or normalized_basis is None:
+            set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation summary basis", "stage_5_citation")
+            connection.commit()
+            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": error or "invalid citation summary basis"}}, ensure_ascii=False))
+            return 2
+        store_citation_summary(connection, summary.strip(), normalized_basis)
+        _set_success_state(connection, stage="stage_6_render_and_validate", substep="render_and_validate", next_action="render_and_validate", status="citation summary persisted")
+        _record_action_receipt(connection, action_name="persist_citation_summary", stage="stage_5_citation")
+        connection.commit()
+    print(json.dumps({"stored_citation_summary": True, "error": None}, ensure_ascii=False))
+    return 0
+
+
+def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no-untyped-def]
+    missing_receipts = _missing_required_receipts(connection, REQUIRED_STAGE5_RECEIPTS)
+    if missing_receipts:
+        return f"missing action receipts before render: {missing_receipts}"
+    reference_free_mode = is_reference_extraction_abandoned(connection)
+    inputs = fetch_runtime_inputs(connection)
+    if has_action_receipt(connection, "bootstrap_runtime_db") and not has_action_receipt(connection, "persist_render_templates"):
+        return "persist_render_templates receipt missing before render"
+    require_runtime_templates = has_action_receipt(connection, "persist_render_templates")
+    if require_runtime_templates:
+        missing_template_keys = [
+            key
+            for key in ("digest_template_path", "citation_analysis_template_path")
+            if not inputs.get(key)
+        ]
+        if missing_template_keys:
+            return f"runtime template paths missing before render: {missing_template_keys}"
+        runtime_paths = _runtime_paths_from_inputs(inputs)
+        template_paths = _runtime_template_paths_from_inputs(
+            inputs,
+            runtime_paths=runtime_paths,
+            allow_repo_fallback=False,
+        )
+        for template_path in (template_paths.digest_template_path, template_paths.citation_analysis_template_path):
+            if not template_path.exists():
+                return f"runtime template missing before render: {template_path}"
+    if not fetch_citation_workset_items(connection) and not reference_free_mode:
+        return "citation_workset_items missing before render"
+    if not fetch_citation_items(connection) and not reference_free_mode:
+        return "citation_items missing before render"
+    if fetch_citation_timeline(connection) is None:
+        return "citation_timeline missing before render"
+    if fetch_citation_summary(connection) is None:
+        return "citation_summary missing before render"
+    return None
+
+
+def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
+    with connect_db(db_path) as connection:
+        for warning in _collect_render_semantic_warnings(connection):
+            add_runtime_warning_once(connection, warning)
+        inputs = fetch_runtime_inputs(connection)
+        runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
+        runtime_template_paths = _runtime_template_paths_from_inputs(
+            inputs,
+            runtime_paths=runtime_paths,
+            allow_repo_fallback=not has_action_receipt(connection, "persist_render_templates"),
+        )
+        source_path = inputs.get("source_path", "")
+        if not source_path:
+            raise RuntimeError("runtime_inputs.source_path missing")
+        output_root = runtime_paths.output_dir.resolve()
+
+        digest_context = build_digest_render_context(connection)
+        references_context = build_references_render_context(connection)
+        citation_report_context = build_citation_report_render_context(connection)
+        matching_metadata_context = build_literature_matching_metadata_render_context(connection)
+
+        digest_md = _render_markdown(
+            runtime_template_paths.digest_template_path.name,
+            digest_context,
+            "digest.schema.json",
+            ensure_trailing_newline=True,
+            template_root=runtime_template_paths.digest_template_path.parent,
+        )
+        references_json = _render_json("references.json.j2", references_context, "references.schema.json")
+        reference_parse_audit_json = json.dumps(build_reference_parse_audit_context(connection), ensure_ascii=False, indent=2)
+        report_md = _render_markdown(
+            runtime_template_paths.citation_analysis_template_path.name,
+            citation_report_context,
+            "citation_analysis_report.schema.json",
+            ensure_trailing_newline=False,
+            template_root=runtime_template_paths.citation_analysis_template_path.parent,
+        )
+        citation_context = build_citation_render_context(connection, report_md)
+        citation_analysis_json = _render_json("citation_analysis.json.j2", citation_context, "citation_analysis.schema.json")
+        matching_metadata_json = _render_json(
+            "literature_matching_metadata.json.j2",
+            matching_metadata_context,
+            "literature_matching_metadata.schema.json",
+        )
+
+        digest_path = (output_root / DIGEST_FILENAME).resolve()
+        references_path = (output_root / REFERENCES_FILENAME).resolve()
+        citation_analysis_path = (output_root / CITATION_ANALYSIS_FILENAME).resolve()
+        citation_report_path = (output_root / CITATION_ANALYSIS_REPORT_FILENAME).resolve()
+        matching_metadata_path = (output_root / LITERATURE_MATCHING_METADATA_FILENAME).resolve()
+        reference_parse_audit_path = (runtime_paths.tmp_dir / REFERENCE_PARSE_AUDIT_FILENAME).resolve()
+
+        _write_text(digest_path, digest_md)
+        _write_text(references_path, references_json)
+        _write_text(reference_parse_audit_path, reference_parse_audit_json)
+        _write_text(citation_analysis_path, citation_analysis_json)
+        _write_text(matching_metadata_path, matching_metadata_json)
+
+        register_artifact(connection, artifact_key="digest_path", path=digest_path, is_required=True, media_type="text/markdown", source_table="digest_slots")
+        register_artifact(connection, artifact_key="references_path", path=references_path, is_required=True, media_type="application/json", source_table="reference_items")
+        register_artifact(connection, artifact_key="citation_analysis_path", path=citation_analysis_path, is_required=True, media_type="application/json", source_table="citation_summary")
+        register_artifact(
+            connection,
+            artifact_key="literature_matching_metadata_path",
+            path=matching_metadata_path,
+            is_required=True,
+            media_type="application/json",
+            source_table="literature_matching_metadata",
+        )
+        if report_md.strip():
+            _write_text(citation_report_path, report_md)
+            register_artifact(connection, artifact_key="citation_analysis_report_path", path=citation_report_path, is_required=False, media_type="text/markdown", source_table="citation_summary")
+        connection.commit()
+        return build_public_output_payload(connection)
+
+
+def _handle_render_and_validate(args: argparse.Namespace) -> int:
+    mode = args.mode
+    db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    result_json_path = _resolve_result_json_path(db_path if mode == "render" else (db_path if args.db_path else None))
+
+    if mode == "render":
+        if args.source_path or args.preprocess_artifact or args.in_path or args.out_dir:
+            payload = {
+                "digest_path": "",
+                "references_path": "",
+                "citation_analysis_path": "",
+                "literature_matching_metadata_path": "",
+                "provenance": {"generated_at": "", "input_hash": "", "model": ""},
+                "warnings": [],
+                "error": {
+                    "code": "citation_report_failed",
+                    "message": "render mode does not accept explicit source/preprocess/stdin/output-dir inputs; render output location is DB-authoritative",
+                },
+            }
+            _write_render_result_json(payload, result_json_path=result_json_path)
+            print(json.dumps(payload, ensure_ascii=False))
+            return 2
+        with connect_db(db_path) as connection:
+            prereq_error = _validate_render_prerequisites(connection)
+        if prereq_error is not None:
+            payload = {
+                "digest_path": "",
+                "references_path": "",
+                "citation_analysis_path": "",
+                "literature_matching_metadata_path": "",
+                "provenance": {"generated_at": "", "input_hash": "", "model": ""},
+                "warnings": [],
+                "error": {
+                    "code": "citation_report_failed",
+                    "message": f"render mode failed before validation: {prereq_error}",
+                },
+            }
+            _write_render_result_json(payload, result_json_path=result_json_path)
+            print(json.dumps(payload, ensure_ascii=False))
+            return 2
+        try:
+            payload = _render_public_artifacts(db_path)
+            errors = _validate_public_output(payload, preprocess_artifact=None, db_path=db_path)
+        except Exception as exc:  # noqa: BLE001
+            payload = {
+            "digest_path": "",
+            "references_path": "",
+            "citation_analysis_path": "",
+            "literature_matching_metadata_path": "",
+            "provenance": {"generated_at": "", "input_hash": "", "model": ""},
+            "warnings": [],
+                "error": {
+                    "code": "citation_report_failed",
+                    "message": f"render mode failed before validation: {exc}",
+                },
+            }
+            _write_render_result_json(payload, result_json_path=result_json_path)
+            print(json.dumps(payload, ensure_ascii=False))
+            return 2
+        with connect_db(db_path) as connection:
+            if errors:
+                set_runtime_error(connection, "citation_merge_failed", "; ".join(errors), "stage_6_render_and_validate")
+                connection.commit()
+                _write_render_result_json(payload, result_json_path=result_json_path)
+                print(json.dumps(payload, ensure_ascii=False))
+                return 2
+            _set_success_state(connection, stage="stage_7_completed", substep="render_and_validate", next_action="render_and_validate", status="artifacts rendered and validated")
+            _record_action_receipt(connection, action_name="render_and_validate", stage="stage_6_render_and_validate")
+            connection.commit()
+            payload = build_public_output_payload(connection)
+        _write_render_result_json(payload, result_json_path=result_json_path)
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0 if payload.get("error") is None else 2
+
+    in_path = Path(args.in_path) if args.in_path else None
+    if in_path is not None:
+        obj = json.loads(in_path.read_text(encoding="utf-8"))
+    else:
+        raw = sys.stdin.read() if sys.stdin.readable() and not sys.stdin.isatty() else ""
+        obj = json.loads(raw) if raw.strip() else {}
+
+    source_path = Path(args.source_path) if args.source_path else None
+    if source_path is not None and not source_path.exists():
+        source_path = None
+    out_dir = Path(args.out_dir).expanduser() if args.out_dir else None
+    output_root = _resolve_output_root(out_dir, source_path)
+    preprocess_artifact = Path(args.preprocess_artifact).expanduser() if args.preprocess_artifact else None
+
+    if mode == "fix":
+        warnings: list[str] = []
+        fixed = _materialize_outputs(dict(obj) if isinstance(obj, dict) else {}, source_path, output_root, warnings)
+        errors = _validate_public_output(fixed, preprocess_artifact=preprocess_artifact, db_path=db_path if args.db_path else None)
+        if errors:
+            fixed.setdefault("warnings", [])
+            fixed["warnings"] = _as_str_list(fixed["warnings"]) + [f"render_and_validate: still invalid: {error}" for error in errors]
+            print(json.dumps(fixed, ensure_ascii=False))
+            return 2
+        print(json.dumps(fixed, ensure_ascii=False))
+        return 0
+
+    errors = _validate_public_output(dict(obj) if isinstance(obj, dict) else {}, preprocess_artifact=preprocess_artifact, db_path=db_path if args.db_path else None)
+    report = {"ok": len(errors) == 0, "errors": errors}
+    print(json.dumps(report, ensure_ascii=False))
+    return 0 if report["ok"] else 2
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Local algorithm runtime for literature-analysis.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    confirm = subparsers.add_parser("confirm_runtime_paths")
+    confirm.add_argument("--working-dir", required=True)
+    confirm.add_argument("--output-dir", default="")
+    confirm.add_argument("--db-path", default="")
+    confirm.set_defaults(handler=_handle_confirm_runtime_paths)
+
+    bootstrap = subparsers.add_parser("bootstrap_runtime_db")
+    bootstrap.add_argument("--db-path", default="")
+    bootstrap.add_argument("--source-path", default="")
+    bootstrap.add_argument("--language", default="")
+    bootstrap.add_argument("--input-hash", default="")
+    bootstrap.add_argument("--generated-at", default="")
+    bootstrap.add_argument("--model", default="")
+    bootstrap.set_defaults(handler=_handle_bootstrap_runtime_db)
+
+    repair = subparsers.add_parser("repair_db_state")
+    repair.add_argument("--db-path", default="")
+    repair.set_defaults(handler=_handle_repair_db_state)
+
+    render_templates = subparsers.add_parser("persist_render_templates")
+    render_templates.add_argument("--db-path", default="")
+    render_templates.add_argument("--payload-file", default="")
+    render_templates.set_defaults(handler=_handle_persist_render_templates)
+
+    normalize = subparsers.add_parser("normalize_source")
+    normalize.add_argument("--db-path", default="")
+    normalize.add_argument("--out-md", default="")
+    normalize.add_argument("--out-meta", default="")
+    normalize.add_argument("--persist-db-only", action="store_true")
+    normalize.set_defaults(handler=_handle_normalize_source)
+
+    outline = subparsers.add_parser("persist_outline_and_scopes")
+    outline.add_argument("--db-path", default="")
+    outline.add_argument("--payload-file", default="")
+    outline.set_defaults(handler=_handle_persist_outline_and_scopes)
+
+    digest = subparsers.add_parser("persist_digest")
+    digest.add_argument("--db-path", default="")
+    digest.add_argument("--payload-file", default="")
+    digest.set_defaults(handler=_handle_persist_digest)
+
+    references_workset = subparsers.add_parser("prepare_references_workset")
+    references_workset.add_argument("--db-path", default="")
+    references_workset.add_argument("--out", dest="out_path", default="")
+    references_workset.add_argument("--persist-db-only", action="store_true")
+    references_workset.set_defaults(handler=_handle_prepare_references_workset)
+
+    reference_splits = subparsers.add_parser("persist_reference_entry_splits")
+    reference_splits.add_argument("--db-path", default="")
+    reference_splits.add_argument("--payload-file", default="")
+    reference_splits.add_argument("--out", dest="out_path", default="")
+    reference_splits.add_argument("--persist-db-only", action="store_true")
+    reference_splits.set_defaults(handler=_handle_persist_reference_entry_splits)
+
+    reference_decision = subparsers.add_parser("decide_reference_extraction")
+    reference_decision.add_argument("--db-path", default="")
+    reference_decision.add_argument("--payload-file", default="")
+    reference_decision.set_defaults(handler=_handle_decide_reference_extraction)
+
+    references = subparsers.add_parser("persist_references")
+    references.add_argument("--db-path", default="")
+    references.add_argument("--payload-file", default="")
+    references.set_defaults(handler=_handle_persist_references)
+
+    reference_quality = subparsers.add_parser("review_reference_quality")
+    reference_quality.add_argument("--db-path", default="")
+    reference_quality.add_argument("--payload-file", default="")
+    reference_quality.set_defaults(handler=_handle_review_reference_quality)
+
+    reference_metadata_prepare = subparsers.add_parser("prepare_reference_metadata_enrichment")
+    reference_metadata_prepare.add_argument("--db-path", default="")
+    reference_metadata_prepare.add_argument("--out", dest="out_path", default="")
+    reference_metadata_prepare.set_defaults(handler=_handle_prepare_reference_metadata_enrichment)
+
+    reference_metadata_persist = subparsers.add_parser("persist_reference_metadata_enrichment")
+    reference_metadata_persist.add_argument("--db-path", default="")
+    reference_metadata_persist.add_argument("--payload-file", default="")
+    reference_metadata_persist.set_defaults(handler=_handle_persist_reference_metadata_enrichment)
+
+    mentions = subparsers.add_parser("prepare_citation_workset")
+    mentions.add_argument("--db-path", default="")
+    mentions.add_argument("--payload-file", default="")
+    mentions.add_argument("--out", dest="out_path", default="")
+    mentions.add_argument("--persist-db-only", action="store_true")
+    mentions.set_defaults(handler=_handle_prepare_citation_workset)
+
+    workset = subparsers.add_parser("export_citation_workset")
+    workset.add_argument("--db-path", default="")
+    workset.add_argument("--out", dest="out_path", default="")
+    workset.set_defaults(handler=_handle_export_citation_workset)
+
+    citation = subparsers.add_parser("persist_citation_semantics")
+    citation.add_argument("--db-path", default="")
+    citation.add_argument("--payload-file", default="")
+    citation.set_defaults(handler=_handle_persist_citation_semantics)
+
+    citation_timeline = subparsers.add_parser("persist_citation_timeline")
+    citation_timeline.add_argument("--db-path", default="")
+    citation_timeline.add_argument("--payload-file", default="")
+    citation_timeline.set_defaults(handler=_handle_persist_citation_timeline)
+
+    citation_summary = subparsers.add_parser("persist_citation_summary")
+    citation_summary.add_argument("--db-path", default="")
+    citation_summary.add_argument("--payload-file", default="")
+    citation_summary.set_defaults(handler=_handle_persist_citation_summary)
+
+    render = subparsers.add_parser("render_and_validate")
+    render.add_argument("--db-path", default="")
+    render.add_argument("--mode", choices=["render", "fix", "check"], default="render")
+    render.add_argument("--in", dest="in_path", default="")
+    render.add_argument("--source-path", default="")
+    render.add_argument("--out-dir", default="")
+    render.add_argument("--preprocess-artifact", default="")
+    render.set_defaults(handler=_handle_render_and_validate)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    return int(args.handler(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

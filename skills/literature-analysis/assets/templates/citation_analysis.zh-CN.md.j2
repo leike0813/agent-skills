@@ -1,0 +1,56 @@
+{#-
+运行时源模板：中文。
+- zh-* 目标语言应将本模板原样复制到 `<tmp_dir>/templates/citation_analysis.runtime.md.j2`
+-#}
+## 文献综述章节引文线索
+
+### 总体总结
+{{ summary }}
+
+{% if key_references %}
+### 关键文献
+{% for item in key_references %}
+- {{ item.citation_label }} {{ item.author_year_label }}{% if item.title %}: {{ item.title }}{% endif %}{% if item.function_label %} ({{ item.function_label }}){% endif %}
+{% endfor %}
+{% endif %}
+
+### 范围
+- 章节: {{ scope.section_title }}
+- 行号: {{ scope.line_start }}-{{ scope.line_end }}
+
+### 按功能归类
+{% if grouped_items %}
+{% for group in grouped_items %}
+#### {{ group.function_label }}
+{% for item in group["items"] %}
+- {{ item.citation_label }} {{ item.author_year_label }}
+  - 标题: {{ item.title or "[缺失]" }}
+  - 关键词: {{ item.keywords | join(", ") if item.keywords else "[无]" }}
+  - 总结: {{ item.summary }}
+{% endfor %}
+
+{% endfor %}
+{% else %}
+- 本范围内未检测到稳定映射的引用。
+{% endif %}
+
+### 时间线分析
+{% for bucket_name, bucket_label in [("early", "早期"), ("mid", "中期"), ("recent", "近期")] %}
+#### {{ bucket_label }}
+{{ timeline[bucket_name]["summary"] }}
+{% if timeline[bucket_name]["items"] %}
+{% for item in timeline[bucket_name]["items"] %}
+- {{ item.citation_label }} {{ item.author_year_label }}{% if item.title %}: {{ item.title }}{% endif %}
+{% endfor %}
+{% else %}
+- 该时段没有可列举的代表文献。
+{% endif %}
+
+{% endfor %}
+
+{% if unmapped_mentions %}
+### 未映射引用
+{% for mention in unmapped_mentions %}
+- {{ mention.marker }}{% if mention.reason %} ({{ mention.reason }}){% endif %}{% if mention.snippet %}: {{ mention.snippet }}{% endif %}
+{% endfor %}
+{% endif %}
