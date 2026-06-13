@@ -78,12 +78,14 @@ Web/resource references may have no authors or publication year. That is valid i
 
 ## Subagent Workflow
 
-Use subagents when available.
+Use subagents by default when available for batchable work.
+
+When `batch_work_packages` are present and the environment supports subagents, the main agent must delegate citation semantic review by batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes.
 
 Main agent:
 
 1. Runs prepare and reads `citation_work_packages`, `batch_work_packages`, `field_guidance`, and unresolved/filtered mention summaries.
-2. Sends each batch to a subagent.
+2. Sends each batch to a subagent by default when subagents are available.
 3. Merges returned `citation_semantic_reviews`.
 4. Checks every `citation_work_key` appears exactly once.
 5. Writes `timeline_summaries` and global `summary`.
@@ -97,6 +99,7 @@ Use only the provided citation_work_packages.
 Return JSON with citation_semantic_reviews[] only.
 Each review must include citation_work_key, topic, usage, role_in_context, keywords, summary, and optional key_reference_reason.
 Do not include internal indexes, mention arrays, renderer categories, timeline buckets, timeline_summaries, global summary, or report markdown.
+Do not write DB, run runtime commands, submit payloads, modify citation_work_key, or generate final artifacts.
 ```
 
 Subagent batch draft:
@@ -119,7 +122,7 @@ Subagent batch draft:
 }
 ```
 
-The main agent merges all subagent `citation_semantic_reviews[]`, keeps every `citation_work_key` unchanged, removes duplicates, and writes the single global `timeline_summaries` and `summary`. Subagents do not decide timeline bucket membership.
+The main agent is the only DB writer. It merges all subagent `citation_semantic_reviews[]`, keeps every `citation_work_key` unchanged, removes duplicates, and writes the single global `timeline_summaries` and `summary`. Subagents do not decide timeline bucket membership.
 
 ## Preprocess Rules
 

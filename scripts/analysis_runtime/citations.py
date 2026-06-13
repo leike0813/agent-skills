@@ -93,11 +93,12 @@ def _citation_batch_packages(packages: list[dict[str, Any]]) -> list[dict[str, A
                         }
                     ]
                 },
-                "merge_notes": "Subagent drafts only this batch. Main agent merges citation_semantic_reviews[], then adds global timeline_summaries and summary once.",
+                "merge_notes": "Default to delegating this citation batch when subagents are available. Subagent drafts only this batch. Main agent is the single DB writer, keeps citation_work_key unchanged, merges citation_semantic_reviews[], then adds global timeline_summaries and summary once.",
                 "subagent_prompt": (
                     "Review this citation batch. Return JSON with citation_semantic_reviews[] only. "
                     "Use citation_work_key as the key. Do not include ref_index, function, mentions, is_key_reference, or timeline buckets. "
-                    "Do not submit timeline_summaries or global summary from the subagent batch."
+                    "Do not submit timeline_summaries or global summary from the subagent batch. "
+                    "Do not write DB, run runtime commands, submit payloads, modify citation_work_key, or generate final artifacts."
                 ),
             }
         )
@@ -291,20 +292,21 @@ def enrich_citation_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 },
                 "citation_work_packages": packages,
                 "batch_work_packages": _citation_batch_packages(packages),
-                "subagent_policy": "If subagents are available, delegate citation semantic review by batch. Subagents draft only; the main agent merges one final payload.",
+                "subagent_policy": "Default to delegating citation semantic review by batch when batch_work_packages exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Subagents draft only; main agent is the single DB writer and submits one final payload.",
                 "subagent_prompt_template": (
                     "You are reviewing one citation batch for literature-analysis. "
                     "Use only the provided citation_work_packages. Return JSON with citation_semantic_reviews[]; "
                     "each review must include citation_work_key, topic, usage, role_in_context, keywords, summary, and optional key_reference_reason. "
                     "Do not include ref_index, function, mentions, is_key_reference, timeline buckets, or timeline ref indexes. "
-                    "Subagents do not write timeline_summaries or the global summary."
+                    "Subagents do not write timeline_summaries or the global summary. "
+                    "Do not write DB, run runtime commands, submit payloads, modify citation_work_key, or generate final artifacts."
                 ),
                 "merge_contract": {
                     "single_writer": "main_agent",
                     "required_payload_keys": ["citation_semantic_reviews", "timeline_summaries", "summary"],
                     "forbidden_submit_keys": CITATION_FORBIDDEN_FIELDS,
                     "forbidden_review_keys": CITATION_REVIEW_FORBIDDEN_FIELDS,
-                    "merge_notes": "Subagents return batch drafts only. Main agent keeps citation_work_key unchanged, combines reviews, and writes timeline_summaries as natural-language summaries only.",
+                    "merge_notes": "Subagents return batch drafts only. Main agent is the single DB writer, keeps citation_work_key unchanged, combines reviews, and writes timeline_summaries as natural-language summaries only.",
                 },
             }
         )

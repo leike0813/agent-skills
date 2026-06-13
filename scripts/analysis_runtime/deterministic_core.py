@@ -109,6 +109,7 @@ REFERENCES_EXPORT_FILENAME = "references_workset_export.json"
 REFERENCES_REVIEW_EXPORT_FILENAME = "references_workset_review.json"
 REFERENCE_METADATA_ENRICHMENT_EXPORT_FILENAME = "reference_metadata_enrichment_workset.json"
 REFERENCE_PARSE_AUDIT_FILENAME = "reference_parse_audit.json"
+REFERENCE_SPLIT_REVIEW_AUDIT_FILENAME = "reference_split_review_audit.json"
 RESULT_JSON_FILENAME = "literature-analysis.result.json"
 PDF_SIGNATURE = b"%PDF-"
 LATEX_INCLUDE_RE = re.compile(r"\\(?:input|include)\{([^}]+)\}")
@@ -129,6 +130,10 @@ SURNAME_RE = re.compile(r"[A-Za-z][A-Za-z'`-]+")
 REFERENCES_RE = re.compile(r"\b(references|bibliography)\b|参考文献", re.IGNORECASE)
 MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)\n]+\)")
 URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+CONSERVATION_URL_RE = re.compile(r"(?:https?://|www\.)[^\s\]\)>,;]+", re.IGNORECASE)
+CONSERVATION_DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s\]\)>,;]+", re.IGNORECASE)
+CONSERVATION_ARXIV_RE = re.compile(r"\barxiv\s*:\s*\d{4}\.\d{4,5}(?:v\d+)?\b|\b\d{4}\.\d{4,5}(?:v\d+)?\b", re.IGNORECASE)
+CONSERVATION_WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]")
 RESOURCE_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|\.{0,2}/|/)\S+\.(?:png|jpe?g|gif|svg|pdf)\b", re.IGNORECASE)
 RESOURCE_SUFFIX_RE = re.compile(r"\.(?:png|jpe?g|gif|svg|pdf)\b", re.IGNORECASE)
 DATE_LIKE_RE = re.compile(
@@ -1660,6 +1665,96 @@ def _strip_reference_number_prefix(raw: str) -> tuple[str, int | None]:
 
 def _normalize_reference_entry_text(raw: str) -> str:
     return re.sub(r"\s+", " ", raw.strip())
+
+
+def _canonical_conservation_text(raw: str) -> str:
+    text = unicodedata.normalize("NFKC", raw)
+    text = text.replace("\u00ad", "")
+    text = re.sub(r"[\u2010-\u2015\u2212]", "-", text)
+    text = re.sub(r"[\u2018\u2019\u201a\u201b]", "'", text)
+    text = re.sub(r"[\u201c\u201d\u201e\u201f]", '"', text)
+    return text.lower()
+
+
+def _strip_conservation_terminal_punctuation(token: str) -> str:
+    return token.strip().strip(".,;:，。；：、)]}）】>")
+
+
+def _reference_conservation_tokens(raw: str) -> tuple[list[str], set[str]]:
+    text = _canonical_conservation_text(raw)
+    protected: list[str] = []
+
+    def capture(prefix: str):  # type: ignore[no-untyped-def]
+        def _inner(match: re.Match[str]) -> str:
+            value = _strip_conservation_terminal_punctuation(match.group(0))
+            if value:
+                compact = re.sub(r"\s+", "", value)
+                protected.append(f"{prefix}:{compact}")
+            return " "
+
+        return _inner
+
+    text = CONSERVATION_URL_RE.sub(capture("url"), text)
+    text = CONSERVATION_DOI_RE.sub(capture("doi"), text)
+    text = CONSERVATION_ARXIV_RE.sub(capture("arxiv"), text)
+    word_tokens = CONSERVATION_WORD_RE.findall(text)
+    tokens = [*protected, *word_tokens]
+    protected_tokens = {
+        token
+        for token in tokens
+        if token.startswith(("url:", "doi:", "arxiv:")) or bool(re.fullmatch(r"(?:19|20)\d{2}", token))
+    }
+    return tokens, protected_tokens
+
+
+def _token_counts(tokens: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0) + 1
+    return counts
+
+
+def _token_count_delta(expected: dict[str, int], actual: dict[str, int]) -> list[str]:
+    delta: list[str] = []
+    for token, count in expected.items():
+        missing = count - actual.get(token, 0)
+        if missing > 0:
+            delta.extend([token] * missing)
+    return delta
+
+
+def _reference_split_conservation_report(source_text: str, reviewed_text: str) -> dict[str, Any]:
+    source_tokens, protected_tokens = _reference_conservation_tokens(source_text)
+    reviewed_tokens, _ = _reference_conservation_tokens(reviewed_text)
+    source_counts = _token_counts(source_tokens)
+    reviewed_counts = _token_counts(reviewed_tokens)
+    missing = _token_count_delta(source_counts, reviewed_counts)
+    unexpected = _token_count_delta(reviewed_counts, source_counts)
+    protected_missing = [token for token in missing if token in protected_tokens]
+    source_count = len(source_tokens)
+    reviewed_count = len(reviewed_tokens)
+    covered_count = max(source_count - len(missing), 0)
+    coverage_ratio = 1.0 if source_count == 0 else covered_count / source_count
+    allowed_missing = max(1, int(source_count * 0.02)) if source_count >= 20 else 0
+    allowed_unexpected = max(2, int(source_count * 0.05)) if source_count >= 20 else 0
+    ok = (
+        source_count > 0
+        and not protected_missing
+        and len(missing) <= allowed_missing
+        and len(unexpected) <= allowed_unexpected
+        and coverage_ratio >= 0.98
+    )
+    return {
+        "ok": ok,
+        "source_token_count": source_count,
+        "reviewed_token_count": reviewed_count,
+        "coverage_ratio": round(coverage_ratio, 4),
+        "missing_token_count": len(missing),
+        "unexpected_token_count": len(unexpected),
+        "protected_missing_tokens": sorted(set(protected_missing))[:20],
+        "missing_tokens_sample": missing[:20],
+        "unexpected_tokens_sample": unexpected[:20],
+    }
 
 
 def _is_valid_publication_year(year: object) -> bool:
@@ -5375,6 +5470,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
 
         reviewed_blocks: dict[int, dict[str, Any]] = {}
         force_kept_sources: set[str] = set()
+        conservation_reports: list[dict[str, Any]] = []
         for index, block in enumerate(blocks_payload):
             if not isinstance(block, dict):
                 message = f"blocks[{index}] must be object"
@@ -5427,20 +5523,58 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                 return 2
             suspect_block = suspect_by_index[normalized_block_index]
-            canonical_review = _normalize_reference_entry_text(" ".join(reviewed_entries))
-            canonical_source = _normalize_reference_entry_text(str(suspect_block["source_text"]))
-            if canonical_review != canonical_source:
-                message = "reviewed entries must preserve each suspect block's original text exactly, changing only entry boundaries"
+            if suspect_block.get("suspicion_kind") == "grouped_entries_in_single_line" and len(reviewed_entries) < 2:
+                message = "grouped reference block must be split into multiple reviewed entries"
                 set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
                 connection.commit()
-                print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
+                print(
+                    json.dumps(
+                        {
+                            "error": {
+                                "code": "reference_entry_splitting_failed",
+                                "message": message,
+                                "block_index": normalized_block_index,
+                            }
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            reviewed_joined_text = " ".join(reviewed_entries)
+            conservation_report = _reference_split_conservation_report(str(suspect_block["source_text"]), reviewed_joined_text)
+            conservation_reports.append(
+                {
+                    "block_index": normalized_block_index,
+                    "line_start": suspect_block.get("line_start"),
+                    "line_end": suspect_block.get("line_end"),
+                    "resolution": resolution,
+                    **conservation_report,
+                }
+            )
+            if not conservation_report["ok"]:
+                message = "reviewed entries do not preserve the suspect block's source tokens"
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                connection.commit()
+                print(
+                    json.dumps(
+                        {
+                            "error": {
+                                "code": "reference_entry_splitting_failed",
+                                "message": message,
+                                "block_index": normalized_block_index,
+                                "diagnostics": conservation_report,
+                            }
+                        },
+                        ensure_ascii=False,
+                    )
+                )
                 return 2
             reviewed_blocks[normalized_block_index] = {
                 "resolution": resolution,
                 "entries": reviewed_entries,
             }
             if resolution == "force_keep":
-                force_kept_sources.add(canonical_source)
+                force_kept_sources.add(_normalize_reference_entry_text(str(suspect_block["source_text"])))
 
         reviewed_raw_entries: list[str] = []
         consumed_block_indexes: set[int] = set()
@@ -5489,34 +5623,50 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
                 ]
                 for source in sorted(force_kept_sources):
                     add_runtime_warning_once(connection, f"reference_entry_force_kept: {source[:120]}")
+        downgraded_suspect_blocks: list[dict[str, Any]] = []
         if suspect_blocks:
-            message = "reviewed entries still contain reference-boundary suspicion; resolve each suspect block into stable single references before persisting"
-            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
-            for warning in prepared["warnings"]:
+            for block in suspect_blocks:
+                warning = (
+                    "reference_boundary_suspicion_after_review: "
+                    f"block_index={block['block_index']} "
+                    f"kind={block.get('suspicion_kind', '')} "
+                    f"reasons={'; '.join(str(reason) for reason in block.get('reasons', []))}"
+                )
                 add_runtime_warning_once(connection, warning)
-            connection.commit()
-            print(
-                json.dumps(
+                downgraded_suspect_blocks.append(
                     {
-                        "error": {"code": "reference_entry_splitting_failed", "message": message},
-                        "review_generation_id": _reference_review_generation_id(suspect_blocks),
-                        "suspect_blocks": [
-                            {
-                                "block_index": block["block_index"],
-                                "source_text": block["source_text"],
-                                "line_start": block["line_start"],
-                                "line_end": block["line_end"],
-                                "reasons": block["reasons"],
-                                "proposed_entries": block["proposed_entries"],
-                                "suspicion_kind": block["suspicion_kind"],
-                            }
-                            for block in suspect_blocks
-                        ],
-                    },
-                    ensure_ascii=False,
+                        "block_index": block["block_index"],
+                        "source_text_sha256": hashlib.sha256(str(block.get("source_text", "")).encode("utf-8")).hexdigest(),
+                        "source_snippet": str(block.get("source_text", ""))[:240],
+                        "line_start": block.get("line_start"),
+                        "line_end": block.get("line_end"),
+                        "reasons": list(block.get("reasons", [])),
+                        "suspicion_kind": block.get("suspicion_kind"),
+                    }
+                )
+            prepared["suspect_blocks"] = []
+            prepared["requires_split_review"] = False
+            prepared["warnings"] = list(
+                dict.fromkeys(
+                    [
+                        warning
+                        for warning in list(prepared["warnings"])
+                        if not warning.startswith(WARNING_REFERENCE_ENTRY_GROUPING_SUSPECT)
+                    ]
+                    + [
+                        f"reference_boundary_suspicion_after_review: block_index={block['block_index']}"
+                        for block in downgraded_suspect_blocks
+                    ]
                 )
             )
-            return 2
+        split_review_audit = {
+            "kind": "reference_split_review_audit",
+            "generated_at": utc_now_iso(),
+            "review_generation_id": review_generation_id,
+            "conservation_reports": conservation_reports,
+            "downgraded_suspect_blocks": downgraded_suspect_blocks,
+        }
+        _write_json(runtime_paths.tmp_dir / REFERENCE_SPLIT_REVIEW_AUDIT_FILENAME, split_review_audit)
 
         normalized_entries = list(prepared["entries"])
         candidates = list(prepared["candidates"])
