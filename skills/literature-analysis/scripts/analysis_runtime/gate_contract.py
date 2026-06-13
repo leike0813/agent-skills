@@ -118,7 +118,7 @@ def _field_guidance(next_action: str) -> dict[str, str] | None:
             "metadata_status": "metadata_reviews[].status must be enriched, confirmed_existing, or no_metadata_found.",
             "canonical_metadata_fields": ", ".join(CANONICAL_METADATA_FIELDS),
             "forbidden_fields": "Do not submit items, selected_pattern, ref_index, raw, confidence, metadata_enrichment_items, or reference_reviews[].metadata.",
-            "subagents": "Delegate core reference review and metadata review by their own batches; subagents draft only, main agent merges one payload per submit round.",
+            "subagents": "Default to subagent delegation when batch_work_packages exist and subagents are available. Subagents draft only; main agent is the single DB writer, keeps stable keys unchanged, merges one payload per submit round, and records a reason if delegation is skipped.",
         }
     if next_action == "persist_citation_analysis":
         return {
@@ -127,7 +127,7 @@ def _field_guidance(next_action: str) -> dict[str, str] | None:
             "role_in_context": "Natural language role; runtime maps it to internal renderer categories.",
             "timeline_summaries": "Narrative summaries only; runtime derives bucket membership from dated references. Undated references may warn but do not require manual bucket membership.",
             "forbidden_fields": "Do not submit items, timeline, basis, ref_index, function, mentions, or timeline ref indexes.",
-            "subagents": "Delegate citation semantic reviews by batch when available; subagents draft only, main agent merges reviews and writes global timeline_summaries/summary.",
+            "subagents": "Default to subagent delegation when citation batch_work_packages exist and subagents are available. Subagents draft only; main agent is the single DB writer, keeps citation_work_key unchanged, merges reviews, and writes global timeline_summaries/summary.",
         }
     return None
 

@@ -6,7 +6,7 @@
 4. SQLite 是过程真源；语义判断结果必须整理为当前阶段的结构化 payload 后写入 runtime。
 5. 不要直接写 SQLite 表，不要手工编辑最终公开 artifacts。
 6. Reference title 必须保持 raw reference 中的原始语言和文字系统；不得翻译、英文化、罗马化，或用 placeholder 字符串代替未知题名。
-7. Reference review、metadata review、citation semantic review 若适合并行，应优先按 runtime 返回的 batch work packages 委派给 subagent；主 agent 合并后按阶段回合提交。
+7. Reference review、metadata review、citation semantic review 若 runtime 返回 batch work packages 且环境支持 subagent，必须默认按 batch 委派；只有环境不支持、batch 极小或上下文不可拆时才由主 agent 自行完成，并保留原因。Subagent 只返回 batch draft；主 agent 是唯一 DB writer，合并后按阶段回合提交。
 8. `persist_references` 先提交 `reference_reviews[]` core fields；runtime 返回 `metadata_review_packages` 后，再单独提交 `metadata_reviews[]`。需要修边界时先提交 `split_reviews[]`。
 9. `persist_citation_analysis` 使用 `citation_semantic_reviews[]`、`timeline_summaries` 与全局 `summary`。
 10. Payload 文件必须是 UTF-8 JSON；复杂 payload 使用 JSON-safe 方式生成，不要手写容易破坏转义的超长 shell 字符串。

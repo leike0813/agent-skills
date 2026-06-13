@@ -131,10 +131,11 @@ def _batch_packages(workset: dict[str, Any], packages: list[dict[str, Any]]) -> 
                             }
                         ]
                     },
-                    "merge_notes": "Subagent drafts only this batch. Main agent merges batches into one reference_reviews[] payload and submits once.",
+                    "merge_notes": "Default to delegating this batch when subagents are available. Subagent drafts only this batch. Main agent is the single DB writer, keeps reference_key unchanged, merges batches into one reference_reviews[] payload, and submits once.",
                     "subagent_prompt": (
                         "Review this reference batch. Return JSON with reference_reviews[] only. "
                         "Use each package's allowed_parse_patterns; do not invent patterns, metadata, raw text, confidence, or ref_index. "
+                        "Keep reference_key unchanged. Do not write DB, run runtime commands, submit payloads, or generate final artifacts. "
                         "Rich metadata is reviewed in the next metadata_review_packages round."
                     ),
                 }
@@ -175,10 +176,11 @@ def _batch_packages(workset: dict[str, Any], packages: list[dict[str, Any]]) -> 
                             }
                         ]
                     },
-                    "merge_notes": "Subagent drafts only this batch. Main agent merges batches into one reference_reviews[] payload and submits once.",
+                    "merge_notes": "Default to delegating this batch when subagents are available. Subagent drafts only this batch. Main agent is the single DB writer, keeps reference_key unchanged, merges batches into one reference_reviews[] payload, and submits once.",
                     "subagent_prompt": (
                         "Review this reference batch. Return JSON with reference_reviews[] only. "
                         "Use each package's allowed_parse_patterns; do not invent patterns, metadata, raw text, confidence, or ref_index. "
+                        "Keep reference_key unchanged. Do not write DB, run runtime commands, submit payloads, or generate final artifacts. "
                         "Rich metadata is reviewed in the next metadata_review_packages round."
                     ),
                 }
@@ -248,19 +250,20 @@ def enrich_reference_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 },
                 "split_review_packages": _split_review_packages(workset),
                 "batch_work_packages": _batch_packages(workset, packages),
-                "subagent_policy": "If subagents are available, delegate reference core review by batch. Metadata review happens in the next returned work packages.",
+                "subagent_policy": "Default to delegating reference core review by batch when batch_work_packages exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Metadata review happens in the next returned work packages. Subagents draft only; main agent is the single DB writer and payload submitter.",
                 "subagent_prompt_template": (
                     "You are reviewing one reference batch for literature-analysis. "
                     "Use only the provided reference_review_packages. Return JSON with reference_reviews[]; "
                     "each review must include reference_key, selected_parse_pattern, authors, title, publication_year, and review_notes. "
-                    "Do not include metadata, raw, confidence, ref_index, selected_pattern, or database fields."
+                    "Keep reference_key unchanged. Do not include metadata, raw, confidence, ref_index, selected_pattern, database fields, renderer fields, or entries outside this batch. "
+                    "Do not write DB, run runtime commands, submit payloads, or generate final artifacts."
                 ),
                 "merge_contract": {
                     "single_writer": "main_agent",
                     "required_payload_keys": ["reference_reviews"],
                     "optional_payload_keys": ["split_reviews"],
                     "forbidden_submit_keys": REFERENCE_FORBIDDEN_FIELDS,
-                    "merge_notes": "Subagents return core batch drafts only. Main agent keeps stable keys unchanged, combines arrays, resolves duplicate keys, and submits one core payload. Metadata is submitted in the next round.",
+                    "merge_notes": "Subagents return core batch drafts only. Main agent is the single DB writer, keeps stable keys unchanged, combines arrays, resolves duplicate keys, and submits one core payload. Metadata is submitted in the next round.",
                 },
             }
         )
@@ -464,11 +467,12 @@ def _metadata_batch_packages(packages: list[dict[str, Any]]) -> list[dict[str, A
                         }
                     ]
                 },
-                "merge_notes": "Subagent drafts only this metadata batch. Main agent merges all metadata_reviews[] and submits once.",
+                "merge_notes": "Default to delegating this metadata batch when subagents are available. Subagent drafts only this metadata batch. Main agent is the single DB writer, keeps reference_key unchanged, merges all metadata_reviews[], and submits once.",
                 "subagent_prompt": (
                     "Review metadata for this literature-analysis batch. Return JSON with metadata_reviews[] only. "
                     "Use reference_key as the key. Do not modify locked fields or include ref_index. "
-                    f"Allowed metadata fields: {', '.join(CANONICAL_METADATA_FIELDS)}."
+                    f"Allowed metadata fields: {', '.join(CANONICAL_METADATA_FIELDS)}. "
+                    "Do not write DB, run runtime commands, submit payloads, modify stable keys, or generate final artifacts."
                 ),
             }
         )
@@ -508,20 +512,21 @@ def enrich_metadata_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
             },
             "metadata_review_packages": packages,
             "batch_work_packages": _metadata_batch_packages(packages),
-            "subagent_policy": "If subagents are available, delegate metadata review by batch. Subagents draft only; the main agent merges one final metadata_reviews[] payload.",
+            "subagent_policy": "Default to delegating metadata review by batch when batch_work_packages exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Subagents draft only; main agent is the single DB writer and submits one final metadata_reviews[] payload.",
             "subagent_prompt_template": (
                 "You are enriching one literature-analysis metadata batch. "
                 "Return JSON with metadata_reviews[] only. Use reference_key as the key. "
                 "Status must be enriched, confirmed_existing, or no_metadata_found. "
                 f"Allowed metadata fields: {', '.join(CANONICAL_METADATA_FIELDS)}. "
-                "Do not modify locked reference fields or include ref_index."
+                "Do not modify locked reference fields, stable keys, selected_parse_pattern, raw text, confidence, or include ref_index. "
+                "Do not write DB, run runtime commands, submit payloads, or generate final artifacts."
             ),
             "merge_contract": {
                 "single_writer": "main_agent",
                 "required_payload_keys": ["metadata_reviews"],
                 "forbidden_submit_keys": ["reference_reviews", *REFERENCE_FORBIDDEN_FIELDS],
                 "required_coverage": [package["reference_key"] for package in packages],
-                "merge_notes": "Main agent must submit exactly one metadata review per metadata_review_packages item.",
+                "merge_notes": "Subagents return metadata batch drafts only. Main agent is the single DB writer and must submit exactly one metadata review per metadata_review_packages item.",
             },
         }
     )
@@ -774,6 +779,7 @@ def persist_references(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str
             "allowed_payload_shape": metadata_workset.get("allowed_payload_shape"),
             "field_guidance": metadata_workset.get("field_guidance"),
             "batch_work_packages": metadata_workset.get("batch_work_packages", []),
+            "subagent_policy": metadata_workset.get("subagent_policy"),
             "subagent_prompt_template": metadata_workset.get("subagent_prompt_template"),
             "merge_contract": metadata_workset.get("merge_contract"),
             "warnings": all_warnings,

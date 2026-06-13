@@ -131,14 +131,16 @@ Unknown metadata fields do not block persistence by themselves, but they produce
 
 ## Subagent Workflow
 
-Use subagents when available.
+Use subagents by default when available for batchable work.
+
+When `batch_work_packages` are present and the environment supports subagents, the main agent must delegate core reference review and metadata enrichment by batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes or `review_notes`.
 
 Subagent prompt template sections below are split by submit round: core reference review first, metadata enrichment second.
 
 Main agent:
 
 1. Runs prepare and reads `reference_review_packages`, `batch_work_packages`, `allowed_parse_patterns_by_reference_key`, and `field_guidance`.
-2. Sends each batch to a subagent with the package subset.
+2. Sends each batch to a subagent with the package subset by default when subagents are available.
 3. Merges returned drafts.
 4. Checks every `reference_key` appears exactly once.
 5. Submits one core `reference_reviews[]` payload.
@@ -154,6 +156,7 @@ Return JSON with reference_reviews[] only.
 For each package, choose selected_parse_pattern from the allowed list, then provide authors, title, publication_year, and review_notes.
 Do not include metadata. Metadata enrichment happens in the next metadata_review_packages round.
 Do not include raw text, confidence, database IDs, renderer fields, or entries outside this batch.
+Do not write DB, run runtime commands, submit payloads, modify stable keys, or generate final artifacts.
 ```
 
 Subagent batch draft shape:
@@ -186,6 +189,7 @@ Only add metadata when status is enriched, and only when it appears in source_te
 Use canonical metadata fields only: publicationTitle, conferenceName, archiveID, university, volume, issue, pages, numPages, DOI, url, publisher, place, ISBN, ISSN, itemType, date.
 Do not modify authors, title, publication_year, selected_parse_pattern, raw text, confidence, ref_index, or other locked/internal fields.
 Do not write DB or final artifacts. Return only the batch draft.
+Do not run runtime commands, submit payloads, or modify stable keys.
 ```
 
 Metadata batch draft shape:
@@ -214,7 +218,7 @@ Metadata batch draft shape:
 }
 ```
 
-The main agent must merge subagent drafts, keep each `reference_key` stable, remove duplicates, cover every metadata package, and prefer canonical metadata names before submitting. Runtime normalizes common aliases as a fallback, but subagent prompts should not rely on that fallback.
+The main agent is the only DB writer. It must merge subagent drafts, keep each `reference_key` stable, remove duplicates, cover every metadata package, and prefer canonical metadata names before submitting. Runtime normalizes common aliases as a fallback, but subagent prompts should not rely on that fallback.
 
 ## Metadata Workset Shape
 
@@ -324,9 +328,14 @@ Split review rules:
 
 - Split review changes only boundaries.
 - Do not extract authors/title/year during split review.
-- `corrected_reference_texts` must preserve the normalized source text content.
+- `corrected_reference_texts` must preserve source content by token coverage, not by exact character equality.
+- Harmless differences are allowed: line breaks, repeated whitespace, Unicode normalization, fullwidth/halfwidth punctuation, quote style, dash style, soft hyphen, and punctuation style.
+- Hard failures remain: translated text, rewritten titles, deleted DOI/URL/arXiv IDs, deleted years, deleted author/title keywords, or added unsupported content.
+- If conservation fails, runtime returns `missing_tokens_sample`, `unexpected_tokens_sample`, `source_token_count`, `reviewed_token_count`, and `coverage_ratio`.
 - Boundary-changing split review returns regenerated `reference_review_packages`; do not reuse stale `reference_reviews` from before the split repair.
-- If a grouped-entry remains unresolved, runtime may report `reference_entry_splitting_failed`.
+- If token conservation passes but deterministic boundary heuristics still look suspicious, runtime records `reference_boundary_suspicion_after_review` and continues with regenerated packages.
+- Web/resource references, project pages, software repositories, and URL-only resources may lack authors or publication years. Keep `publication_year=null` in core review and add `url` or `itemType` in metadata review when evidence exists.
+- If a grouped-entry loses source tokens or remains structurally impossible to review, runtime may report `reference_entry_splitting_failed`.
 
 ## Core Field Rules
 
