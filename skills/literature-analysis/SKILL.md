@@ -50,6 +50,14 @@ Subagent 职责：
 
 Subagent 禁止处理全局闭包：citation timeline bucket membership、全局 `summary`、最终 report 和 artifact 渲染始终由 runtime 或主 agent 负责。
 
+Mandatory delegation points:
+
+- Reference Core Review Delegation Point：`persist_references` prepare 返回 `reference_review_packages` 与 `batch_work_packages` 后，主 agent 必须使用本文件 `Reference core review subagent prompt (short)` 或 runtime 返回的 `subagent_prompt_template` 委派 core review batch。
+- Metadata Enrichment Delegation Point：core `reference_reviews[]` submit 成功并返回 `metadata_review_packages` 与 metadata `batch_work_packages` 后，主 agent 必须使用本文件 `Metadata enrichment subagent prompt (short)` 或 runtime 返回的 metadata prompt 委派 metadata batch。
+- Citation Semantic Review Delegation Point：`persist_citation_analysis` prepare 返回 `citation_work_packages` 与 `batch_work_packages` 后，主 agent 必须使用本文件 `Citation semantic review subagent prompt (short)` 或 runtime 返回的 `subagent_prompt_template` 委派 citation semantic batch。
+
+Allowed reasons to skip a delegation point are limited to: no subagent capability in the environment, a trivially small batch where delegation adds no value, or a batch that cannot be split without losing necessary context. Do not skip because a temporary script seems faster.
+
 ## 输入输出硬契约
 
 - 输入只读取 prompt payload：
@@ -156,7 +164,7 @@ Subagent 禁止处理全局闭包：citation timeline bucket membership、全局
   - `persist_citation_analysis` 不重传 `citation_scope`
   - `finalize_outputs` 不接受业务 payload 或输出目录覆盖
 - 结构化 payload 默认通过 `--payload-file` 传入，避免超长内联 JSON 命令。
-- Payload 文件必须是 UTF-8 JSON。不要在 shell heredoc 中手写复杂转义；优先用编辑器、JSON encoder 或脚本生成 payload 文件。若 JSON 语法无效，runtime 返回 `payload_json_invalid`，不会猜测修复未转义引号。
+- Payload 文件必须是 UTF-8 JSON。不要在 shell heredoc 中手写复杂转义；可以用编辑器、JSON encoder 或脚本把已经完成的 LLM/subagent 决策序列化为 JSON 文件。若 JSON 语法无效，runtime 返回 `payload_json_invalid`，不会猜测修复未转义引号。
 
 ## Runtime 调用方式
 
@@ -175,7 +183,9 @@ Subagent 禁止处理全局闭包：citation timeline bucket membership、全局
 - digest 槽位内容与分章节总结
 - representative image 的文本证据判断
 - reference candidate 选择、核心字段 refinement、metadata enrichment
-- citation semantics、timeline summaries 和全局 summary
+- split review 的边界判断与 source-preserving corrected reference texts
+- citation semantic review，包括 `topic`、`usage`、`role_in_context`、`keywords`、item `summary` 和 `key_reference_reason`
+- `timeline_summaries` 和全局 citation `summary`
 
 必须由脚本完成：
 
@@ -185,12 +195,15 @@ Subagent 禁止处理全局闭包：citation timeline bucket membership、全局
 - reference deterministic preprocess、candidate/workset 生成、质量校验
 - citation mention extraction、mention mapping、workset 生成
 - payload schema 校验
+- JSON 语法解析、字段别名规范化、stable key 覆盖检查、重复 key 检查
 - 基于 DB 与模板渲染最终产物
 - stdout JSON 合法性检查
 
 绝对禁止：
 
-- 用临时脚本代替 LLM 做摘要、大纲、reference 语义字段或 citation semantics。
+- 用临时脚本、正则批处理或批量规则代替 LLM/subagent 做摘要、大纲、scope 决策、representative image 判断、reference candidate 选择、authors/title/year refinement、metadata enrichment、split review 边界判断、citation semantic review、timeline narratives 或全局 summary。
+- 用临时脚本从 workset 自动填充 `reference_reviews[]`、`metadata_reviews[]` 或 `citation_semantic_reviews[]` 的语义字段。
+- 允许的脚本用途仅限：调用 `run_analysis.py`、读取/格式化 runtime 返回的 work packages、检查 JSON 语法、统计 stable key 覆盖、合并已经由 LLM/subagent 产出的 batch drafts、把已经审核过的决策序列化为 payload 文件。
 - 绕过 `run_analysis.py` 手工写 DB。
 - 手工编辑最终公开 JSON 再假装它来自 renderer。
 

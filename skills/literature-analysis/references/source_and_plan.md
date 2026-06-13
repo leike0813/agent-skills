@@ -15,6 +15,22 @@ Prompt payload 只读取：
 - 后续阶段不得重新读取任意 source 文件；只能读 DB 中的 `source_documents.normalized_source`。
 - `source.md`、`source_meta.json`、workset exports 都只是审计副产物，不是过程真源。
 
+## LLM And Script Responsibilities
+
+Script/runtime owns:
+
+- Source type detection, PDF/Markdown/LaTeX normalization, `.bib` append, UTF-8 decoding, input hash, runtime paths, DB bootstrap, and source profile.
+- Line numbering over `source_documents.normalized_source`.
+- Schema validation for the submitted plan payload.
+
+LLM/agent owns:
+
+- Reading the normalized source and deciding `outline_nodes`, `references_scope`, `citation_scope`, and `literature_matching_metadata`.
+- Explaining fallback scope choices in `metadata.selection_reason`.
+- Keeping parent/child section coverage coherent.
+
+Do not use a temporary script to infer outline, references scope, citation scope, or matching metadata from headings alone. Scripts may count lines or serialize the final plan after the agent has made the semantic decisions.
+
 ## Source Normalization Contract
 
 `init_runtime` 是唯一允许没有 agent 语义 payload 的阶段。它合并 runtime path confirmation、DB bootstrap、template persistence 与 source normalization。

@@ -2,6 +2,21 @@
 
 本文件补充 `finalize_outputs`、render validation 和错误恢复。正常路径下，`persist_citation_analysis` 提交成功后会级联渲染最终产物；`finalize_outputs` 主要用于恢复或手动重渲染。
 
+## LLM And Script Responsibilities
+
+Script/runtime owns:
+
+- Reading DB truth, rendering public artifacts, validating schemas, writing result mirror, aggregating warnings, and returning final stdout JSON.
+- Regenerating sidecars and final artifacts from complete DB state.
+
+LLM/agent owns:
+
+- Choosing the correct recovery path based on structured errors.
+- Correcting and resubmitting the failed semantic payload when runtime asks for a repair.
+- Reporting final runtime stdout JSON without embellishment.
+
+Do not use a temporary script to hand-author final `digest.md`, `references.json`, `citation_analysis.json`, `citation_analysis.md`, `literature_matching_metadata.json`, or result mirror. Scripts may only rerun `finalize_outputs`, inspect files for diagnostics, or compare renderer output with DB-backed artifacts.
+
 ## Finalization Contract
 
 `finalize_outputs` reads from DB only:
