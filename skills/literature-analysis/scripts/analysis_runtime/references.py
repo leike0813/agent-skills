@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .algorithm_adapter import call_algorithm_handler
+from . import agent_work
 from . import runtime_db
 from .payload_normalization import CANONICAL_METADATA_FIELDS, merge_warnings, normalize_reference_metadata
 
@@ -13,6 +14,97 @@ REFERENCE_FORBIDDEN_FIELDS = ["items", "selected_pattern", "ref_index", "raw", "
 REFERENCE_REVIEW_FORBIDDEN_FIELDS = ["raw", "confidence", "ref_index", "selected_pattern", "metadata"]
 METADATA_REVIEW_STATUSES = {"enriched", "confirmed_existing", "no_metadata_found"}
 METADATA_REVIEW_FORBIDDEN_FIELDS = ["author", "authors", "title", "year", "raw", "raw_reference", "reference", "confidence", "ref_index"]
+
+
+def _reference_core_payload_shape() -> dict[str, Any]:
+    return {
+        "reference_reviews": [
+            {
+                "reference_key": "reference-0",
+                "selected_parse_pattern": "one value from allowed_parse_patterns",
+                "authors": ["Author"],
+                "title": "Original title",
+                "publication_year": 2024,
+                "review_notes": "optional",
+            }
+        ],
+        "note": "Submit metadata_reviews only after runtime returns metadata_review_packages.",
+    }
+
+
+def _reference_core_field_guidance() -> dict[str, Any]:
+    return {
+        "reference_key": "Stable work key from reference core batch files; do not use ref_index.",
+        "selected_parse_pattern": "Required parse hypothesis. Must be one of allowed_parse_patterns for the same reference_key in the batch file.",
+        "authors": "Array of author strings in source order.",
+        "title": "Title in original language/script.",
+        "publication_year": "Integer year or null if not supported by source text.",
+        "metadata": "Do not submit metadata in reference_reviews. Runtime returns metadata_review_packages after core references are stored.",
+        "batch_inputs": "Read reference_core_batch_paths; stdout does not inline reference_review_packages.",
+    }
+
+
+def _reference_core_subagent_policy() -> str:
+    return "Default to delegating reference core review by batch when reference_core_batch_paths exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Metadata review happens in the next returned work packages. Subagents draft only; main agent is the single DB writer and payload submitter."
+
+
+def _reference_core_prompt() -> str:
+    return (
+        "Read the provided reference core batch JSON file. Return JSON with reference_reviews[] only. "
+        "Use only the reference_review_packages and allowed_parse_patterns_by_reference_key in that file. "
+        "Each review must include reference_key, selected_parse_pattern, authors, title, publication_year, and review_notes. "
+        "Keep reference_key unchanged. Do not include metadata, raw, confidence, ref_index, selected_pattern, database fields, renderer fields, or entries outside this batch. "
+        "If file writing is available, write the draft to suggested_draft_output_path and return that path. "
+        "Do not write DB, run runtime commands, submit payloads, or generate final artifacts."
+    )
+
+
+def _reference_core_merge_contract() -> dict[str, Any]:
+    return {
+        "single_writer": "main_agent",
+        "required_payload_keys": ["reference_reviews"],
+        "optional_payload_keys": ["split_reviews"],
+        "forbidden_submit_keys": REFERENCE_FORBIDDEN_FIELDS,
+        "merge_notes": "Subagents return core batch drafts only. Main agent is the single DB writer, keeps stable keys unchanged, combines arrays, resolves duplicate keys, and submits one core payload. Metadata is submitted in the next round.",
+    }
+
+
+def _metadata_payload_shape() -> dict[str, Any]:
+    return {
+        "metadata_reviews": [
+            {
+                "reference_key": "reference-0",
+                "status": "enriched | confirmed_existing | no_metadata_found",
+                "metadata": {},
+                "evidence_note": "required evidence or reason",
+            }
+        ]
+    }
+
+
+def _metadata_subagent_policy() -> str:
+    return "Default to delegating metadata review by batch when metadata_batch_paths exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Subagents draft only; main agent is the single DB writer and submits one final metadata_reviews[] payload."
+
+
+def _metadata_prompt() -> str:
+    return (
+        "Read the provided reference metadata batch JSON file. Return JSON with metadata_reviews[] only. "
+        "Use reference_key as the key. Status must be enriched, confirmed_existing, or no_metadata_found. "
+        f"Allowed metadata fields: {', '.join(CANONICAL_METADATA_FIELDS)}. "
+        "Do not modify locked reference fields, stable keys, selected_parse_pattern, raw text, confidence, or include ref_index. "
+        "If file writing is available, write the draft to suggested_draft_output_path and return that path. "
+        "Do not write DB, run runtime commands, submit payloads, or generate final artifacts."
+    )
+
+
+def _metadata_merge_contract(required_coverage: list[str]) -> dict[str, Any]:
+    return {
+        "single_writer": "main_agent",
+        "required_payload_keys": ["metadata_reviews"],
+        "forbidden_submit_keys": ["reference_reviews", *REFERENCE_FORBIDDEN_FIELDS],
+        "required_coverage": required_coverage,
+        "merge_notes": "Subagents return metadata batch drafts only. Main agent is the single DB writer and must submit exactly one metadata review per metadata package item.",
+    }
 
 
 def _reference_key(entry_index: int) -> str:
@@ -204,6 +296,105 @@ def _split_review_packages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return packages
 
 
+def _reference_core_agent_work(db_path: Path, packages: list[dict[str, Any]]) -> dict[str, Any]:
+    def build_batch(batch_id: str, batch_packages: list[dict[str, Any]]) -> dict[str, Any]:
+        reference_keys = [str(package["reference_key"]) for package in batch_packages]
+        return {
+            "reference_keys": reference_keys,
+            "reference_review_packages": batch_packages,
+            "allowed_parse_patterns_by_reference_key": {
+                str(package["reference_key"]): list(package.get("allowed_parse_patterns", []))
+                for package in batch_packages
+            },
+            "required_return_shape": _reference_core_payload_shape(),
+            "forbidden_fields": REFERENCE_REVIEW_FORBIDDEN_FIELDS,
+            "allowed_enum_values": {
+                "selected_parse_pattern_by_reference_key": {
+                    str(package["reference_key"]): list(package.get("allowed_parse_patterns", []))
+                    for package in batch_packages
+                }
+            },
+            "minimal_valid_example": {
+                "reference_reviews": [
+                    {
+                        "reference_key": reference_keys[0] if reference_keys else "reference-0",
+                        "selected_parse_pattern": (
+                            str(batch_packages[0].get("recommended_parse_pattern", ""))
+                            if batch_packages
+                            else "exact allowed pattern"
+                        ),
+                        "authors": ["Smith"],
+                        "title": "Original Source Title",
+                        "publication_year": 2024,
+                        "review_notes": "Parsed from the batch source text.",
+                    }
+                ]
+            },
+            "merge_notes": "Default to delegating this runtime-precut batch when subagents are available. Subagent drafts only this batch. Main agent merges all batch drafts into one reference_reviews[] payload and submits once.",
+            "subagent_prompt": _reference_core_prompt(),
+        }
+
+    return agent_work.write_manifest(
+        db_path=db_path,
+        kind="reference_core",
+        batch_kind="reference_core_review",
+        package_key="reference_review_packages",
+        packages=packages,
+        package_key_field="reference_key",
+        batch_payload_builder=build_batch,
+        subagent_policy=_reference_core_subagent_policy(),
+        merge_contract=_reference_core_merge_contract(),
+        payload_submit_shape=_reference_core_payload_shape(),
+        batch_prefix="reference-core-batch",
+    )
+
+
+def _metadata_agent_work(
+    db_path: Path,
+    packages: list[dict[str, Any]],
+    instructions: dict[str, Any],
+) -> dict[str, Any]:
+    required_coverage = [str(package["reference_key"]) for package in packages]
+
+    def build_batch(batch_id: str, batch_packages: list[dict[str, Any]]) -> dict[str, Any]:
+        reference_keys = [str(package["reference_key"]) for package in batch_packages]
+        return {
+            "reference_keys": reference_keys,
+            "metadata_review_packages": batch_packages,
+            "allowed_metadata_fields": list(instructions["allowed_metadata_fields"]),
+            "locked_fields": list(instructions["locked_fields"]),
+            "required_return_shape": _metadata_payload_shape(),
+            "canonical_metadata_fields": list(CANONICAL_METADATA_FIELDS),
+            "forbidden_fields": METADATA_REVIEW_FORBIDDEN_FIELDS,
+            "allowed_enum_values": {"status": sorted(METADATA_REVIEW_STATUSES)},
+            "minimal_valid_example": {
+                "metadata_reviews": [
+                    {
+                        "reference_key": reference_keys[0] if reference_keys else "reference-0",
+                        "status": "no_metadata_found",
+                        "evidence_note": "No additional metadata is supported by metadata_context_text.",
+                    }
+                ]
+            },
+            "merge_notes": "Default to delegating this runtime-precut metadata batch when subagents are available. Subagent drafts only this batch. Main agent merges all metadata_reviews[] and submits once.",
+            "subagent_prompt": _metadata_prompt(),
+        }
+
+    return agent_work.write_manifest(
+        db_path=db_path,
+        kind="reference_metadata",
+        batch_kind="reference_metadata_enrichment",
+        package_key="metadata_review_packages",
+        packages=packages,
+        package_key_field="reference_key",
+        batch_payload_builder=build_batch,
+        subagent_policy=_metadata_subagent_policy(),
+        merge_contract=_metadata_merge_contract(required_coverage),
+        payload_submit_shape=_metadata_payload_shape(),
+        batch_prefix="reference-metadata-batch",
+    )
+
+
 def prepare_reference_workset(db_path: Path) -> tuple[dict[str, Any], int]:
     return call_algorithm_handler("_handle_prepare_references_workset", db_path)
 
@@ -215,56 +406,39 @@ def _read_workset_from_prepare_payload(payload: dict[str, Any]) -> dict[str, Any
 
 def enrich_reference_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     workset_path = str(payload.get("workset_path", ""))
-    review_path = str(payload.get("review_path", ""))
     if not payload.get("error"):
+        db_path = Path(str(payload.get("db_path", ""))).expanduser().resolve()
         workset = _read_workset_from_prepare_payload(payload)
         packages = _reference_packages(workset)
+        split_packages = _split_review_packages(workset)
+        core_agent_work = _reference_core_agent_work(db_path, packages)
+        split_review_packages_path = agent_work.write_package_file(
+            db_path,
+            "reference_core",
+            "split_review_packages.json",
+            {
+                "kind": "reference_split_review_packages",
+                "split_review_packages": split_packages,
+                "package_count": len(split_packages),
+                "instructions": "Use split_reviews[] only when requires_split_review is true. This file is not a subagent batch input.",
+            },
+        )
         payload.update(
             {
                 "runtime_backend": "analysis_runtime.references",
-                "allowed_payload_shape": {
-                    "reference_reviews": [
-                        {
-                            "reference_key": "reference-0",
-                            "selected_parse_pattern": "one value from allowed_parse_patterns",
-                            "authors": ["Author"],
-                            "title": "Original title",
-                            "publication_year": 2024,
-                            "review_notes": "optional",
-                        }
-                    ],
-                    "note": "Submit metadata_reviews only after runtime returns metadata_review_packages.",
-                },
-                "field_guidance": {
-                    "reference_key": "Stable work key from reference_review_packages; do not use ref_index.",
-                    "selected_parse_pattern": "Required parse hypothesis. Must be one of allowed_parse_patterns for the same reference_key.",
-                    "authors": "Array of author strings in source order.",
-                    "title": "Title in original language/script.",
-                    "publication_year": "Integer year or null if not supported by source text.",
-                    "metadata": "Do not submit metadata in reference_reviews. Runtime returns metadata_review_packages after core references are stored.",
-                },
-                "reference_review_packages": packages,
-                "allowed_parse_patterns_by_reference_key": {
-                    pkg["reference_key"]: pkg["allowed_parse_patterns"]
-                    for pkg in packages
-                },
-                "split_review_packages": _split_review_packages(workset),
-                "batch_work_packages": _batch_packages(workset, packages),
-                "subagent_policy": "Default to delegating reference core review by batch when batch_work_packages exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Metadata review happens in the next returned work packages. Subagents draft only; main agent is the single DB writer and payload submitter.",
-                "subagent_prompt_template": (
-                    "You are reviewing one reference batch for literature-analysis. "
-                    "Use only the provided reference_review_packages. Return JSON with reference_reviews[]; "
-                    "each review must include reference_key, selected_parse_pattern, authors, title, publication_year, and review_notes. "
-                    "Keep reference_key unchanged. Do not include metadata, raw, confidence, ref_index, selected_pattern, database fields, renderer fields, or entries outside this batch. "
-                    "Do not write DB, run runtime commands, submit payloads, or generate final artifacts."
-                ),
-                "merge_contract": {
-                    "single_writer": "main_agent",
-                    "required_payload_keys": ["reference_reviews"],
-                    "optional_payload_keys": ["split_reviews"],
-                    "forbidden_submit_keys": REFERENCE_FORBIDDEN_FIELDS,
-                    "merge_notes": "Subagents return core batch drafts only. Main agent is the single DB writer, keeps stable keys unchanged, combines arrays, resolves duplicate keys, and submits one core payload. Metadata is submitted in the next round.",
-                },
+                "allowed_payload_shape": _reference_core_payload_shape(),
+                "field_guidance": _reference_core_field_guidance(),
+                "reference_core_review_manifest_path": core_agent_work["manifest_path"],
+                "reference_core_batch_paths": core_agent_work["batch_paths"],
+                "reference_core_package_count": core_agent_work["package_count"],
+                "reference_core_batch_count": core_agent_work["batch_count"],
+                "reference_core_required_coverage_keys": core_agent_work["required_coverage_keys"],
+                "split_review_packages_path": split_review_packages_path,
+                "split_review_package_count": len(split_packages),
+                "batch_max_items": agent_work.BATCH_MAX_ITEMS,
+                "subagent_policy": _reference_core_subagent_policy(),
+                "subagent_prompt_template": _reference_core_prompt(),
+                "merge_contract": _reference_core_merge_contract(),
             }
         )
     return payload
@@ -483,51 +657,36 @@ def enrich_metadata_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     workset_path = str(payload.get("workset_path", ""))
     if payload.get("error") or not workset_path:
         return payload
+    db_path = Path(str(payload.get("db_path", ""))).expanduser().resolve()
     workset = json.loads(Path(workset_path).read_text(encoding="utf-8"))
     packages = _metadata_review_packages(workset)
     instructions = dict(workset.get("instructions", {}))
     instructions.setdefault("locked_fields", ["author", "title", "year", "raw", "confidence"])
     instructions.setdefault("allowed_metadata_fields", list(CANONICAL_METADATA_FIELDS))
+    metadata_agent_work = _metadata_agent_work(db_path, packages, instructions)
     payload.update(
         {
             "runtime_backend": "analysis_runtime.references",
             "next_action": "persist_references",
             "instructions": instructions,
-            "allowed_payload_shape": {
-                "metadata_reviews": [
-                    {
-                        "reference_key": "reference-0",
-                        "status": "enriched | confirmed_existing | no_metadata_found",
-                        "metadata": {},
-                        "evidence_note": "required evidence or reason",
-                    }
-                ]
-            },
+            "allowed_payload_shape": _metadata_payload_shape(),
             "field_guidance": {
-                "reference_key": "Stable key from metadata_review_packages; do not use ref_index.",
+                "reference_key": "Stable key from metadata batch files; do not use ref_index.",
                 "status": "Must be enriched, confirmed_existing, or no_metadata_found.",
                 "metadata": "Only allowed when status=enriched. Use canonical metadata fields; deterministic aliases are normalized with warnings.",
                 "locked_fields": instructions["locked_fields"],
                 "allowed_metadata_fields": instructions["allowed_metadata_fields"],
+                "batch_inputs": "Read metadata_batch_paths; stdout does not inline metadata_review_packages.",
             },
-            "metadata_review_packages": packages,
-            "batch_work_packages": _metadata_batch_packages(packages),
-            "subagent_policy": "Default to delegating metadata review by batch when batch_work_packages exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Subagents draft only; main agent is the single DB writer and submits one final metadata_reviews[] payload.",
-            "subagent_prompt_template": (
-                "You are enriching one literature-analysis metadata batch. "
-                "Return JSON with metadata_reviews[] only. Use reference_key as the key. "
-                "Status must be enriched, confirmed_existing, or no_metadata_found. "
-                f"Allowed metadata fields: {', '.join(CANONICAL_METADATA_FIELDS)}. "
-                "Do not modify locked reference fields, stable keys, selected_parse_pattern, raw text, confidence, or include ref_index. "
-                "Do not write DB, run runtime commands, submit payloads, or generate final artifacts."
-            ),
-            "merge_contract": {
-                "single_writer": "main_agent",
-                "required_payload_keys": ["metadata_reviews"],
-                "forbidden_submit_keys": ["reference_reviews", *REFERENCE_FORBIDDEN_FIELDS],
-                "required_coverage": [package["reference_key"] for package in packages],
-                "merge_notes": "Subagents return metadata batch drafts only. Main agent is the single DB writer and must submit exactly one metadata review per metadata_review_packages item.",
-            },
+            "metadata_review_manifest_path": metadata_agent_work["manifest_path"],
+            "metadata_batch_paths": metadata_agent_work["batch_paths"],
+            "metadata_package_count": metadata_agent_work["package_count"],
+            "metadata_batch_count": metadata_agent_work["batch_count"],
+            "metadata_required_coverage_keys": metadata_agent_work["required_coverage_keys"],
+            "batch_max_items": agent_work.BATCH_MAX_ITEMS,
+            "subagent_policy": _metadata_subagent_policy(),
+            "subagent_prompt_template": _metadata_prompt(),
+            "merge_contract": _metadata_merge_contract(metadata_agent_work["required_coverage_keys"]),
         }
     )
     return payload
@@ -620,7 +779,8 @@ def persist_reference_metadata_reviews(db_path: Path, payload: dict[str, Any]) -
                 "message": "reference metadata payload failed validation",
                 "details": errors,
             },
-            "metadata_review_packages": prepared.get("metadata_review_packages", []),
+            "metadata_review_manifest_path": prepared.get("metadata_review_manifest_path"),
+            "metadata_batch_paths": prepared.get("metadata_batch_paths", []),
             "instructions": prepared.get("instructions", {}),
             "warnings": normalization_warnings,
         }, 2
@@ -769,19 +929,36 @@ def persist_references(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str
     )
     _persist_runtime_warnings(db_path, all_warnings)
     if metadata_code != 0:
-        return {**result, "metadata_enrichment": metadata_workset, "warnings": all_warnings, "error": metadata_workset.get("error")}, metadata_code
+        return {
+            **result,
+            "metadata_enrichment": {
+                "workset_path": metadata_workset.get("workset_path", ""),
+                "item_count": metadata_workset.get("item_count", 0),
+                "batch_count": metadata_workset.get("batch_count", 0),
+            },
+            "warnings": all_warnings,
+            "error": metadata_workset.get("error"),
+        }, metadata_code
     return (
         {
             **result,
-            "metadata_enrichment": metadata_workset,
-            "metadata_review_packages": metadata_workset.get("metadata_review_packages", []),
+            "metadata_enrichment": {
+                "workset_path": metadata_workset.get("workset_path", ""),
+                "item_count": metadata_workset.get("item_count", 0),
+                "batch_count": metadata_workset.get("batch_count", 0),
+            },
+            "metadata_review_manifest_path": metadata_workset.get("metadata_review_manifest_path"),
+            "metadata_batch_paths": metadata_workset.get("metadata_batch_paths", []),
+            "metadata_package_count": metadata_workset.get("metadata_package_count", 0),
+            "metadata_batch_count": metadata_workset.get("metadata_batch_count", 0),
+            "metadata_required_coverage_keys": metadata_workset.get("metadata_required_coverage_keys", []),
             "instructions": metadata_workset.get("instructions", {}),
             "allowed_payload_shape": metadata_workset.get("allowed_payload_shape"),
             "field_guidance": metadata_workset.get("field_guidance"),
-            "batch_work_packages": metadata_workset.get("batch_work_packages", []),
             "subagent_policy": metadata_workset.get("subagent_policy"),
             "subagent_prompt_template": metadata_workset.get("subagent_prompt_template"),
             "merge_contract": metadata_workset.get("merge_contract"),
+            "batch_max_items": metadata_workset.get("batch_max_items", agent_work.BATCH_MAX_ITEMS),
             "warnings": all_warnings,
             "db_path": str(db_path),
             "runtime_backend": "analysis_runtime.references",

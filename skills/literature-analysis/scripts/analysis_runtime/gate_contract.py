@@ -46,7 +46,7 @@ def _execution_note(next_action: str) -> str:
         "init_runtime": "Initialize runtime paths, templates, DB state, source hash, and normalized source.",
         "persist_analysis_plan": "Persist outline_nodes, references_scope, citation_scope, and literature_matching_metadata in one structured payload.",
         "persist_digest": "Persist structured digest_slots, section_summaries, and optional representative_image only.",
-        "persist_references": "Prepare references, submit core reference_reviews first, then submit metadata_reviews from returned metadata_review_packages; keep one main-agent writer.",
+        "persist_references": "Prepare references, delegate using returned reference/metadata batch paths, submit core reference_reviews first, then submit metadata_reviews; keep one main-agent writer.",
         "persist_citation_analysis": "Prepare or persist citation semantics, timeline, summary, and basis from DB-backed citation workset items.",
         "finalize_outputs": "Render public artifacts from DB state and runtime templates; do not submit business payload.",
     }
@@ -111,23 +111,23 @@ def _allowed_payload_shape(next_action: str) -> dict[str, Any] | None:
 def _field_guidance(next_action: str) -> dict[str, str] | None:
     if next_action == "persist_references":
         return {
-            "reference_key": "Stable key from reference_review_packages.",
-            "selected_parse_pattern": "Required parse hypothesis; use only allowed_parse_patterns from prepare output.",
+            "reference_key": "Stable key from reference_core_batch_paths files.",
+            "selected_parse_pattern": "Required parse hypothesis; use only allowed_parse_patterns from the assigned reference core batch file.",
             "core_submit": "Submit reference_reviews[] first. Do not include metadata in reference_reviews.",
-            "metadata_submit": "After core submit returns metadata_review_packages, submit metadata_reviews[] covering every package.",
+            "metadata_submit": "After core submit returns metadata_batch_paths, submit metadata_reviews[] covering every package in those batch files.",
             "metadata_status": "metadata_reviews[].status must be enriched, confirmed_existing, or no_metadata_found.",
             "canonical_metadata_fields": ", ".join(CANONICAL_METADATA_FIELDS),
             "forbidden_fields": "Do not submit items, selected_pattern, ref_index, raw, confidence, metadata_enrichment_items, or reference_reviews[].metadata.",
-            "subagents": "Default to subagent delegation when batch_work_packages exist and subagents are available. Subagents draft only; main agent is the single DB writer, keeps stable keys unchanged, merges one payload per submit round, and records a reason if delegation is skipped.",
+            "subagents": "Default to subagent delegation when reference_core_batch_paths or metadata_batch_paths exist and subagents are available. Runtime owns batch splitting; pass each batch JSON file path directly to a subagent. Subagents draft only; main agent is the single DB writer, keeps stable keys unchanged, merges one payload per submit round, and records a reason if delegation is skipped.",
         }
     if next_action == "persist_citation_analysis":
         return {
-            "citation_work_key": "Stable key from citation_work_packages.",
+            "citation_work_key": "Stable key from citation_batch_paths files.",
             "source_reference_number": "Original reference number for orientation only.",
             "role_in_context": "Natural language role; runtime maps it to internal renderer categories.",
             "timeline_summaries": "Narrative summaries only; runtime derives bucket membership from dated references. Undated references may warn but do not require manual bucket membership.",
             "forbidden_fields": "Do not submit items, timeline, basis, ref_index, function, mentions, or timeline ref indexes.",
-            "subagents": "Default to subagent delegation when citation batch_work_packages exist and subagents are available. Subagents draft only; main agent is the single DB writer, keeps citation_work_key unchanged, merges reviews, and writes global timeline_summaries/summary.",
+            "subagents": "Default to subagent delegation when citation_batch_paths exist and subagents are available. Runtime owns batch splitting; pass each batch JSON file path directly to a subagent. Subagents draft only; main agent is the single DB writer, keeps citation_work_key unchanged, merges reviews, and writes global timeline_summaries/summary.",
         }
     return None
 

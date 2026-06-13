@@ -5,11 +5,60 @@ from pathlib import Path
 from typing import Any
 
 from .algorithm_adapter import call_algorithm_handler
+from . import agent_work
 from . import runtime_db
 
 
 CITATION_FORBIDDEN_FIELDS = ["items", "timeline", "basis", "ref_index", "function"]
 CITATION_REVIEW_FORBIDDEN_FIELDS = ["ref_index", "function", "is_key_reference", "mentions"]
+
+
+def _citation_payload_shape() -> dict[str, Any]:
+    return {
+        "citation_semantic_reviews": [
+            {
+                "citation_work_key": "citation-work-0",
+                "topic": "semantic topic",
+                "usage": "how the source uses this citation",
+                "role_in_context": "natural language role",
+                "keywords": ["keyword"],
+                "summary": "citation role summary",
+                "key_reference_reason": "optional",
+            }
+        ],
+        "timeline_summaries": {
+            "early": "early trajectory",
+            "middle": "middle trajectory",
+            "recent": "recent trajectory",
+        },
+        "summary": "global citation analysis summary",
+    }
+
+
+def _citation_subagent_policy() -> str:
+    return "Default to delegating citation semantic review by batch when citation_batch_paths exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Subagents draft only; main agent is the single DB writer and submits one final payload."
+
+
+def _citation_prompt() -> str:
+    return (
+        "Read the provided citation semantic batch JSON file. Return JSON with citation_semantic_reviews[] only. "
+        "Use only the citation_work_packages in that file. "
+        "Each review must include citation_work_key, topic, usage, role_in_context, keywords, summary, and optional key_reference_reason. "
+        "Do not include ref_index, function, mentions, is_key_reference, timeline buckets, or timeline ref indexes. "
+        "Subagents do not write timeline_summaries or the global summary. "
+        "If file writing is available, write the draft to suggested_draft_output_path and return that path. "
+        "Do not write DB, run runtime commands, submit payloads, modify citation_work_key, or generate final artifacts."
+    )
+
+
+def _citation_merge_contract() -> dict[str, Any]:
+    return {
+        "single_writer": "main_agent",
+        "required_payload_keys": ["citation_semantic_reviews", "timeline_summaries", "summary"],
+        "forbidden_submit_keys": CITATION_FORBIDDEN_FIELDS,
+        "forbidden_review_keys": CITATION_REVIEW_FORBIDDEN_FIELDS,
+        "merge_notes": "Subagents return batch drafts only. Main agent is the single DB writer, keeps citation_work_key unchanged, combines reviews, and writes timeline_summaries as natural-language summaries only.",
+    }
 
 
 def _citation_work_key(ref_index: int) -> str:
@@ -103,6 +152,62 @@ def _citation_batch_packages(packages: list[dict[str, Any]]) -> list[dict[str, A
             }
         )
     return batches
+
+
+def _citation_agent_work(db_path: Path, packages: list[dict[str, Any]]) -> dict[str, Any]:
+    def build_batch(batch_id: str, batch_packages: list[dict[str, Any]]) -> dict[str, Any]:
+        keys = [str(package["citation_work_key"]) for package in batch_packages]
+        return {
+            "citation_work_keys": keys,
+            "citation_work_packages": batch_packages,
+            "required_return_shape": {
+                "citation_semantic_reviews": [
+                    {
+                        "citation_work_key": "copy from this batch",
+                        "topic": "semantic topic in the source paper",
+                        "usage": "how the source uses this cited work",
+                        "role_in_context": "natural-language role, not an enum",
+                        "keywords": ["keyword"],
+                        "summary": "citation-specific semantic summary",
+                        "key_reference_reason": "optional evidence-backed reason",
+                    }
+                ]
+            },
+            "forbidden_fields": CITATION_REVIEW_FORBIDDEN_FIELDS,
+            "allowed_enum_values": {
+                "citation_work_key": keys,
+                "role_in_context": "Free-form natural language; runtime derives renderer function categories.",
+            },
+            "minimal_valid_example": {
+                "citation_semantic_reviews": [
+                    {
+                        "citation_work_key": keys[0] if keys else "citation-work-0",
+                        "topic": "object detection benchmarks",
+                        "usage": "Used as background for benchmark comparison.",
+                        "role_in_context": "background context for evaluation setup",
+                        "keywords": ["benchmark"],
+                        "summary": "The citation supplies benchmark context for the source discussion.",
+                        "key_reference_reason": "",
+                    }
+                ]
+            },
+            "merge_notes": "Default to delegating this runtime-precut citation batch when subagents are available. Subagent drafts only this batch. Main agent merges citation_semantic_reviews[], then adds global timeline_summaries and summary once.",
+            "subagent_prompt": _citation_prompt(),
+        }
+
+    return agent_work.write_manifest(
+        db_path=db_path,
+        kind="citation_semantic",
+        batch_kind="citation_semantic_review",
+        package_key="citation_work_packages",
+        packages=packages,
+        package_key_field="citation_work_key",
+        batch_payload_builder=build_batch,
+        subagent_policy=_citation_subagent_policy(),
+        merge_contract=_citation_merge_contract(),
+        payload_submit_shape=_citation_payload_shape(),
+        batch_prefix="citation-semantic-batch",
+    )
 
 
 def _function_from_role(role: object) -> str:
@@ -257,57 +362,32 @@ def prepare_citation_workset(db_path: Path) -> tuple[dict[str, Any], int]:
 
 def enrich_citation_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     workset_path = str(payload.get("workset_path", ""))
-    review_path = str(payload.get("review_path", ""))
     if not payload.get("error"):
+        db_path = Path(str(payload.get("db_path", ""))).expanduser().resolve()
         workset = json.loads(Path(workset_path).read_text(encoding="utf-8")) if workset_path else {}
         packages = _citation_packages(list(workset.get("workset_items", [])))
+        citation_agent_work = _citation_agent_work(db_path, packages)
         payload.update(
             {
                 "runtime_backend": "analysis_runtime.citations",
-                "allowed_payload_shape": {
-                    "citation_semantic_reviews": [
-                        {
-                            "citation_work_key": "citation-work-0",
-                            "topic": "semantic topic",
-                            "usage": "how the source uses this citation",
-                            "role_in_context": "natural language role",
-                            "keywords": ["keyword"],
-                            "summary": "citation role summary",
-                            "key_reference_reason": "optional",
-                        }
-                    ],
-                    "timeline_summaries": {
-                        "early": "early trajectory",
-                        "middle": "middle trajectory",
-                        "recent": "recent trajectory",
-                    },
-                    "summary": "global citation analysis summary",
-                },
+                "allowed_payload_shape": _citation_payload_shape(),
                 "field_guidance": {
-                    "citation_work_key": "Stable key from citation_work_packages; do not submit ref_index.",
+                    "citation_work_key": "Stable key from citation semantic batch files; do not submit ref_index.",
                     "source_reference_number": "Original numeric citation number shown for human orientation.",
                     "role_in_context": "Natural language role; runtime maps it to internal renderer categories.",
                     "timeline_summaries": "Narrative summaries only; runtime derives bucket membership from years.",
                     "undated_items": "References with null publication_year are valid but cannot enter runtime-derived timeline buckets.",
+                    "batch_inputs": "Read citation_batch_paths; stdout does not inline citation_work_packages.",
                 },
-                "citation_work_packages": packages,
-                "batch_work_packages": _citation_batch_packages(packages),
-                "subagent_policy": "Default to delegating citation semantic review by batch when batch_work_packages exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Subagents draft only; main agent is the single DB writer and submits one final payload.",
-                "subagent_prompt_template": (
-                    "You are reviewing one citation batch for literature-analysis. "
-                    "Use only the provided citation_work_packages. Return JSON with citation_semantic_reviews[]; "
-                    "each review must include citation_work_key, topic, usage, role_in_context, keywords, summary, and optional key_reference_reason. "
-                    "Do not include ref_index, function, mentions, is_key_reference, timeline buckets, or timeline ref indexes. "
-                    "Subagents do not write timeline_summaries or the global summary. "
-                    "Do not write DB, run runtime commands, submit payloads, modify citation_work_key, or generate final artifacts."
-                ),
-                "merge_contract": {
-                    "single_writer": "main_agent",
-                    "required_payload_keys": ["citation_semantic_reviews", "timeline_summaries", "summary"],
-                    "forbidden_submit_keys": CITATION_FORBIDDEN_FIELDS,
-                    "forbidden_review_keys": CITATION_REVIEW_FORBIDDEN_FIELDS,
-                    "merge_notes": "Subagents return batch drafts only. Main agent is the single DB writer, keeps citation_work_key unchanged, combines reviews, and writes timeline_summaries as natural-language summaries only.",
-                },
+                "citation_semantic_review_manifest_path": citation_agent_work["manifest_path"],
+                "citation_batch_paths": citation_agent_work["batch_paths"],
+                "citation_package_count": citation_agent_work["package_count"],
+                "citation_batch_count": citation_agent_work["batch_count"],
+                "citation_required_coverage_keys": citation_agent_work["required_coverage_keys"],
+                "batch_max_items": agent_work.BATCH_MAX_ITEMS,
+                "subagent_policy": _citation_subagent_policy(),
+                "subagent_prompt_template": _citation_prompt(),
+                "merge_contract": _citation_merge_contract(),
             }
         )
     return payload

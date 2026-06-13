@@ -17,10 +17,14 @@ Prepare 只读取：
 - persisted `reference_items`
 - citation mention deterministic preprocess result
 
-Prepare 输出：
+Prepare stdout 只输出摘要、路径和小型契约；大型 citation work packages 写入 `.literature_analysis_tmp/agent_work/citation_semantic/` 下的 manifest / batch JSON 文件。Prepare 输出：
 
-- `citation_work_packages`
-- `batch_work_packages`
+- `citation_semantic_review_manifest_path`
+- `citation_batch_paths`
+- `citation_package_count`
+- `citation_batch_count`
+- `citation_required_coverage_keys`
+- `batch_max_items`
 - `allowed_payload_shape`
 - `field_guidance`
 - `subagent_prompt_template`
@@ -62,7 +66,7 @@ Submit payload:
 
 ## Field Guidance
 
-- `citation_work_key`: stable key from `citation_work_packages`.
+- `citation_work_key`: stable key from the assigned `citation_batch_paths` file.
 - `topic`: what the cited work represents in the selected citation scope.
 - `usage`: why the source cites it and what argumentative job it performs.
 - `role_in_context`: natural-language role. Runtime maps it into renderer categories.
@@ -94,14 +98,16 @@ Do not use a temporary script, keyword classifier, or bulk rule to infer citatio
 
 Use subagents by default when available for batchable work.
 
-When `batch_work_packages` are present and the environment supports subagents, the main agent must delegate citation semantic review by batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes.
+When `citation_batch_paths` are present and the environment supports subagents, the main agent must delegate citation semantic review by runtime-precut batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes.
 
-Use the following prompt at the Citation Semantic Review Delegation Point: after `persist_citation_analysis` prepare returns `citation_work_packages` and `batch_work_packages`, and before constructing the final `citation_semantic_reviews[]` payload.
+Use the following prompt at the Citation Semantic Review Delegation Point: after `persist_citation_analysis` prepare returns `citation_semantic_review_manifest_path` and `citation_batch_paths`, and before constructing the final `citation_semantic_reviews[]` payload.
+
+Runtime owns batch splitting. Do not manually split the full citation workset or review sidecar into subagent inputs. Each citation batch JSON file contains at most 10 items, the `citation_work_packages` subset, prompt, return shape, forbidden fields, merge notes, and `suggested_draft_output_path`.
 
 Main agent:
 
-1. Runs prepare and reads `citation_work_packages`, `batch_work_packages`, `field_guidance`, and unresolved/filtered mention summaries.
-2. Sends each batch to a subagent by default when subagents are available.
+1. Runs prepare and reads `citation_semantic_review_manifest_path`, `citation_batch_paths`, `field_guidance`, and unresolved/filtered mention summaries.
+2. Sends each citation batch JSON file path to a subagent by default when subagents are available.
 3. Merges returned `citation_semantic_reviews`.
 4. Checks every `citation_work_key` appears exactly once.
 5. Writes `timeline_summaries` and global `summary`.
@@ -111,10 +117,12 @@ Subagent prompt template:
 
 ```text
 You are reviewing one literature-analysis citation semantic batch.
-Use only the provided citation_work_packages.
+Read the batch JSON file path provided by the main agent.
+Use only citation_work_packages in that batch file.
 Return JSON with citation_semantic_reviews[] only.
 Each review must include citation_work_key, topic, usage, role_in_context, keywords, summary, and optional key_reference_reason.
 Do not include internal indexes, mention arrays, renderer categories, timeline buckets, timeline_summaries, global summary, or report markdown.
+If file writing is available, write the draft to suggested_draft_output_path and return that path.
 Do not write DB, run runtime commands, submit payloads, modify citation_work_key, or generate final artifacts.
 ```
 
