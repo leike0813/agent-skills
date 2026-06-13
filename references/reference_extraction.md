@@ -129,23 +129,42 @@ Alias normalization produces `reference_metadata_alias_normalized` warnings so t
 
 Unknown metadata fields do not block persistence by themselves, but they produce `reference_metadata_field_unrecognized` warnings and should be corrected by the main agent during merge.
 
-## Subagent Workflow
+## LLM And Script Responsibilities
+
+Script/runtime owns:
+
+- Reference scope reading from DB, deterministic preprocess, split suspicion detection, candidate generation, allowed parse pattern lists, quality metrics, metadata workset generation, validation, DB persistence, and final `references.json` rendering.
+- JSON parsing, stable key coverage checks, duplicate checks, metadata alias normalization, and warning/audit sidecars.
+
+LLM/subagent owns:
+
+- Split review boundary judgment and source-preserving `corrected_reference_texts`.
+- Core reference review: selecting `selected_parse_pattern`, refining authors/title/year, and writing `review_notes`.
+- Metadata enrichment: deciding `status`, evidence-backed canonical metadata fields, and `evidence_note`.
+
+Do not use a temporary script, regex batch processor, or bulk transformation to infer authors, titles, years, parse pattern choices, split boundaries, or metadata. Scripts may only inspect runtime packages, count key coverage, merge already-returned subagent drafts, normalize JSON syntax, or call `run_analysis.py`.
+
+## Mandatory Subagent Delegation Points
 
 Use subagents by default when available for batchable work.
 
 When `batch_work_packages` are present and the environment supports subagents, the main agent must delegate core reference review and metadata enrichment by batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes or `review_notes`.
 
-Subagent prompt template sections below are split by submit round: core reference review first, metadata enrichment second.
+Use the prompt sections below at the exact task points named here.
+
+Subagent prompt template sections are task-specific. Use the core prompt only at the Reference Core Review Delegation Point, and use the metadata prompt only at the Metadata Enrichment Delegation Point.
+
+### Reference Core Review Delegation Point
+
+When `persist_references` prepare returns `reference_review_packages`, `allowed_parse_patterns_by_reference_key`, and core `batch_work_packages`, delegate each core batch with the following prompt. Do this before constructing the final `reference_reviews[]` payload.
 
 Main agent:
 
 1. Runs prepare and reads `reference_review_packages`, `batch_work_packages`, `allowed_parse_patterns_by_reference_key`, and `field_guidance`.
-2. Sends each batch to a subagent with the package subset by default when subagents are available.
+2. Sends each core batch to a subagent with the package subset by default when subagents are available.
 3. Merges returned drafts.
 4. Checks every `reference_key` appears exactly once.
 5. Submits one core `reference_reviews[]` payload.
-6. Reads returned `metadata_review_packages`, `instructions.allowed_metadata_fields`, `instructions.locked_fields`, and metadata `batch_work_packages`.
-7. Delegates metadata batches, merges drafts, and submits one `metadata_reviews[]` payload.
 
 Core review subagent prompt template:
 
@@ -177,6 +196,19 @@ Subagent batch draft shape:
   "uncertainties": []
 }
 ```
+
+### Metadata Enrichment Delegation Point
+
+When core `reference_reviews[]` submit succeeds and runtime returns `metadata_review_packages`, `instructions.allowed_metadata_fields`, `instructions.locked_fields`, and metadata `batch_work_packages`, delegate each metadata batch with the following prompt. Do this before constructing the final `metadata_reviews[]` payload.
+
+Main agent:
+
+1. Reads returned metadata work packages and instruction-level allowed/locked fields.
+2. Sends each metadata batch to a subagent by default when subagents are available.
+3. Merges returned drafts.
+4. Checks every metadata `reference_key` appears exactly once.
+5. Corrects obvious alias fields to canonical names when merging.
+6. Submits one `metadata_reviews[]` payload.
 
 Metadata enrichment subagent prompt template:
 

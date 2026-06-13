@@ -2,6 +2,21 @@
 
 本文件补充 `persist_digest`。本阶段只提交结构化 digest payload；最终 Markdown 标题、顺序与排版由 renderer/template 从 DB 渲染。
 
+## LLM And Script Responsibilities
+
+Script/runtime owns:
+
+- Payload shape validation, fixed-slot enforcement, representative image field validation, DB persistence, and final Markdown rendering.
+- Template headings, section order, JSON/stdout validation, and renderer-owned artifact creation.
+
+LLM/agent owns:
+
+- Writing `digest_slots`, `section_summaries`, and `representative_image.selection_reason` from the normalized source.
+- Judging whether a figure is representative based on textual evidence.
+- Preserving uncertainty honestly when source evidence is thin.
+
+Do not use a temporary script to summarize sections, choose contributions, invent key results, select the representative image, or generate final Markdown. Scripts may only serialize the already-reviewed digest payload or call `run_analysis.py`.
+
 ## Output Structure
 
 The agent writes structured payload only. Final Markdown headings and layout are rendered from templates.

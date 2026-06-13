@@ -76,11 +76,27 @@ Do not submit mention arrays, renderer categories, internal indexes, bucket memb
 
 Web/resource references may have no authors or publication year. That is valid input for citation review. Runtime may emit `missing_authors`, `missing_year`, or `citation_timeline_missing_year` warnings; undated items are excluded from automatic timeline buckets and do not require manual bucket membership.
 
-## Subagent Workflow
+## LLM And Script Responsibilities
+
+Script/runtime owns:
+
+- Citation mention extraction, false-positive filtering, mention-to-reference mapping, citation workset generation, renderer function/category derivation, timeline bucket membership, validation, DB persistence, and final JSON/Markdown rendering.
+- JSON parsing, stable `citation_work_key` coverage checks, duplicate checks, warnings, and report rendering.
+
+LLM/subagent owns:
+
+- Citation semantic review for each `citation_work_key`: `topic`, `usage`, `role_in_context`, `keywords`, item `summary`, and optional `key_reference_reason`.
+- Main agent owns `timeline_summaries` and global `summary` after merging batch drafts.
+
+Do not use a temporary script, keyword classifier, or bulk rule to infer citation topics, usage, roles, key-reference reasons, timeline narratives, or global summary. Scripts may only inspect work packages, count key coverage, merge already-returned subagent drafts, serialize JSON, or call `run_analysis.py`.
+
+## Mandatory Subagent Delegation Point
 
 Use subagents by default when available for batchable work.
 
 When `batch_work_packages` are present and the environment supports subagents, the main agent must delegate citation semantic review by batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes.
+
+Use the following prompt at the Citation Semantic Review Delegation Point: after `persist_citation_analysis` prepare returns `citation_work_packages` and `batch_work_packages`, and before constructing the final `citation_semantic_reviews[]` payload.
 
 Main agent:
 
