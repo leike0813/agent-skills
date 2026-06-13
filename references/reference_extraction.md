@@ -10,12 +10,16 @@ Prepare:
 python scripts/run_analysis.py persist_references --db-path "<db_path>"
 ```
 
-Prepare 只读取 DB 中的 `source_documents.normalized_source` 和 `section_scopes.references_scope`，输出 agent 可读 work packages：
+Prepare 只读取 DB 中的 `source_documents.normalized_source` 和 `section_scopes.references_scope`。stdout 只输出摘要、路径和小型契约；大型 work packages 写入 `.literature_analysis_tmp/agent_work/` 下的 manifest / batch JSON 文件：
 
-- `reference_review_packages`
-- `allowed_parse_patterns_by_reference_key`
-- `split_review_packages`
-- `batch_work_packages`
+- `reference_core_review_manifest_path`
+- `reference_core_batch_paths`
+- `reference_core_package_count`
+- `reference_core_batch_count`
+- `reference_core_required_coverage_keys`
+- `split_review_packages_path`
+- `split_review_package_count`
+- `batch_max_items`
 - `allowed_payload_shape`
 - `field_guidance`
 - `subagent_prompt_template`
@@ -47,7 +51,7 @@ Core submit payload:
 }
 ```
 
-Metadata submit payload, after runtime returns `metadata_review_packages`:
+Metadata submit payload, after runtime returns `metadata_review_manifest_path` and `metadata_batch_paths`:
 
 ```json
 {
@@ -86,12 +90,12 @@ Split repair payload, before core submit when `split_review_packages` require bo
 }
 ```
 
-`reference_reviews` and `metadata_reviews` are separate submit rounds. Do not submit them together. `reference_reviews[].metadata` is forbidden because metadata enrichment must use the runtime-generated `metadata_review_packages`. In plain terms: reference_reviews[].metadata is forbidden. `split_reviews` is used first when boundary repair is required; if it changes boundaries, runtime regenerates reference review packages and the agent must submit `reference_reviews` with the regenerated keys afterward.
+`reference_reviews` and `metadata_reviews` are separate submit rounds. Do not submit them together. `reference_reviews[].metadata` is forbidden because metadata enrichment must use the runtime-generated metadata batch files. In plain terms: reference_reviews[].metadata is forbidden. `split_reviews` is used first when boundary repair is required; if it changes boundaries, runtime regenerates reference core batch files and the agent must submit `reference_reviews` with the regenerated keys afterward.
 
 ## Field Guidance
 
-- `reference_key`: stable work key from `reference_review_packages`.
-- `selected_parse_pattern`: required parse hypothesis. It must be one of `allowed_parse_patterns_by_reference_key[reference_key]`.
+- `reference_key`: stable work key from the assigned `reference_core_batch_paths` file.
+- `selected_parse_pattern`: required parse hypothesis. It must be one of the assigned batch file's `allowed_parse_patterns_by_reference_key[reference_key]`.
 - `authors`: author strings in source order. Preserve initials and compound surnames.
 - `title`: cited work title in the original language/script.
 - `publication_year`: publication year as integer, or `null` when unsupported.
@@ -101,7 +105,7 @@ Do not submit metadata, raw source text, confidence values, renderer labels, par
 
 Metadata review fields:
 
-- `reference_key`: stable key from `metadata_review_packages`.
+- `reference_key`: stable key from the assigned `metadata_batch_paths` file.
 - `status`: one of `enriched`, `confirmed_existing`, `no_metadata_found`.
 - `metadata`: required only for `status=enriched`; omit or leave empty for `confirmed_existing` and `no_metadata_found`.
 - `evidence_note`: short note tying metadata to `metadata_context_text`, source text, or a verifiable bibliographic source.
@@ -148,20 +152,22 @@ Do not use a temporary script, regex batch processor, or bulk transformation to 
 
 Use subagents by default when available for batchable work.
 
-When `batch_work_packages` are present and the environment supports subagents, the main agent must delegate core reference review and metadata enrichment by batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes or `review_notes`.
+When `reference_core_batch_paths` or `metadata_batch_paths` are present and the environment supports subagents, the main agent must delegate core reference review and metadata enrichment by runtime-precut batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes or `review_notes`.
 
 Use the prompt sections below at the exact task points named here.
 
 Subagent prompt template sections are task-specific. Use the core prompt only at the Reference Core Review Delegation Point, and use the metadata prompt only at the Metadata Enrichment Delegation Point.
 
+Runtime owns batch splitting. Do not manually split a full workset or review sidecar into subagent inputs. Each batch JSON file contains at most 10 entries, the package subset, allowed enum subset, prompt, merge notes, and `suggested_draft_output_path`.
+
 ### Reference Core Review Delegation Point
 
-When `persist_references` prepare returns `reference_review_packages`, `allowed_parse_patterns_by_reference_key`, and core `batch_work_packages`, delegate each core batch with the following prompt. Do this before constructing the final `reference_reviews[]` payload.
+When `persist_references` prepare returns `reference_core_review_manifest_path` and `reference_core_batch_paths`, delegate each core batch by passing the batch JSON file path to a subagent. Do this before constructing the final `reference_reviews[]` payload.
 
 Main agent:
 
-1. Runs prepare and reads `reference_review_packages`, `batch_work_packages`, `allowed_parse_patterns_by_reference_key`, and `field_guidance`.
-2. Sends each core batch to a subagent with the package subset by default when subagents are available.
+1. Runs prepare and reads `reference_core_review_manifest_path`, `reference_core_batch_paths`, counts, `field_guidance`, and `merge_contract`.
+2. Sends each core batch JSON file path to a subagent by default when subagents are available.
 3. Merges returned drafts.
 4. Checks every `reference_key` appears exactly once.
 5. Submits one core `reference_reviews[]` payload.
@@ -170,11 +176,13 @@ Core review subagent prompt template:
 
 ```text
 You are reviewing one literature-analysis reference batch.
-Use only the provided reference_review_packages and allowed_parse_patterns_by_reference_key.
+Read the batch JSON file path provided by the main agent.
+Use only reference_review_packages and allowed_parse_patterns_by_reference_key in that batch file.
 Return JSON with reference_reviews[] only.
 For each package, choose selected_parse_pattern from the allowed list, then provide authors, title, publication_year, and review_notes.
 Do not include metadata. Metadata enrichment happens in the next metadata_review_packages round.
 Do not include raw text, confidence, database IDs, renderer fields, or entries outside this batch.
+If file writing is available, write the draft to suggested_draft_output_path and return that path.
 Do not write DB, run runtime commands, submit payloads, modify stable keys, or generate final artifacts.
 ```
 
@@ -199,12 +207,12 @@ Subagent batch draft shape:
 
 ### Metadata Enrichment Delegation Point
 
-When core `reference_reviews[]` submit succeeds and runtime returns `metadata_review_packages`, `instructions.allowed_metadata_fields`, `instructions.locked_fields`, and metadata `batch_work_packages`, delegate each metadata batch with the following prompt. Do this before constructing the final `metadata_reviews[]` payload.
+When core `reference_reviews[]` submit succeeds and runtime returns `metadata_review_manifest_path` and `metadata_batch_paths`, delegate each metadata batch by passing the batch JSON file path to a subagent. Do this before constructing the final `metadata_reviews[]` payload.
 
 Main agent:
 
-1. Reads returned metadata work packages and instruction-level allowed/locked fields.
-2. Sends each metadata batch to a subagent by default when subagents are available.
+1. Reads returned metadata manifest, batch paths, and instruction-level allowed/locked fields.
+2. Sends each metadata batch JSON file path to a subagent by default when subagents are available.
 3. Merges returned drafts.
 4. Checks every metadata `reference_key` appears exactly once.
 5. Corrects obvious alias fields to canonical names when merging.
@@ -214,6 +222,7 @@ Metadata enrichment subagent prompt template:
 
 ```text
 You are enriching one literature-analysis metadata batch.
+Read the batch JSON file path provided by the main agent.
 Return JSON with metadata_reviews[] only.
 Use reference_key as the key.
 For each item, set status to enriched, confirmed_existing, or no_metadata_found.
@@ -221,6 +230,7 @@ Only add metadata when status is enriched, and only when it appears in source_te
 Use canonical metadata fields only: publicationTitle, conferenceName, archiveID, university, volume, issue, pages, numPages, DOI, url, publisher, place, ISBN, ISSN, itemType, date.
 Do not modify authors, title, publication_year, selected_parse_pattern, raw text, confidence, ref_index, or other locked/internal fields.
 Do not write DB or final artifacts. Return only the batch draft.
+If file writing is available, write the draft to suggested_draft_output_path and return that path.
 Do not run runtime commands, submit payloads, or modify stable keys.
 ```
 
@@ -258,8 +268,8 @@ Metadata prepare output uses instruction-level guidance:
 
 - `instructions.allowed_metadata_fields`: canonical metadata fields allowed in `metadata_reviews[].metadata`.
 - `instructions.locked_fields`: core fields that metadata review must not change.
-- `metadata_review_packages`: item-specific work packages.
-- `batch_work_packages`: subagent-sized metadata packages.
+- `metadata_review_manifest_path`: manifest containing coverage keys and batch paths.
+- `metadata_batch_paths`: runtime-precut subagent input files, each with at most 10 metadata packages.
 - `subagent_prompt_template`: ready-to-use metadata prompt.
 - `merge_contract`: required coverage and forbidden fields.
 
