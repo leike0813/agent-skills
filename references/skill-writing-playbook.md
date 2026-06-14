@@ -215,6 +215,25 @@ description: Capability summary. Use when ...
 
 如果多个验收场景都让 agent 重复临时写同类脚本，应把该动作列为正式 script candidate。
 
+## Subagent Delegation Writing
+
+只有当任务存在可并行、相互独立的语义业务单元时，才在目标 `SKILL.md` 中写 subagent 委派说明。
+
+写法要求：
+
+- 必须写成“如果当前环境可以委派 subagent，...”。
+- 必须说明 subagent 不可用时的串行处理或外部执行路径。
+- 必须给出建议委派 prompt，而不是只说“交给 subagent 处理”。
+- prompt 只传必要上下文、payload 路径、允许读取的输入、输出路径和结果 shape。
+- 不要把主 agent 的完整推理、未定结论、用户隐私或无关材料交给 subagent。
+- 如果 subagent 可能没有写文件权限，prompt 必须允许 stdout 返回同等结构结果。
+
+批次拆分要按业务特点决定：
+
+- 简单、均匀、低风险业务可以由主 agent 自行切分。
+- 复杂、不均匀、数量大或需要复现的业务，优先设计脚本生成 batch payload。
+- 暂不写脚本但仍需主 agent 切分时，必须写清目标批次大小、均衡标准、排序/分组依据和依赖边界。
+
 ## Writing Rules
 
 - 写给未来执行任务的 agent，不是写给人类读者做介绍。
@@ -228,6 +247,7 @@ description: Capability summary. Use when ...
 - 如果 payload 有枚举值，显式列出；不要让 agent 自行猜。
 - payload 应尽量扁平化，字段名称应具有语义自明性，避免容易导致误解的字段名。
 - 长程任务的阶段划分应以 agent 的决策点为依据，不需要 agent 决策的流程不应切分、不应中断，不应让 agent 仅成为驱动脚本执行的工具。
+- subagent 委派是可选横向模式，不是所有 skill 的默认步骤；需要时必须写清可用性前提、payload 文件、结果返回和主 agent 汇总责任。
 - 产品特定元数据如 `agents/openai.yaml` 只在目标环境需要时设计，不写进通用 frontmatter。
 - 产品特定 metadata、hooks、tool permissions 或默认 prompt 不能替代 `SKILL.md` 的核心运行时指令。
 - 只写当前有效协议；更新 skill 时删除历史说明、旧字段兼容、fallback 提醒、版本对比和迁移说明。
@@ -265,6 +285,9 @@ description: Capability summary. Use when ...
 - 把产品特定字段写成通用规范，导致 skill 在其它 agent 环境中不可移植。
 - 在最终 skill 中保留 legacy、deprecated、old field、previous version、fallback、兼容、旧字段、以前、曾经等历史协议痕迹。
 - 用“不要使用旧流程”替代删除旧流程，导致 agent 仍把旧协议加载进上下文。
+- 把 subagent 可用性写成硬门禁。
+- 只写“拆成若干批交给 subagent”，但不写 payload、结果协议、批次均衡标准或委派 prompt。
+- 让 subagent 推进 gate、写权威状态或做最终策略裁决。
 
 ## Final Pass
 
@@ -278,4 +301,5 @@ description: Capability summary. Use when ...
 - 它的输出是否可被用户或下游系统验收？
 - 它的关键设计结论是否有来源支撑，缺口是否显式记录？
 - 公开或共享时，是否已经语义脱敏并暴露权限、依赖和副作用？
+- 如果设计了 subagent 委派，主 agent 是否仍保留最终汇总和质量把关责任？
 - 它是否只呈现当前有效协议，没有历史兼容、fallback、迁移说明或版本对比？
