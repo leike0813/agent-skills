@@ -72,6 +72,8 @@ If the environment allows writing files, write the result to <output_path> and r
 If file writing is unavailable, return the same result structure directly in stdout.
 ```
 
+如果希望 subagent 的返回结果必须经过主 agent 的 review，则可以优先考虑 stdout 返回。
+
 主 agent 负责：
 
 - 检查每个结果是否存在或 stdout 是否可解析。
