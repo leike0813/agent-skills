@@ -1,0 +1,20 @@
+{
+  "id": "literature-translator",
+  "version": "2.0.0",
+  "name": "Literature Translator",
+  "description": "Translate academic literature (Markdown/PDF/LaTeX) between languages with glossary management, deterministic block-level splitting, subagent-assisted batch translation, and script-enforced quality gates.",
+  "execution_modes": ["auto"],
+  "runtime": {
+    "language": "python",
+    "version": "3.11",
+    "dependencies": [],
+    "default_options": {
+      "hard_timeout_seconds": 3600
+    }
+  },
+  "entrypoint": {
+    "prompts": {
+      "common": "Translate the academic literature at `{{ input.source_path }}` into `{{ parameter.target_language }}` using the `literature-translator` skill.\n\nExecution contract:\n1) Read `SKILL.md` first; it contains the complete current main-path instructions.\n2) Do not preload the whole `references/` directory; read stage references only when the current stage calls for them.\n3) Execute all stages as defined in SKILL.md. Do not skip or reorder phases.\n4) The final assistant output must be a single JSON object matching `assets/output.schema.json`. Do not output explanatory text, logs, or multi-part output.\n5) On failure or cancellation, still output schema-compatible JSON with the appropriate `status`.\n\nInput:\n- source_path: {{ input.source_path }}\n- target_language: {{ parameter.target_language }}"
+    }
+  }
+}

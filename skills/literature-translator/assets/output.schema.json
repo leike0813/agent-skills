@@ -1,0 +1,54 @@
+{
+  "type": "object",
+  "properties": {
+    "output_path": {
+      "type": ["string", "null"],
+      "description": "Path to final translation output (null when cancelled/failed)",
+      "x-type": "artifact",
+      "x-role": "translation"
+    },
+    "alignment_path": {
+      "type": ["string", "null"],
+      "description": "Path to bilingual alignment data (null when cancelled/failed)",
+      "x-type": "artifact",
+      "x-role": "alignment"
+    },
+    "glossary_path": {
+      "type": ["string", "null"],
+      "description": "Path to glossary used (null when cancelled/failed)",
+      "x-type": "artifact",
+      "x-role": "glossary"
+    },
+    "qa_report_path": {
+      "type": ["string", "null"],
+      "description": "Path to quality report (null when cancelled/failed)",
+      "x-type": "artifact",
+      "x-role": "qa-report"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "cancelled", "failed"]
+    },
+    "reason": {
+      "type": "string",
+      "description": "Human-readable explanation. For cancelled: why; for failed: error description"
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "source_path": { "type": "string" },
+        "source_language": { "type": "string" },
+        "target_language": { "type": "string" },
+        "total_blocks": { "type": "integer" },
+        "total_sentences": { "type": "integer" },
+        "total_batches": { "type": "integer" }
+      },
+      "required": ["source_path", "source_language", "target_language"]
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "required": ["status"]
+}

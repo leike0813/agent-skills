@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "literature-translator-input",
+  "title": "Literature Translator Input",
+  "description": "Input payload schema for the literature-translator skill",
+  "type": "object",
+  "required": ["source_path"],
+  "properties": {
+    "source_path": {
+      "type": "string",
+      "extensions": [".md", ".pdf", ".tex"],
+      "description": "Absolute path to the source literature file or directory. Supported: .md, .pdf, .tex, tex-directory, or plain text files."
+    },
+    "source_language": {
+      "type": "string",
+      "description": "Optional source language override (BCP-47 code). If provided and matches target_language, exits immediately."
+    }
+  },
+  "additionalProperties": false
+}

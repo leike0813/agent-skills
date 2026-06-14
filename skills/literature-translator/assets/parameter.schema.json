@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "target_language": {
+      "type": "string",
+      "default": "zh-CN",
+      "description": "Target language for translation (BCP-47 code, e.g. zh-CN, en, ja)"
+    },
+    "source_language": {
+      "type": "string",
+      "description": "Optional source language override. If provided and matches target_language, triggers fast-exit before processing."
+    }
+  },
+  "required": []
+}
