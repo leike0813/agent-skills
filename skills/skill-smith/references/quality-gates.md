@@ -161,7 +161,29 @@
 - 只测 happy path，没有 near-miss。
 - 用户反馈只导致过拟合式补丁，没有抽象为通用 skill 规则。
 
-## Gate 11: Product Metadata
+## Gate 11: Subagent Delegation
+
+适用于设计了 subagent 业务委派的 skill。
+
+- subagent 委派是否明确为可选路径，而不是硬门禁？
+- 是否说明当前环境不能委派 subagent 时的串行处理或外部执行路径？
+- 是否给出建议委派 prompt？
+- payload 是否优先文件化，且字段扁平、语义自明？
+- 结果协议是否支持“写文件并返回路径”和“stdout 返回同等结构”两种情况？
+- 批次拆分策略是否匹配业务特点？
+- 能由脚本稳定切分时，是否优先设计脚本生成 batch payload？
+- 若由主 agent 切分，是否写清目标批次大小、均衡标准、排序/分组依据和依赖边界？
+- 主 agent 是否保留最终汇总、冲突处理、质量把关和用户-facing 输出责任？
+
+失败信号：
+
+- “必须启动 subagent 才能继续”。
+- “拆成若干批交给 subagent”，但没有切分原则或结果协议。
+- subagent 直接推进 gate、写 SQLite 权威状态或生成最终机器消费 artifact。
+- subagent prompt 依赖主 agent 对话上下文，而不是文件化 payload。
+- subagent 无写文件权限时没有 stdout 返回方案。
+
+## Gate 12: Product Metadata
 
 - 是否真的需要 `agents/openai.yaml` 或其它产品特定配置？
 - 若存在 `agents/openai.yaml`，其 `display_name`、`short_description`、`default_prompt` 是否与 `SKILL.md` 能力一致？
@@ -174,7 +196,7 @@
 - UI 元数据夸大能力，或与 `description` 冲突。
 - 产品元数据里隐藏了 `SKILL.md` 中没有说明的关键约束或依赖。
 
-## Gate 12: Safety, Privacy, Distribution
+## Gate 13: Safety, Privacy, Distribution
 
 公开或共享 skill 需要检查：
 
@@ -218,5 +240,6 @@
 - Product metadata:
 - Source coverage:
 - Current-state protocol:
+- Subagent delegation:
 - Safety:
 ```

@@ -222,6 +222,33 @@ skill-name/
 - 脚本或命令失败时有停止、重试、回退或询问用户的规则。
 - 如果 wrapper 会触发下游 skill 或外部服务，必须经过用户 opt-in，不能静默串联。
 
+## Subagent-assisted Delegation
+
+用于把可并行、相互独立的语义业务单元委派给 subagent。它是横向模式，不是新的复杂度 tier，可叠加在 Reference-backed、Script-assisted、Gate-driven 或 SQLite State-machine skill 上。
+
+适用条件：
+
+- 当前环境可以委派 subagent。
+- 委派单元之间没有强依赖。
+- subagent 的局部输出可以被主 agent 验收和合并。
+- 主 agent 不需要把完整上下文或最终判断交给 subagent。
+
+设计要求：
+
+- 在 `SKILL.md` 中写明“如果当前环境可以委派 subagent”。
+- 给出建议委派 prompt。
+- 使用文件化 payload 描述批次、输入路径、约束和结果 shape。
+- 结果优先写文件并返回路径；无法写文件时允许 stdout 返回同等结构。
+- 主 agent 保留最终汇总、冲突处理、质量把关和用户-facing 输出责任。
+
+批次拆分：
+
+- 简单、均匀、低风险业务可由主 agent 切分。
+- 复杂、不均匀、数量大或需要复现的业务，优先设计脚本生成 batch payload。
+- 不写脚本时必须在 skill 指令中写清切分原则、目标批次大小、均衡标准和边界处理。
+
+不要让 subagent 直接推进 gate、写 SQLite 权威状态、生成最终机器消费 artifact 或做最终策略裁决。
+
 ## Pattern Selection
 
 从轻到重选择：
@@ -233,6 +260,7 @@ skill-name/
 5. 需要长程恢复和稳定渲染，用 SQLite State-machine。
 6. 有机器上下游消费，叠加 Automation-facing contract。
 7. 第三方工具操作本身是核心能力时，按需叠加 Wrapper Skill 判断。
+8. 存在可并行语义业务单元时，按需叠加 Subagent-assisted Delegation。
 
 ## Resource Boundary
 

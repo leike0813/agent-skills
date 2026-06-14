@@ -137,14 +137,21 @@ description: Create, update, review, and architect high-quality agent skills by 
    - 有脚本就必须在 `SKILL.md` 写调用示例。
    - 需要 agent 填写的 payload 应尽可能扁平化，字段名称应具有语义自明性，避免容易导致误解的字段名。
    - 复杂 payload 必须提供 payload 示例、字段语义、枚举值、正例和反例。
+   - 如果业务批次可以稳定、确定性切分，优先设计脚本生成 batch payload；若由主 agent 切分，必须写清切分原则和均衡标准。
    - 有自动化上下游时读 [io-schema-contracts.md](references/io-schema-contracts.md)。
 
-9. **设计长程状态**
+9. **设计 subagent 委派**
+   - 只有任务存在可并行、相互独立的语义业务单元时，才读 [subagent-delegation.md](references/subagent-delegation.md)。
+   - subagent 委派必须写成可选路径：如果当前环境可以委派 subagent，则使用；否则主 agent 串行处理或说明外部执行需求。
+   - 需要委派 subagent 的 skill 必须给出建议委派 prompt、payload 文件协议、结果文件/stdout 协议和批次拆分策略。
+   - subagent 只产出局部结果；主 agent 保留最终汇总、冲突处理、质量把关和用户-facing 输出责任。
+
+10. **设计长程状态**
    - 任务多阶段、强依赖、可能跨上下文压缩时读 [state-machine-and-sqlite.md](references/state-machine-and-sqlite.md)。
    - 只有确实需要恢复、门禁、稳定渲染时才引入 SQLite/gate。
    - 阶段划分应以 agent 的决策点为依据，不需要 agent 决策的流程应合并，脚本级联执行。
 
-10. **按设计问题读取说明性样例**
+11. **按设计问题读取说明性样例**
    - 样例文档只用于架构启发，不是可复制模板。
    - 普通设计任务不要要求 agent 读取原始作者 skill 包。
    - 简单稳定契约读 [example-simple-contract.md](references/example-simple-contract.md)。
@@ -153,14 +160,14 @@ description: Create, update, review, and architect high-quality agent skills by 
    - 自动化 SQLite 和 stdout 硬契约读 [example-automation-sqlite.md](references/example-automation-sqlite.md)。
    - 长程交互 SQLite 和用户确认门禁读 [example-interactive-sqlite.md](references/example-interactive-sqlite.md)。
 
-11. **设计验证策略**
+12. **设计验证策略**
    - 默认先设计轻量验收场景，而不是正式评估迭代。
    - 需要设计测试、反馈迭代或触发优化时读 [anthropic-skill-creator-lessons.md](references/anthropic-skill-creator-lessons.md)。
    - 正式评估反馈迭代必须同时满足三条件：用户明确同意、当前环境可调用子代理或等价独立执行器、输入可模拟/可获取且输出可评价。
    - 任一条件不满足时，只输出轻量验收 prompts、人工 review checklist、trigger query 建议或需要用户补充的样例/评价标准。
    - 不要把评估迭代当成每个 skill 的默认成本。
 
-12. **验收**
+13. **验收**
    - 完成前读 [quality-gates.md](references/quality-gates.md)。
    - 至少检查触发、厚度、reference 路由、LLM/脚本边界、I/O 契约、示例/反例、失败恢复。
    - 公开、共享、迁移到他人环境，或包含脚本/外部服务/产品特定 metadata 时，必须检查脱敏、安全副作用、依赖和无惊讶原则。
@@ -177,6 +184,9 @@ description: Create, update, review, and architect high-quality agent skills by 
 - 如果 payload 有枚举值，显式列出；不要让 agent 自行猜。
 - payload 应尽量扁平化，字段名称应具有语义自明性，避免容易导致误解的字段名。
 - 长程任务的阶段划分应以 agent 的决策点为依据，不需要 agent 决策的流程不应切分、不应中断，不应让 agent 仅成为驱动脚本执行的工具。
+- 需要 subagent 委派的 skill 必须说明“如果当前环境可以委派 subagent”，不得把 subagent 可用性作为硬门禁。
+- 委派给 subagent 的业务 payload 应优先文件化；结果优先写文件返回，但 prompt 必须允许无写文件权限时通过 stdout 返回同等结构内容。
+- 能被脚本稳定切分的业务批次，优先由脚本生成 batch payload；主 agent 切分时必须写清切分原则、目标批次大小、均衡标准和边界处理。
 - 如果输出被机器消费，成功和失败都必须有稳定 shape。
 - 不创建无运行价值的辅助文档或资源目录。
 - 如果是公开或共享 skill，必须考虑脱敏、安全扫描、许可证、内部路径泄露和无惊讶原则。
@@ -239,6 +249,14 @@ description: Create, update, review, and architect high-quality agent skills by 
 - LLM 职责:
 - 脚本职责:
 - 禁止事项:
+
+## Subagent delegation
+- 是否建议:
+- 适合委派的业务单元:
+- 批次拆分策略:
+- payload 文件协议:
+- 结果文件/stdout 协议:
+- 建议委派 prompt:
 
 ## 验证计划
 - Happy path:
@@ -318,6 +336,7 @@ description: Create, update, review, and architect high-quality agent skills by 
 - 是否存在 runtime-only 的阶段，运行流程中是否含有让 agent 机械执行某些固定指令的设计。
 - 是否包含正例、反例或 near-miss 验收场景。
 - 如建议正式评估迭代，是否已通过用户同意、子代理可用性、输入输出可评价性三条件 gate。
+- 如建议 subagent 业务委派，是否是可选路径，且 payload、结果协议、批次拆分和主 agent 汇总责任清楚。
 - 若存在 `agents/openai.yaml`，是否与 `SKILL.md` 能力一致且只作为可选产品元数据。
 - 公开发布时是否考虑脱敏、安全、许可证、依赖副作用和无惊讶原则。
 - 当设计依赖外部资料、已有 skill、失败记录或第三方工具时，来源是否足够支撑当前设计，缺口是否已声明。
@@ -345,6 +364,7 @@ description: Create, update, review, and architect high-quality agent skills by 
 | 为 SQLite state-machine skill 扩展主文件 | [sqlite-state-machine-extension.md](references/templates/sqlite-state-machine-extension.md) |
 | 为 automation-facing skill 扩展主文件 | [automation-facing-extension.md](references/templates/automation-facing-extension.md) |
 | 设计测试、反馈迭代、触发优化和脚本候选发现 | [anthropic-skill-creator-lessons.md](references/anthropic-skill-creator-lessons.md) |
+| 设计可选 subagent 委派、payload 文件协议、批次拆分和委派 prompt | [subagent-delegation.md](references/subagent-delegation.md) |
 | 设计 LLM 与脚本职责边界 | [llm-script-boundary.md](references/llm-script-boundary.md) |
 | 设计长程状态、gate、SQLite、恢复机制 | [state-machine-and-sqlite.md](references/state-machine-and-sqlite.md) |
 | 设计自动化输入输出、schema、目录协议 | [io-schema-contracts.md](references/io-schema-contracts.md) |
