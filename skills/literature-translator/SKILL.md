@@ -17,22 +17,19 @@ compatibility: Requires local filesystem read access to source_path; no network 
 ### From Input (input.schema.json)
 
 - `source_path`（required）：输入文献的绝对路径。可以是 `.md`、`.pdf`、`.tex` 单文件、无扩展名文本文件，或包含 `.tex` 文件的目录。
-- `source_language`（optional）：源语言名称（BCP-47 代码）。若提供且等于 target_language，将在 Phase 1.5 触发快速退出。
 
 ### From Parameter (parameter.schema.json)
 
 - `target_language`（default: `zh-CN`）：目标语言名称。从 parameter 读取，若 prompt 中显式指定则覆盖默认值。
-- `source_language`（optional）：同上，作为 input 的备用来源。
 
 ### 降级策略
 
 - 若 `source_path` 无法访问，报告 blocker 并输出 failed 状态的 stdout JSON。
-- 若 `source_language` 未提供，由 agent 在宏观分析阶段推断。
 - 任何分支不得询问用户。
 
 ## Workflow
 
-总共 12 个阶段（v2 新增 Phase 1.5、5a、8a、8b、11）。每个阶段有明确产出物，完成后才进入下一阶段。
+总共 11 个阶段（v2 新增 Phase 5a、8a、8b、11）。每个阶段有明确产出物，完成后才进入下一阶段。
 
 中间文件统一写入 `.literature_translator_tmp/` 目录。最终产物输出到当前工作目录（CWD）。
 
@@ -58,40 +55,10 @@ compatibility: Requires local filesystem read access to source_path; no network 
 
 Stop and report a blocker if: 输入格式无法识别、文件无法访问、PDF 提取后内容为空。
 
-### Phase 1.5: 语言快速退出
-
-判断是否可以在不进入翻译流程的情况下立即退出。
-
-判断逻辑：
-
-1. 取 `source_language`（优先级：input.source_language > parameter.source_language > 未提供）
-2. 取 `target_language`（来自 parameter.target_language）
-3. 如果两者均非空且相等（大小写不敏感），输出 cancelled 状态的 stdout JSON，立即终止：
-
-```json
-{
-  "status": "cancelled",
-  "reason": "source_language equals target_language",
-  "output_path": null,
-  "alignment_path": null,
-  "glossary_path": null,
-  "qa_report_path": null,
-  "provenance": {
-    "source_path": "<source_path>",
-    "source_language": "<detected>",
-    "target_language": "<target>"
-  }
-}
-```
-
-4. 否则进入 Phase 2（由 LLM 做精确语言检测）。
-
-Phase 3 保留为安全网——Phase 2 检测后再次做精确比较。
-
 ### Phase 2: 宏观分析与术语表
 
 1. **通读全文**（`.literature_translator_tmp/normalized.md`），生成宏观分析报告，包含：
-   - 源语言（若未提供则推断）
+   - 源语言（由 LLM 推断，**必须输出 BCP-47 格式**，如 `en-US`、`zh-CN`、`ja-JP`、`de-DE`。不要使用 `English`、`Chinese` 等自然语言名称）
    - 文献类型（期刊论文、会议论文、书籍章节、技术报告等）
    - 研究领域与研究方向
    - 全文概要
@@ -100,7 +67,7 @@ Phase 3 保留为安全网——Phase 2 检测后再次做精确比较。
    - topic：研究方向/主题
    - paper_type：文献类型（journal/conference/book_chapter/technical_report/thesis）
    - writing_style：写作风格（如 technical academic prose）
-   - source_language：检测到的源语言
+   - source_language：检测到的源语言（BCP-47 格式）
    - target_language：目标语言
    - core_entities：核心实体列表（模型名、数据集名等）
    - translation_principles：翻译原则列表（忠实翻译、保留不确定性等）
@@ -117,7 +84,12 @@ Phase 3 保留为安全网——Phase 2 检测后再次做精确比较。
 
 ### Phase 3: 源目标语言判断
 
-如果源语言 == 目标语言，则终止执行。输出 cancelled 状态的 stdout JSON（符合 output.schema.json），`reason` 说明原因：
+判断 source_language 与 target_language 是否属于同一种语言，采用双层判定：
+
+1. **如果两者都是 BCP-47 格式**（由 agent 语义判断：是否形如 `en-US`、`zh-CN` 等 language-region 代码，而非自然语言名称或其他格式）：执行**大小写不敏感的字符串相等判定**。完全相等则视为同一种语言。
+2. **如果其中至少一个不是 BCP-47 格式**：执行**保守的语义判定**——仅当语义上**明确属于同一种语言**时才判定相等（例如 `en` vs `en-US`、`zh` vs `zh-CN`、`Chinese` vs `zh`）。如果语义上不确定（例如 `en` vs `jp`），应判定为不相等，继续进入翻译流程。
+
+如果判定为同一种语言，输出 cancelled 状态的 stdout JSON：
 
 ```json
 {
