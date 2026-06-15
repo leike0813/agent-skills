@@ -498,6 +498,8 @@ blockify.py 的 stdout 输出（机器可读）：
       "b": "b_023",
       "type": "paragraph",
       "heading": "3.2 Experimental Setup",
+      "source_markdown": "We evaluate the model on three downstream tasks.\nHowever, the results should be interpreted with caution.",
+      "translated_markdown": "我们在三个下游任务上评估该模型。\n然而，应谨慎解读这些结果。",
       "pairs": [
         {
           "i": 1,
@@ -524,6 +526,8 @@ blockify.py 的 stdout 输出（机器可读）：
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `doc_id` | string | 文档标识符 |
+| `blocks[].source_markdown` | string | block 级原文 Markdown（块内所有原文句子以换行拼接） |
+| `blocks[].translated_markdown` | string | block 级译文 Markdown（块内所有译文句子以换行拼接） |
 | `blocks[].pairs` | array | 句级双语对 |
 | `pairs[].i` | int | 局部句号（1-based） |
 | `pairs[].src` | string | 原文句子 |
