@@ -168,10 +168,24 @@ def build_alignment(
                 "repair_count": status_info.get("repair_count", 0),
             })
 
+        # Build block-level markdown by concatenating all sentence texts
+        source_markdown = "\n".join(
+            extract_sentence_text(item)
+            for item in src_sentences_raw
+            if extract_sentence_text(item)
+        ).strip()
+        translated_markdown = "\n".join(
+            extract_sentence_text(item)
+            for item in tgt_sentences_raw
+            if extract_sentence_text(item)
+        ).strip()
+
         alignment["blocks"].append({
             "b": block_id,
             "type": src_type,
             "heading": src_heading,
+            "source_markdown": source_markdown,
+            "translated_markdown": translated_markdown,
             "pairs": pairs,
         })
 
