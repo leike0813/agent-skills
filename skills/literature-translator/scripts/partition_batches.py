@@ -13,6 +13,18 @@ import json
 import os
 import sys
 from pathlib import Path
+import tiktoken
+
+
+_ENCODER = None
+
+
+def _count_tokens(text: str) -> int:
+    """Count tokens using cl100k_base encoding (GPT-4/GPT-3.5 tokenizer)."""
+    global _ENCODER
+    if _ENCODER is None:
+        _ENCODER = tiktoken.get_encoding("cl100k_base")
+    return len(_ENCODER.encode(text))
 
 
 def load_sentences(path: Path) -> dict:
@@ -30,20 +42,20 @@ def load_sentences(path: Path) -> dict:
 
 
 def calculate_block_sizes(blocks: dict) -> list[dict]:
-    """Calculate size metrics for each block and sort by block_id."""
+    """Calculate token count metrics for each block and sort by block_id."""
     block_list = []
     for block_id, block_data in blocks.items():
         sentences = block_data.get("sentences", [])
         # Handle both v1 (string[]) and v2 ([[index, text], ...]) formats
         if sentences and isinstance(sentences[0], (list, tuple)):
-            total_chars = sum(len(s[1]) for s in sentences)
+            total_tokens = sum(_count_tokens(s[1]) for s in sentences)
         else:
-            total_chars = sum(len(s) for s in sentences)
+            total_tokens = sum(_count_tokens(s) for s in sentences)
         block_list.append({
             "block_id": block_id,
             "type": block_data.get("type", "unknown"),
             "sentence_count": block_data.get("sentence_count", len(sentences)),
-            "total_chars": total_chars,
+            "total_tokens": total_tokens,
             "sentences": sentences,
         })
 
@@ -60,29 +72,29 @@ def partition(block_list: list[dict], target_size: int) -> list[dict]:
     """
     batches = []
     current_batch = []
-    current_chars = 0
+    current_tokens = 0
 
     for block in block_list:
-        char_count = block["total_chars"]
+        token_count = block["total_tokens"]
 
         # If this block fits in the current batch, add it
-        if current_chars + char_count <= target_size or not current_batch:
+        if current_tokens + token_count <= target_size or not current_batch:
             current_batch.append(block)
-            current_chars += char_count
+            current_tokens += token_count
         else:
             # Start new batch
             batches.append({
                 "blocks": current_batch,
-                "total_chars": current_chars,
+                "total_tokens": current_tokens,
             })
             current_batch = [block]
-            current_chars = char_count
+            current_tokens = token_count
 
     # Don't forget the last batch
     if current_batch:
         batches.append({
             "blocks": current_batch,
-            "total_chars": current_chars,
+            "total_tokens": current_tokens,
         })
 
     return batches
@@ -94,7 +106,7 @@ def write_batch_files(batches: list[dict], workspace: Path):
 
     manifest = {
         "batch_count": len(batches),
-        "target_size_chars": target_size,
+        "target_size_tokens": target_size,
         "batches": [],
     }
 
@@ -105,7 +117,7 @@ def write_batch_files(batches: list[dict], workspace: Path):
         batch_payload = {
             "batch_id": batch_id,
             "block_ids": block_ids,
-            "total_chars": batch["total_chars"],
+            "total_tokens": batch["total_tokens"],
             "blocks": {
                 b["block_id"]: {
                     "type": b["type"],
@@ -122,7 +134,7 @@ def write_batch_files(batches: list[dict], workspace: Path):
         manifest["batches"].append({
             "batch_id": batch_id,
             "block_count": len(block_ids),
-            "total_chars": batch["total_chars"],
+            "total_tokens": batch["total_tokens"],
             "block_ids": block_ids,
             "payload_path": str(batch_path.resolve()),
         })
@@ -137,7 +149,7 @@ def main():
     parser = argparse.ArgumentParser(description="Partition translation sentences into batches")
     parser.add_argument("--sentences", required=True, help="Path to sentences.json from sentencify.py")
     parser.add_argument("--workspace", required=True, help="Output directory for batch files")
-    parser.add_argument("--target-size", type=int, default=1500, help="Target batch size in characters (default: 1500)")
+    parser.add_argument("--target-size", type=int, default=1500, help="Target batch size in tokens (default: 1500)")
     args = parser.parse_args()
 
     global target_size
@@ -159,15 +171,15 @@ def main():
     batches = partition(block_list, target_size)
 
     # Calculate stats
-    batch_chars = [b["total_chars"] for b in batches]
+    batch_tokens = [b["total_tokens"] for b in batches]
     stats = {
         "batch_count": len(batches),
         "total_blocks": len(block_list),
-        "total_chars": sum(b["total_chars"] for b in batches),
+        "total_tokens": sum(b["total_tokens"] for b in batches),
         "target_size": target_size,
-        "min_batch_chars": min(batch_chars) if batch_chars else 0,
-        "max_batch_chars": max(batch_chars) if batch_chars else 0,
-        "avg_batch_chars": sum(batch_chars) // len(batch_chars) if batch_chars else 0,
+        "min_batch_tokens": min(batch_tokens) if batch_tokens else 0,
+        "max_batch_tokens": max(batch_tokens) if batch_tokens else 0,
+        "avg_batch_tokens": sum(batch_tokens) // len(batch_tokens) if batch_tokens else 0,
     }
 
     workspace = Path(args.workspace)
