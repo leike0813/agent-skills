@@ -6,7 +6,7 @@ Validates a completed translation batch against the original text.
 
 Checks (v2 enhancements in bold):
 1. Sentence count consistency — original and translation must have same count.
-2. Lazy translation detection — character length ratio within threshold.
+2. Lazy translation detection — token length ratio within threshold.
 3. Term consistency — glossary.locked terms appear correctly in translation.
 4. Language correctness — output matches target language (with allowlist).
 5. **Placeholder preservation** — all input placeholders appear in output.
@@ -22,12 +22,24 @@ import json
 import re
 import sys
 from pathlib import Path
+import tiktoken
+
+
+_ENCODER = None
+
+
+def _count_tokens(text: str) -> int:
+    """Count tokens using cl100k_base encoding (GPT-4/GPT-3.5 tokenizer)."""
+    global _ENCODER
+    if _ENCODER is None:
+        _ENCODER = tiktoken.get_encoding("cl100k_base")
+    return len(_ENCODER.encode(text))
 
 
 # ─── Constants ──────────────────────────────────────────────────────────────
 
-MIN_CHAR_RATIO = 0.3
-MAX_CHAR_RATIO = 3.0
+MIN_TOKEN_RATIO = 0.3
+MAX_TOKEN_RATIO = 3.0
 
 # Placeholder regex (matches <TYPE_NNN> and <TYPE_SUBTYPE_NNN>)
 PH_RE = re.compile(r'<[A-Z]+(?:_[A-Z]+)?_\d+>')
@@ -209,26 +221,26 @@ def check_sentence_count(original: list, translation: list) -> dict:
 
 
 def check_lazy_translation(original: list, translation: list) -> dict:
-    """Check character length ratio to detect lazy/summary translation."""
+    """Check token length ratio to detect lazy/summary translation."""
     if not original or not translation:
         return {"passed": False, "error": "no sentences to compare"}
 
-    total_orig = sum(len(s[1]) for s in original)
-    total_trans = sum(len(s[1]) for s in translation)
+    total_orig = sum(_count_tokens(s[1]) for s in original)
+    total_trans = sum(_count_tokens(s[1]) for s in translation)
 
     if total_orig == 0:
-        return {"passed": True, "ratio": 1.0, "threshold": MIN_CHAR_RATIO}
+        return {"passed": True, "ratio": 1.0, "threshold": MIN_TOKEN_RATIO}
 
     ratio = total_trans / total_orig
-    passed = MIN_CHAR_RATIO <= ratio <= MAX_CHAR_RATIO
+    passed = MIN_TOKEN_RATIO <= ratio <= MAX_TOKEN_RATIO
 
     return {
         "passed": passed,
         "ratio": round(ratio, 4),
-        "min_threshold": MIN_CHAR_RATIO,
-        "max_threshold": MAX_CHAR_RATIO,
-        "original_chars": total_orig,
-        "translated_chars": total_trans,
+        "min_threshold": MIN_TOKEN_RATIO,
+        "max_threshold": MAX_TOKEN_RATIO,
+        "original_tokens": total_orig,
+        "translated_tokens": total_trans,
     }
 
 
@@ -474,7 +486,7 @@ def check_length_by_type(
 ) -> dict:
     """Per-block-type length ratio check (weak check — warning only).
 
-    Checks each sentence pair's character ratio against type-specific thresholds.
+    Checks each sentence pair's token ratio against type-specific thresholds.
     Returns warnings but does NOT determine pass/fail (is_weak=True).
     """
     warnings = []
@@ -485,7 +497,7 @@ def check_length_by_type(
             continue
         block_type = block_types.get(b_orig, "default")
         rules = LENGTH_RULES.get(block_type, LENGTH_RULES["default"])
-        ratio = len(text_trans) / max(len(text_orig), 1)
+        ratio = _count_tokens(text_trans) / max(_count_tokens(text_orig), 1)
         if ratio < rules["min_ratio"] or ratio > rules["max_ratio"]:
             warnings.append({
                 "block_id": b_orig,
@@ -563,7 +575,9 @@ def main():
             if "error" not in ph_data:
                 placeholder_entries = ph_data.get("entries", {})
 
-    # Build resolved text for term/language checks by resolving placeholders
+    # Build the full translated text (for term/language checks)
+    all_translated_text = " ".join(s[1] for s in translated_sentences)
+    # Build resolved text by resolving placeholders if map provided
     if placeholder_entries:
         resolved_sentences = [
             (bid, resolve_placeholders(text, placeholder_entries), idx)

@@ -87,7 +87,7 @@ blockify.py 的 stdout 输出（机器可读）：
 {
   "batch_id": "batch_0001",
   "block_ids": ["b_005", "b_006", "b_007"],
-  "total_chars": 1432,
+  "total_tokens": 1432,
   "blocks": {
     "b_005": {
       "type": "paragraph",
@@ -115,12 +115,12 @@ blockify.py 的 stdout 输出（机器可读）：
 ```json
 {
   "batch_count": 6,
-  "target_size_chars": 1500,
+  "target_size_tokens": 1500,
   "batches": [
     {
       "batch_id": "batch_0001",
       "block_count": 3,
-      "total_chars": 1432,
+      "total_tokens": 1432,
       "block_ids": ["b_005", "b_006", "b_007"],
       "payload_path": "/abs/path/batches/batch_0001.json"
     }
@@ -189,8 +189,8 @@ blockify.py 的 stdout 输出（机器可读）：
       "ratio": 0.85,
       "min_threshold": 0.3,
       "max_threshold": 3.0,
-      "original_chars": 320,
-      "translated_chars": 272
+      "original_tokens": 320,
+      "translated_tokens": 272
     },
     "term_consistency": {
       "passed": true,
@@ -420,8 +420,8 @@ blockify.py 的 stdout 输出（机器可读）：
       "ratio": 0.85,
       "min_threshold": 0.3,
       "max_threshold": 3.0,
-      "original_chars": 320,
-      "translated_chars": 272
+      "original_tokens": 320,
+      "translated_tokens": 272
     },
     "term_consistency": {
       "passed": true,
