@@ -27,7 +27,7 @@ BLOCK_START_RE = re.compile(
 )
 BLOCK_END_RE = re.compile(r'<!--\s*BLOCK_END:\s*(\S+)\s*-->')
 
-NO_SPLIT_TYPES = {"equation", "code", "bib_item"}
+NO_SPLIT_TYPES = {"equation", "code", "bib_item", "heading"}
 
 # Sentence boundary patterns
 # Chinese/Japanese: 。！？
