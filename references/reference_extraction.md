@@ -229,6 +229,7 @@ For each item, set status to enriched, confirmed_existing, or no_metadata_found.
 Only add metadata when status is enriched, and only when it appears in source_text, metadata_context_text, or another verifiable bibliographic source.
 Use canonical metadata fields only: publicationTitle, conferenceName, archiveID, university, volume, issue, pages, numPages, DOI, url, publisher, place, ISBN, ISSN, itemType, date.
 Do not modify authors, title, publication_year, selected_parse_pattern, raw text, confidence, ref_index, or other locked/internal fields.
+Prioritize parsing the information already provided in the JSON file to enrich the metadata; do not use web search to supplement information unless absolutely necessary.
 Do not write DB or final artifacts. Return only the batch draft.
 If file writing is available, write the draft to suggested_draft_output_path and return that path.
 Do not run runtime commands, submit payloads, or modify stable keys.
