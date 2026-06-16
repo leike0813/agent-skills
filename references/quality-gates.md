@@ -169,6 +169,7 @@
 - 是否说明当前环境不能委派 subagent 时的串行处理或外部执行路径？
 - 是否给出建议委派 prompt？
 - payload 是否优先文件化，且字段扁平、语义自明？
+- 如果结果优先写文件返回，prompt 是否要求 subagent 先做写盘能力探测？
 - 结果协议是否支持“写文件并返回路径”和“stdout 返回同等结构”两种情况？
 - 批次拆分策略是否匹配业务特点？
 - 能由脚本稳定切分时，是否优先设计脚本生成 batch payload？
@@ -181,7 +182,7 @@
 - “拆成若干批交给 subagent”，但没有切分原则或结果协议。
 - subagent 直接推进 gate、写 SQLite 权威状态或生成最终机器消费 artifact。
 - subagent prompt 依赖主 agent 对话上下文，而不是文件化 payload。
-- subagent 无写文件权限时没有 stdout 返回方案。
+- subagent 无写文件权限时没有 probe 和 stdout 返回方案。
 
 ## Gate 12: Product Metadata
 
