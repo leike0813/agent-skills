@@ -226,7 +226,7 @@ description: Capability summary. Use when ...
 - 必须给出建议委派 prompt，而不是只说“交给 subagent 处理”。
 - prompt 只传必要上下文、payload 路径、允许读取的输入、输出路径和结果 shape。
 - 不要把主 agent 的完整推理、未定结论、用户隐私或无关材料交给 subagent。
-- 如果 subagent 可能没有写文件权限，prompt 必须允许 stdout 返回同等结构结果。
+- 如果 subagent 需要写文件交付，prompt 必须要求它先做写盘能力探测；探测失败时允许 stdout 返回同等结构结果。
 
 批次拆分要按业务特点决定：
 
@@ -247,7 +247,7 @@ description: Capability summary. Use when ...
 - 如果 payload 有枚举值，显式列出；不要让 agent 自行猜。
 - payload 应尽量扁平化，字段名称应具有语义自明性，避免容易导致误解的字段名。
 - 长程任务的阶段划分应以 agent 的决策点为依据，不需要 agent 决策的流程不应切分、不应中断，不应让 agent 仅成为驱动脚本执行的工具。
-- subagent 委派是可选横向模式，不是所有 skill 的默认步骤；需要时必须写清可用性前提、payload 文件、结果返回和主 agent 汇总责任。
+- subagent 委派是可选横向模式，不是所有 skill 的默认步骤；需要时必须写清可用性前提、payload 文件、写盘能力探测、结果返回和主 agent 汇总责任。
 - 产品特定元数据如 `agents/openai.yaml` 只在目标环境需要时设计，不写进通用 frontmatter。
 - 产品特定 metadata、hooks、tool permissions 或默认 prompt 不能替代 `SKILL.md` 的核心运行时指令。
 - 只写当前有效协议；更新 skill 时删除历史说明、旧字段兼容、fallback 提醒、版本对比和迁移说明。
