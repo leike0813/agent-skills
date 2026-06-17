@@ -105,10 +105,23 @@ def load_json(path: Path) -> dict:
     """Load and validate a JSON file."""
     if not path.exists():
         return {"error": f"file not found: {path}"}
+    raw_text = path.read_text(encoding="utf-8")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(raw_text)
     except json.JSONDecodeError as e:
-        return {"error": f"invalid JSON: {e}"}
+        # Extract context around the error position for diagnosis
+        pos = e.pos
+        start = max(0, pos - 30)
+        end = min(len(raw_text), pos + 30)
+        snippet = raw_text[start:end]
+        marker = " " * (pos - start) + "^"
+        return {
+            "error": f"invalid JSON at line {e.lineno}, col {e.colno}, char {e.pos}: {e.msg}",
+            "context": snippet,
+            "pointer": marker,
+            "hint": "Likely cause: unescaped double-quote (\") inside a JSON string. "
+                    "Escape as \\\". For Chinese target language, prefer using 「」 or \"\" instead of straight double quotes.",
+        }
 
 
 def extract_sentence_text(item) -> str:
@@ -532,6 +545,8 @@ def main():
     parser.add_argument("--target-lang", required=True, help="Target language code (e.g., zh-CN, en)")
     parser.add_argument("--placeholder-map", default=None,
                         help="Optional placeholder_map.json for resolving terms/language")
+    parser.add_argument("--mode", default="high_quality", choices=["fast", "high_quality"],
+                        help="Quality gate mode (default: high_quality). fast: skips placeholder/numeric checks")
     args = parser.parse_args()
 
     original_path = Path(args.original)
@@ -541,18 +556,30 @@ def main():
     original_data = load_json(original_path)
     if "error" in original_data:
         result = {"passed": False, "error": f"original: {original_data['error']}"}
+        if "context" in original_data:
+            result["context"] = original_data["context"]
+            result["pointer"] = original_data.get("pointer", "")
+            result["hint"] = original_data.get("hint", "")
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(1)
 
     translation_data = load_json(translation_path)
     if "error" in translation_data:
         result = {"passed": False, "error": f"translation: {translation_data['error']}"}
+        if "context" in translation_data:
+            result["context"] = translation_data["context"]
+            result["pointer"] = translation_data.get("pointer", "")
+            result["hint"] = translation_data.get("hint", "")
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(1)
 
     glossary_data = load_json(glossary_path)
     if "error" in glossary_data:
         result = {"passed": False, "error": f"glossary: {glossary_data['error']}"}
+        if "context" in glossary_data:
+            result["context"] = glossary_data["context"]
+            result["pointer"] = glossary_data.get("pointer", "")
+            result["hint"] = glossary_data.get("hint", "")
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(1)
 
@@ -637,14 +664,26 @@ def main():
         checks["language"] = {"passed": True, "note": "all blocks are passthrough type"}
 
     # 5. Placeholder preservation
-    checks["placeholder_preservation"] = check_placeholder_preservation(
-        original_sentences, translated_sentences
-    )
+    if args.mode == "fast":
+        checks["placeholder_preservation"] = {
+            "passed": True, "skipped": True,
+            "reason": "fast mode — no placeholders",
+        }
+    else:
+        checks["placeholder_preservation"] = check_placeholder_preservation(
+            original_sentences, translated_sentences
+        )
 
     # 6. Numeric/reference preservation
-    checks["numeric_preservation"] = check_numeric_preservation(
-        original_sentences, translated_sentences
-    )
+    if args.mode == "fast":
+        checks["numeric_preservation"] = {
+            "passed": True, "skipped": True,
+            "reason": "fast mode — no placeholders",
+        }
+    else:
+        checks["numeric_preservation"] = check_numeric_preservation(
+            original_sentences, translated_sentences
+        )
 
     # 7. Non-translation language detection (only for semantic blocks)
     checks["non_translation_phrases"] = check_non_translation_phrases(

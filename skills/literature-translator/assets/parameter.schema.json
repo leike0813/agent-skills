@@ -6,9 +6,11 @@
       "default": "zh-CN",
       "description": "Target language for translation (BCP-47 code, e.g. zh-CN, en, ja)"
     },
-    "source_language": {
+    "mode": {
       "type": "string",
-      "description": "Optional source language override. If provided and matches target_language, triggers fast-exit before processing."
+      "enum": ["fast", "high_quality"],
+      "default": "fast",
+      "description": "Translation mode. fast: block-level translation, no sentence splitting, no placeholder protection, relaxed quality checks. high_quality: sentence-level translation with full placeholder protection and structured review."
     }
   },
   "required": []

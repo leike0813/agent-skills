@@ -119,6 +119,7 @@ def build_alignment(
     target_language: str = "zh-CN",
     doc_id: str = "D1",
     glossary_version: str = "unknown",
+    mode: str = "high_quality",
 ) -> dict:
     """Build bilingual alignment data."""
     source_blocks = source_sentences.get("blocks", {})
@@ -144,30 +145,6 @@ def build_alignment(
         src_sentences_raw = src_block.get("sentences", [])
         tgt_sentences_raw = tgt_data.get("sentences", []) if tgt_data else []
 
-        # Handle both v1 and v2 source formats
-        pairs = []
-        for i, src_item in enumerate(src_sentences_raw):
-            src_text = extract_sentence_text(src_item)
-            src_idx = extract_sentence_index(src_item)
-            if src_idx < 0:
-                src_idx = i + 1  # fallback to 1-based position
-
-            # Get corresponding translation
-            tgt_text = ""
-            if i < len(tgt_sentences_raw):
-                tgt_item = tgt_sentences_raw[i]
-                tgt_text = extract_sentence_text(tgt_item)
-
-            status_info = build_status_map(qa_data, block_id, src_idx)
-
-            pairs.append({
-                "i": src_idx,
-                "src": src_text,
-                "tgt": tgt_text,
-                "status": status_info["status"],
-                "repair_count": status_info.get("repair_count", 0),
-            })
-
         # Build block-level markdown by concatenating all sentence texts
         source_markdown = "\n".join(
             extract_sentence_text(item)
@@ -179,6 +156,33 @@ def build_alignment(
             for item in tgt_sentences_raw
             if extract_sentence_text(item)
         ).strip()
+
+        if mode == "fast":
+            # Fast mode: no sentence-level pairs, empty array for format compatibility
+            pairs = []
+        else:
+            pairs = []
+            for i, src_item in enumerate(src_sentences_raw):
+                src_text = extract_sentence_text(src_item)
+                src_idx = extract_sentence_index(src_item)
+                if src_idx < 0:
+                    src_idx = i + 1  # fallback to 1-based position
+
+                # Get corresponding translation
+                tgt_text = ""
+                if i < len(tgt_sentences_raw):
+                    tgt_item = tgt_sentences_raw[i]
+                    tgt_text = extract_sentence_text(tgt_item)
+
+                status_info = build_status_map(qa_data, block_id, src_idx)
+
+                pairs.append({
+                    "i": src_idx,
+                    "src": src_text,
+                    "tgt": tgt_text,
+                    "status": status_info["status"],
+                    "repair_count": status_info.get("repair_count", 0),
+                })
 
         alignment["blocks"].append({
             "b": block_id,
@@ -210,6 +214,8 @@ def main():
                         help="Document identifier (default: D1)")
     parser.add_argument("--glossary-version", default="unknown",
                         help="Glossary version identifier")
+    parser.add_argument("--mode", default="high_quality", choices=["fast", "high_quality"],
+                        help="Export mode (default: high_quality). fast: empty pairs")
     args = parser.parse_args()
 
     # Load source sentences
@@ -241,6 +247,7 @@ def main():
         target_language=args.target_lang,
         doc_id=args.doc_id,
         glossary_version=args.glossary_version,
+        mode=args.mode,
     )
 
     # Write output

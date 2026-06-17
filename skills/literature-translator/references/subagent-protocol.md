@@ -80,6 +80,7 @@ Rules:
 - Each block's sentences array must have the SAME length as the original.
 - For blocks of type "equation" or "code", output the original sentences unchanged.
 - Do not add explanations, notes, or commentary outside the JSON structure.
+- **No unescaped double quotes inside JSON string values.** Unescaped `"` (U+0022) inside sentence text will break JSON parsing. For Chinese target language, use Chinese quotation marks `""`. If ASCII double quotes are unavoidable, escape them as `\"`.
 
 If blocked:
 - Return a structured blocker with batch_id, reason, missing_input, and suggested_next_step.

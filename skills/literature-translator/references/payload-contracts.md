@@ -171,6 +171,8 @@ blockify.py 的 stdout 输出（机器可读）：
 - `--translation`: 翻译结果 JSON 路径（Translation Result Schema）
 - `--glossary`: 术语表 JSON 路径
 - `--target-lang`: 目标语言代码
+- `--mode`: 门禁模式，`fast` | `high_quality`（default: `high_quality`）
+- `--placeholder-map`: 占位符映射表 JSON。仅 high_quality 模式使用，可选
 
 ### 输出（stdout JSON）
 
@@ -475,8 +477,8 @@ blockify.py 的 stdout 输出（机器可读）：
 
 | Check | 说明 | 是否强校验 |
 |-------|------|-----------|
-| `placeholder_preservation` | 输入端占位符全部出现在译文中 | 是 |
-| `numeric_preservation` | 数字类占位符（NUM/REF/FIG/TBL/EQ_REF）全部保留 | 是 |
+| `placeholder_preservation` | 输入端占位符全部出现在译文中。fast 模式下跳过：`{"passed": true, "skipped": true, "reason": "fast mode — no placeholders"}` | 是（仅 high_quality） |
+| `numeric_preservation` | 数字类占位符（NUM/REF/FIG/TBL/EQ_REF）全部保留。fast 模式下跳过：同上。 | 是（仅 high_quality） |
 | `non_translation_phrases` | 检测解释性短语（"大意是""可以理解为"等） | 是 |
 | `length_check` | 按 block 类型分阈值检查长度比 | 弱校验 |
 

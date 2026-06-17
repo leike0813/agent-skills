@@ -337,3 +337,49 @@ errors:
 - alignment 使用还原后的译文（占位符已恢复）。
 - qa_report 使用翻译后的文件统计（占位符保护阶段的数据）。
 - 如果某文件缺失（如 block_stats.json 不存在），导出脚本应优雅降级。
+
+## Fast 模式细则
+
+快速模式是 **默认** 翻译模式，跳过句级拆分和占位符保护，以块为翻译单位。
+
+### Phase 5: 块级翻译输入构建细则（fast）
+
+调用 `scripts/build_block_sentences.py` 将 `blocked.md` 转为 v2 sentences.json：
+
+- 每个 block 整个内容作为 1 个 `[1, "content"]` sentence
+- equation、code、bib_item 块同样处理（内容整体，翻译阶段不处理）
+- 无需 agent 复核（脚本输出即最终结果）
+
+### Phase 6: 翻译批次分割细则（fast）
+
+输入为 agent 生成的 `.literature_translator_tmp/sentences.json`（无占位符的普通 v2 sentences JSON）。其他不变。
+
+### Phase 7: 质量门禁细则（fast）
+
+调用 quality_gate.py 时传递 `--mode fast`，不传 `--placeholder-map`：
+
+- 占位符保持和数字/引用保持检查被跳过
+- 句数一致性检查：fast 模式下每个 block 1 句，因此原文句数 == 译文句数 = block 数
+- 其他检查不变
+
+### Phase 8: 块级速览细则（fast）
+
+主 agent 通读所有翻译块，做以下检查：
+
+1. **原文残留**：译文是否还包含未翻译的英文片段（特别是专业术语、公式周围的文字）
+2. **严重误译**：语义是否完全相反、核心概念是否译错
+3. **总结式翻译**：译文长度是否不到原文的 30%（对照质量门禁的 lazy_translation 结果确认）
+
+发现问题的块整块重译，替换后不再过质量门禁，但需要 agent 确认重译结果无误。
+
+### Phase 9: 译文拼接细则（fast）
+
+fast 模式无占位符需还原，直接调用 `concatenate.py` 拼接 `.literature_translator_tmp/translations/` 下的翻译结果。
+
+### Phase 11: 导出细则（fast）
+
+调用 `export_alignment.py` 时传递 `--mode fast`：
+
+- `pairs` 输出为空数组 `[]`
+- `source_markdown` / `translated_markdown` 正常填充（块级原文/译文拼接）
+- 其他导出和 QA Report 不变
