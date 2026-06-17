@@ -10,10 +10,6 @@
       "type": "string",
       "extensions": [".md", ".pdf", ".tex"],
       "description": "Absolute path to the source literature file or directory. Supported: .md, .pdf, .tex, tex-directory, or plain text files."
-    },
-    "source_language": {
-      "type": "string",
-      "description": "Optional source language override (BCP-47 code). If provided and matches target_language, exits immediately."
     }
   },
   "additionalProperties": false
