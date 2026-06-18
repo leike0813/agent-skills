@@ -1,6 +1,6 @@
 {
   "id": "tag-regulator",
-  "name": "Tag Regulator",
+  "name": "🏷️ Tag Regulator",
   "description": "Normalize and infer Zotero tags with an optional controlled vocabulary file.",
   "version": "1.0.1",
   "execution_modes": [
