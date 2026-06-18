@@ -1,7 +1,7 @@
 {
   "id": "literature-analysis",
   "version": "1.0.0",
-  "name": "Literature Analysis",
+  "name": "📊 Literature Analysis",
   "description": "Generate a digest, structured references, citation analysis, matching metadata, and citation report from academic paper source files.",
   "execution_modes": [
     "auto"
