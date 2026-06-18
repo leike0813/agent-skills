@@ -1,7 +1,7 @@
 {
   "id": "literature-translator",
   "version": "2.0.0",
-  "name": "Literature Translator",
+  "name": "🌐 Literature Translator",
   "description": "Translate academic literature (Markdown/PDF/LaTeX) between languages with glossary management, deterministic block-level splitting, subagent-assisted batch translation, and script-enforced quality gates.",
   "execution_modes": ["auto"],
   "runtime": {
