@@ -1,7 +1,7 @@
 {
   "id": "literature-explainer",
   "version": "1.0.0",
-  "name": "Literature Explainer",
+  "name": "💬 Literature Explainer",
   "description": "Interactive academic paper analysis and Q&A skill with evidence verification and optional note generation.",
   "execution_modes": [
     "interactive"
