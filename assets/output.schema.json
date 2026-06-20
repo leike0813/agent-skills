@@ -55,19 +55,13 @@
       "items": { "type": "string" }
     },
     "error": {
-      "anyOf": [
-        { "type": "null" },
-        {
-          "type": "object",
-          "required": ["type", "message"],
-          "properties": {
-            "type": { "type": "string" },
-            "message": { "type": "string" },
-            "details": {}
-          },
-          "additionalProperties": true
-        }
-      ]
+      "type": ["object", "null"],
+      "properties": {
+        "type": { "type": "string" },
+        "message": { "type": "string" },
+        "details": {}
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": false
