@@ -55,6 +55,7 @@ compatibility: Requires local filesystem read access to source_path; no network 
    - **LaTeX 工程目录**: 定位主 `.tex` 文件，解析为结构化 Markdown。
 3. 将规范化后的全文内容写为中间工件 `.literature_translator_tmp/normalized.md`。
 4. 输出元信息文件 `.literature_translator_tmp/source_meta.json`（格式见 references）。
+5. 将 `mode` 写入 `.literature_translator_tmp/mode.txt`（内容仅为 `fast` 或 `high_quality`，无换行无空格）。Mode 是本轮执行的固化参数，一经写入不可中途更改。
 
 Stop and report a blocker if: 输入格式无法识别、文件无法访问、PDF 提取后内容为空。
 
@@ -238,7 +239,6 @@ python3 scripts/partition_batches.py \
      --translation .literature_translator_tmp/translations/batch_<N>_translated.json \
      --glossary .literature_translator_tmp/glossary.json \
      --target-lang <target_language> \
-     --mode <mode> \
      [--placeholder-map .literature_translator_tmp/protected/placeholder_map.json]  # 仅 high_quality
    ```
 
@@ -330,7 +330,7 @@ python3 scripts/concatenate.py \
 
 ### Phase 11: 导出结构化产物
 
-**Alignment 文件：** 调用 `scripts/export_alignment.py`，传递 `--mode <mode>`：
+**Alignment 文件：** 调用 `scripts/export_alignment.py`：
 
 ```bash
 python3 scripts/export_alignment.py \
@@ -338,8 +338,7 @@ python3 scripts/export_alignment.py \
   --translations-dir .literature_translator_tmp/translations_restored/ \
   --qa-report .literature_translator_tmp/qa_report.json \
   --output .literature_translator_tmp/alignment.json \
-  --source-lang <source> --target-lang <target> \
-  --mode <mode>
+  --source-lang <source> --target-lang <target>
 ```
 
 fast 模式输出 `"pairs": []`（空数组），`source_markdown` / `translated_markdown` 正常填充。
@@ -488,7 +487,6 @@ python3 scripts/quality_gate.py \
   --translation ".literature_translator_tmp/translations/batch_1_translated.json" \
   --glossary ".literature_translator_tmp/glossary.json" \
   --target-lang "zh-CN" \
-  --mode <mode> \
   [--placeholder-map ".literature_translator_tmp/protected/placeholder_map.json"]
 ```
 
@@ -497,7 +495,6 @@ Input:
 - `--translation`: 翻译结果 JSON（required）
 - `--glossary`: 术语表 JSON（required）
 - `--target-lang`: 目标语言代码（required）
-- `--mode`: 门禁模式 `fast` | `high_quality`（default: `high_quality`）。fast 模式下跳过占位符保持和数字/引用保持检查
 - `--placeholder-map`: 占位符映射表 JSON（仅 high_quality，可选）
 
 Output:
@@ -594,8 +591,7 @@ Command:
 python3 scripts/export_alignment.py \
   --sentences .literature_translator_tmp/sentences.json \
   --translations-dir .literature_translator_tmp/translations_restored/ \
-  --output .literature_translator_tmp/alignment.json \
-  --mode <mode>
+  --output .literature_translator_tmp/alignment.json
 ```
 
 Input:
@@ -603,7 +599,6 @@ Input:
 - `--translations-dir`: 还原后的翻译结果目录（required）。fast 模式直接传入 `.literature_translator_tmp/translations/`
 - `--output`: alignment.json 输出路径（required）
 - `--qa-report`: 可选 QA report 路径
-- `--mode`: 导出模式 `fast` | `high_quality`（default: `high_quality`）。fast 模式输出空 pairs 数组
 
 Output:
 - `alignment.json`（双语对齐数据）
@@ -766,7 +761,7 @@ Expected workflow:
 5. Phase 5: [high_quality] sentencify.py 拆分为约 300 句 → sentences.json。
 6. Phase 5a: [high_quality] protect_placeholders.py 保护行内元素。
 7. Phase 6: partition_batches.py 分为 6 批 → batches/ 目录。
-8. Phase 7: 委派 subagent 逐批翻译，quality_gate.py --mode high_quality 逐批校验 → 全部通过。
+8. Phase 7: 委派 subagent 逐批翻译，quality_gate.py 逐批校验 → 全部通过。
 9. Phase 8: [high_quality] structured reviewer + 局部修复。
 10. Phase 9: [high_quality] restore_placeholders.py 还原 → concatenate.py 拼接 → assembled.md。
 11. Phase 10: 润色后输出 `output_zh-CN.md`。

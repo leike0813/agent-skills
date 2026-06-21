@@ -196,6 +196,17 @@ def build_alignment(
     return alignment
 
 
+def _resolve_mode() -> str:
+    """Resolve mode from workspace mode.txt. Mode is fixed for the entire run."""
+    for candidate in [".literature_translator_tmp/mode.txt", "workspace/mode.txt"]:
+        p = Path(candidate)
+        if p.exists():
+            mode_value = p.read_text(encoding="utf-8").strip()
+            if mode_value in ("fast", "high_quality"):
+                return mode_value
+    return "high_quality"  # fallback
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export bilingual alignment data")
     parser.add_argument("--sentences", required=True,
@@ -214,9 +225,9 @@ def main():
                         help="Document identifier (default: D1)")
     parser.add_argument("--glossary-version", default="unknown",
                         help="Glossary version identifier")
-    parser.add_argument("--mode", default="high_quality", choices=["fast", "high_quality"],
-                        help="Export mode (default: high_quality). fast: empty pairs")
     args = parser.parse_args()
+
+    mode = _resolve_mode()
 
     # Load source sentences
     sentences_data = load_sentences(Path(args.sentences))
@@ -247,7 +258,7 @@ def main():
         target_language=args.target_lang,
         doc_id=args.doc_id,
         glossary_version=args.glossary_version,
-        mode=args.mode,
+        mode=mode,
     )
 
     # Write output

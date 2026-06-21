@@ -171,8 +171,9 @@ blockify.py 的 stdout 输出（机器可读）：
 - `--translation`: 翻译结果 JSON 路径（Translation Result Schema）
 - `--glossary`: 术语表 JSON 路径
 - `--target-lang`: 目标语言代码
-- `--mode`: 门禁模式，`fast` | `high_quality`（default: `high_quality`）
 - `--placeholder-map`: 占位符映射表 JSON。仅 high_quality 模式使用，可选
+
+Mode 自动从 `.literature_translator_tmp/mode.txt` 读取（Phase 1 写入），不可通过命令行覆盖。
 
 ### 输出（stdout JSON）
 
