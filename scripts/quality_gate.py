@@ -537,6 +537,17 @@ def resolve_placeholders(text: str, placeholder_entries: dict[str, str]) -> str:
     return PH_RE.sub(_replace, text)
 
 
+def resolve_mode() -> str:
+    """Resolve mode from workspace mode.txt. Mode is fixed for the entire run."""
+    for candidate in [".literature_translator_tmp/mode.txt", "workspace/mode.txt"]:
+        p = Path(candidate)
+        if p.exists():
+            mode_value = p.read_text(encoding="utf-8").strip()
+            if mode_value in ("fast", "high_quality"):
+                return mode_value
+    return "high_quality"  # fallback (should not happen in normal execution)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Translation quality gate (v2)")
     parser.add_argument("--original", required=True, help="Original batch payload JSON")
@@ -545,9 +556,9 @@ def main():
     parser.add_argument("--target-lang", required=True, help="Target language code (e.g., zh-CN, en)")
     parser.add_argument("--placeholder-map", default=None,
                         help="Optional placeholder_map.json for resolving terms/language")
-    parser.add_argument("--mode", default="high_quality", choices=["fast", "high_quality"],
-                        help="Quality gate mode (default: high_quality). fast: skips placeholder/numeric checks")
     args = parser.parse_args()
+
+    mode = resolve_mode()
 
     original_path = Path(args.original)
     translation_path = Path(args.translation)
@@ -664,7 +675,7 @@ def main():
         checks["language"] = {"passed": True, "note": "all blocks are passthrough type"}
 
     # 5. Placeholder preservation
-    if args.mode == "fast":
+    if mode == "fast":
         checks["placeholder_preservation"] = {
             "passed": True, "skipped": True,
             "reason": "fast mode — no placeholders",
@@ -675,7 +686,7 @@ def main():
         )
 
     # 6. Numeric/reference preservation
-    if args.mode == "fast":
+    if mode == "fast":
         checks["numeric_preservation"] = {
             "passed": True, "skipped": True,
             "reason": "fast mode — no placeholders",
