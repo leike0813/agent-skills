@@ -55,13 +55,7 @@
       "items": { "type": "string" }
     },
     "error": {
-      "type": ["object", "null"],
-      "properties": {
-        "type": { "type": "string" },
-        "message": { "type": "string" },
-        "details": {}
-      },
-      "additionalProperties": true
+      "type": ["object", "null"]
     }
   },
   "additionalProperties": false
