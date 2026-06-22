@@ -255,11 +255,30 @@ python3 scripts/partition_batches.py \
    | 非翻译性语言检测 | ✓ | ✓ |
    | 长度类型检查（弱校验）| ✓ | ✓ |
 
-3. **门禁结果处理**：
-   - 全部通过：将翻译结果写入 `.literature_translator_tmp/translations/batch_<N>_translated.json`。
-   - 有失败项：阅读 stdout JSON 中的失败详情，修正翻译后重试。同一 batch 连续失败 3 次后报 blocker。
-   - 弱校验失败（length_check）不作为打回依据。
-4. 所有 batch 通过后，将 `.literature_translator_tmp/translations/manifest.json` 标记为 `complete`。
+3. **门禁结果处理与重试预算**：
+
+   `quality_gate.py` 在 `.literature_translator_tmp/retry_state.json` 中自动维护重试计数。agent 无需手动追踪。
+
+   **通过**：将翻译结果写入 `.literature_translator_tmp/translations/batch_<N>_translated.json`，继续下一个 batch。
+
+   **失败时的修正流程**：
+   a. 阅读 quality gate stdout JSON 中的 `checks` 字段，找到所有 `passed: false` 项。
+   b. 对每个失败项，对照原始 batch payload 定位问题根因：
+      - `term_consistency` 失败 → 检查该术语在原文中的位置和上下文，确认对应的译文句子中是否使用了术语表译法
+      - `placeholder_preservation` 失败 → 在原文 batch payload 中搜索该占位符，定位其所在句子，检查译文对应句中是否保留
+      - `language` 失败（`cjk_ratio` 过低）→ 整批疑似偷懒未翻译，检查是否有大段英文残留
+   c. 输出"失败→修正"对照表（Markdown 表格），每行包含：失败检查项、原文位置（block_id + 句号）、缺失的具体内容、修正方案。
+   d. 根据对照表修正翻译（逐句修正，不要整批重翻——除非 > 50% 句子有问题）。
+   e. 修正后确认所有占位符仍保留（对照原文 batch payload 中的 `<TYPE_NNN>` 逐一校验）。
+   f. 重新调用 `quality_gate.py` 验证。脚本会自动记录重试次数。
+
+   **重试预算**（由 `quality_gate.py` 强制执行，agent 只需遵守 stdout 结果）：
+   - 单个 batch 累计失败 2 次后，第 3 次调用时脚本返回 `{"passed": false, "blocked": true, "reason": "per-batch retry limit reached..."}`。此时停止重试该 batch，保留最佳译文，继续下一个 batch。
+   - 全局累计重试达到 10 次后，脚本对所有后续调用返回 `{"passed": false, "blocked": true, "reason": "global retry budget exhausted"}`。此时所有剩余失败 batch 直接接受当前译文，不再重试，进入 Phase 8。
+   - `length_check`（弱校验）的失败不计入重试预算。
+
+   **占位符保护**：每次重译前，先从原始 batch payload 中提取该 batch 的全部 `<TYPE_NNN>` 占位符列表。修正完成后逐一核对每个占位符在译文中出现。
+4. 所有 batch 处理完毕后，将 `.literature_translator_tmp/translations/manifest.json` 标记为 `complete`。
 
 ### Phase 8: [按 mode 分流] 翻译复核
 
@@ -796,7 +815,7 @@ Phase 1 parse_input.py 返回格式不支持错误。Agent 报告 blocker 并退
 
 - **Phase 1 输入格式不支持**: 报告具体的不可恢复错误，输出 failure JSON。
 - **Phase 3 语言相等**: 正常终止，输出 cancelled JSON（不是错误）。
-- **Phase 7 质量门禁失败**: 阅读失败详情修正翻译后重试。同一 batch 连续失败 3 次则报告 blocker。
+- **Phase 7 质量门禁失败**: 阅读失败详情修正翻译后重试。`quality_gate.py` 自动维护 `.literature_translator_tmp/retry_state.json` 追踪重试次数。重试上限命中时脚本返回 `"blocked": true`，agent 应停止重试该 batch 并继续后续阶段。
 - **Phase 7 subagent 不可用**: 主 agent 串行翻译，不阻塞流程。
 - **Phase 9 译文缺失**: 报告缺失的 block_id，回到 Phase 7 补充翻译。
 - **任何阶段文件损坏/格式错误**: 检查文件内容，必要时删除中间文件重新生成。
