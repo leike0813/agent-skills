@@ -107,7 +107,7 @@ CITATION_EXPORT_FILENAME = "citation_workset_export.json"
 CITATION_REVIEW_EXPORT_FILENAME = "citation_workset_review.json"
 REFERENCES_EXPORT_FILENAME = "references_workset_export.json"
 REFERENCES_REVIEW_EXPORT_FILENAME = "references_workset_review.json"
-REFERENCE_METADATA_ENRICHMENT_EXPORT_FILENAME = "reference_metadata_enrichment_workset.json"
+REFERENCE_METADATA_ENRICHMENT_EXPORT_FILENAME = "reference_metadata_evidence_workset.json"
 REFERENCE_PARSE_AUDIT_FILENAME = "reference_parse_audit.json"
 REFERENCE_SPLIT_REVIEW_AUDIT_FILENAME = "reference_split_review_audit.json"
 RESULT_JSON_FILENAME = "literature-analysis.result.json"
@@ -4852,11 +4852,11 @@ def _repair_state_from_receipts(connection) -> tuple[str, str, str, str]:  # typ
     if has_action_receipt(connection, "prepare_reference_metadata_enrichment"):
         if is_reference_extraction_abandoned(connection):
             return ("stage_5_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
-        return ("stage_4_references", "persist_reference_metadata_enrichment", "persist_reference_metadata_enrichment", "ready to persist reference metadata enrichment")
+        return ("stage_4_references", "persist_reference_metadata_enrichment", "persist_reference_metadata_enrichment", "ready to persist reference metadata evidence review")
     if has_action_receipt(connection, "review_reference_quality"):
-        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata enrichment")
+        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata evidence review")
     if has_action_receipt(connection, "persist_references"):
-        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata enrichment")
+        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata evidence review")
     if has_action_receipt(connection, "persist_reference_entry_splits"):
         return ("stage_4_references", "persist_references", "persist_references", "ready to persist references")
     if has_action_receipt(connection, "prepare_references_workset"):
@@ -6096,7 +6096,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
             stage="stage_4_references",
             substep="prepare_reference_metadata_enrichment",
             next_action="prepare_reference_metadata_enrichment",
-            status="references persisted; prepare metadata enrichment",
+            status="references persisted; prepare metadata evidence review",
         )
         _record_action_receipt(
             connection,
@@ -6369,7 +6369,7 @@ def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> i
                 stage="stage_5_citation",
                 substep="prepare_citation_workset",
                 next_action="prepare_citation_workset",
-                status="reference extraction abandoned; metadata enrichment skipped",
+                status="reference extraction abandoned; metadata evidence review skipped",
             )
             _record_action_receipt(
                 connection,
@@ -6384,7 +6384,7 @@ def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> i
 
         reference_items = fetch_reference_items(connection)
         if not reference_items:
-            message = "reference_items missing; persist_references must run before metadata enrichment"
+            message = "reference_items missing; persist_references must run before metadata evidence review"
             set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
             connection.commit()
             print(json.dumps({"workset_path": "", "error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
@@ -6396,11 +6396,11 @@ def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> i
         rows = _build_reference_metadata_enrichment_rows(reference_items)
         store_reference_metadata_enrichment_workset(connection, rows)
         workset_payload = {
-            "kind": "reference_metadata_enrichment",
+            "kind": "reference_metadata_evidence_review",
             "instructions": {
                 "locked_fields": ["author", "title", "year", "raw", "confidence"],
                 "allowed_metadata_fields": list(REFERENCE_RICH_METADATA_FIELDS),
-                "single_writer": "Subagents may draft per-batch metadata, but the main agent must merge and submit one persist_reference_metadata_enrichment payload.",
+                "single_writer": "Subagents may draft per-batch metadata evidence, but the main agent must merge and submit one Reference Metadata Evidence Review payload.",
             },
             "items": _reference_metadata_enrichment_public_rows(rows),
         }
@@ -6410,7 +6410,7 @@ def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> i
             stage="stage_4_references",
             substep="persist_reference_metadata_enrichment",
             next_action="persist_reference_metadata_enrichment",
-            status="reference metadata enrichment workset prepared",
+            status="reference metadata evidence workset prepared",
         )
         _record_action_receipt(
             connection,
@@ -6448,7 +6448,7 @@ def _handle_persist_reference_metadata_enrichment(args: argparse.Namespace) -> i
             return 2
 
         if not workset_rows:
-            return fail("reference metadata enrichment workset missing; run prepare_reference_metadata_enrichment first")
+            return fail("reference metadata evidence workset missing; run prepare_reference_metadata_enrichment first")
         if not isinstance(items, list):
             return fail("items must be an array")
 
@@ -6518,7 +6518,7 @@ def _handle_persist_reference_metadata_enrichment(args: argparse.Namespace) -> i
             stage="stage_5_citation",
             substep="prepare_citation_workset",
             next_action="prepare_citation_workset",
-            status="reference metadata enrichment persisted",
+            status="reference metadata evidence review persisted",
         )
         _record_action_receipt(
             connection,
@@ -6561,7 +6561,7 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         reference_items = fetch_reference_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
         if not reference_free_mode and not has_action_receipt(connection, "persist_reference_metadata_enrichment"):
-            message = "reference metadata enrichment missing; run prepare_reference_metadata_enrichment and persist_reference_metadata_enrichment before citation workset"
+            message = "reference metadata evidence review missing; run persist_references core submit and Reference Metadata Evidence Review before citation workset"
             set_runtime_error(connection, "citation_scope_failed", message, "stage_5_citation")
             connection.commit()
             print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": message}}, ensure_ascii=False))

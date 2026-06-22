@@ -31,7 +31,7 @@ Runtime path is owned by `literature-analysis/scripts/analysis_runtime` and `lit
 
 ## Subagent Delegation Contract
 
-Reference core review、reference metadata enrichment、citation semantic review 是本 skill 的默认可委派工作。只要当前环境支持 subagent、runtime/JIT 返回 batch file paths，且 batch 不是小到无需拆分或上下文不可拆，主 agent 必须默认按 runtime 预切 batch 委派。跳过委派时，主 agent 应在执行 notes、`review_notes` 或 payload 合并说明中保留原因。
+Reference core review、Reference Metadata Evidence Review、citation semantic review 是本 skill 的默认可委派工作。只要当前环境支持 subagent、runtime/JIT 返回 batch file paths，且 batch 不是小到无需拆分或上下文不可拆，主 agent 必须默认按 runtime 预切 batch 委派。跳过委派时，主 agent 应在执行 notes、`review_notes` 或 payload 合并说明中保留原因。
 
 主 agent 职责：
 
@@ -47,7 +47,7 @@ Subagent 职责：
 - 不写 DB，不运行 runtime command，不提交 payload，不生成 final artifacts。
 - 不改 `reference_key` / `citation_work_key` 等 stable keys。
 - 不填 `raw`、`confidence`、`ref_index`、mentions、timeline bucket、`report_md` 等内部审计或 renderer 字段。
-- 不修改 locked fields；metadata enrichment 只能返回 canonical metadata 字段和 evidence note。
+- 不修改 locked fields；Reference Metadata Evidence Review 只能基于 batch JSON 中的本地证据返回 canonical metadata 字段和 evidence note。
 
 Subagent 禁止处理全局闭包：citation timeline bucket membership、全局 `summary`、最终 report 和 artifact 渲染始终由 runtime 或主 agent 负责。
 
@@ -56,7 +56,7 @@ Runtime batch files are written under `.literature_analysis_tmp/agent_work/`. Ea
 Mandatory delegation points:
 
 - Reference Core Review Delegation Point：`persist_references` prepare 返回 `reference_core_review_manifest_path` 与 `reference_core_batch_paths` 后，主 agent 必须把每个 batch JSON 文件路径交给 subagent；subagent 读取该文件并使用其中的 prompt 和 package 子集完成 draft。
-- Metadata Enrichment Delegation Point：core `reference_reviews[]` submit 成功并返回 `metadata_review_manifest_path` 与 `metadata_batch_paths` 后，主 agent 必须把每个 metadata batch JSON 文件路径交给 subagent；subagent 只处理该文件内 keys。
+- Reference Metadata Evidence Review Delegation Point：core `reference_reviews[]` submit 成功并返回 `metadata_evidence_review_manifest_path` 与 `metadata_evidence_batch_paths` 后，主 agent 必须把每个 metadata evidence batch JSON 文件路径交给 subagent；subagent 只处理该文件内 keys。
 - Citation Semantic Review Delegation Point：`persist_citation_analysis` prepare 返回 `citation_semantic_review_manifest_path` 与 `citation_batch_paths` 后，主 agent 必须把每个 citation batch JSON 文件路径交给 subagent；subagent 读取该文件并返回 `citation_semantic_reviews[]` draft。
 
 Allowed reasons to skip a delegation point are limited to: no subagent capability in the environment, a trivially small batch where delegation adds no value, or a batch that cannot be split without losing necessary context. Do not skip because a temporary script seems faster.
@@ -185,7 +185,7 @@ Allowed reasons to skip a delegation point are limited to: no subagent capabilit
 - `literature_matching_metadata`
 - digest 槽位内容与分章节总结
 - representative image 的文本证据判断
-- reference candidate 选择、核心字段 refinement、metadata enrichment
+- reference candidate 选择、核心字段 refinement、Reference Metadata Evidence Review
 - split review 的边界判断与 source-preserving corrected reference texts
 - citation semantic review，包括 `topic`、`usage`、`role_in_context`、`keywords`、item `summary` 和 `key_reference_reason`
 - `timeline_summaries` 和全局 citation `summary`
@@ -204,8 +204,8 @@ Allowed reasons to skip a delegation point are limited to: no subagent capabilit
 
 绝对禁止：
 
-- 用临时脚本、正则批处理或批量规则代替 LLM/subagent 做摘要、大纲、scope 决策、representative image 判断、reference candidate 选择、authors/title/year refinement、metadata enrichment、split review 边界判断、citation semantic review、timeline narratives 或全局 summary。
-- 用临时脚本从 workset 自动填充 `reference_reviews[]`、`metadata_reviews[]` 或 `citation_semantic_reviews[]` 的语义字段。
+- 用临时脚本、正则批处理或批量规则代替 LLM/subagent 做摘要、大纲、scope 决策、representative image 判断、reference candidate 选择、authors/title/year refinement、Reference Metadata Evidence Review、split review 边界判断、citation semantic review、timeline narratives 或全局 summary。
+- 用临时脚本从 workset 自动填充 `reference_reviews[]`、`metadata_evidence_reviews[]` 或 `citation_semantic_reviews[]` 的语义字段。
 - 允许的脚本用途仅限：调用 `run_analysis.py`、读取/格式化 runtime 返回的 work packages、检查 JSON 语法、统计 stable key 覆盖、合并已经由 LLM/subagent 产出的 batch drafts、把已经审核过的决策序列化为 payload 文件。
 - 绕过 `run_analysis.py` 手工写 DB。
 - 手工编辑最终公开 JSON 再假装它来自 renderer。
@@ -235,7 +235,7 @@ Allowed reasons to skip a delegation point are limited to: no subagent capabilit
 - `requires_split_review`：reference deterministic preprocess 判断仍需条目边界复核。
 - `file_quality_low`：reference 文件级质量低信号；只有 DB 中 deterministic preprocess 写入时才有效。
 - `reference_preprocess_quality`：reference preprocess 的质量指标快照；agent 不得在 payload 中伪造。
-- `metadata_reviews`：reference rich metadata 的 agent 审核结果，只补 allowed metadata。
+- `metadata_evidence_reviews`：reference metadata 的本地证据审核结果，只从 batch JSON 可见证据中抽取 allowed metadata。
 - `mention_id`：citation mention 唯一 ID。
 - `citation_work_key`：citation semantic review 的稳定工作键，例如 `citation-work-12`。
 - `source_reference_number`：原文数字引用编号，仅供人工定位。
@@ -253,7 +253,7 @@ Allowed reasons to skip a delegation point are limited to: no subagent capabilit
 
 - [source_and_plan.md](references/source_and_plan.md)：`init_runtime`、`persist_analysis_plan`、source normalization、scope 决策。
 - [digest_generation.md](references/digest_generation.md)：`persist_digest`、digest slot、section summary、representative image。
-- [reference_extraction.md](references/reference_extraction.md)：`persist_references`、split review、quality gate、metadata enrichment、bibliography formats。
+- [reference_extraction.md](references/reference_extraction.md)：`persist_references`、split review、quality gate、Reference Metadata Evidence Review、bibliography formats。
 - [citation_analysis.md](references/citation_analysis.md)：`persist_citation_analysis`、mention mapping、semantics、timeline、summary。
 - [finalization_and_recovery.md](references/finalization_and_recovery.md)：`finalize_outputs`、render validation、错误恢复。
 
@@ -475,8 +475,8 @@ python scripts/run_analysis.py persist_references --db-path "<db_path>" --payloa
 ```bash
 python scripts/run_analysis.py persist_references --db-path "<db_path>" --payload-file reference_metadata.json
 ```
-- metadata submit 必须 payload：
-  - `metadata_reviews`
+- metadata evidence submit 必须 payload：
+  - `metadata_evidence_reviews`
 - `reference_reviews[*]` 字段含义：
   - `reference_key`：来自 `reference_core_batch_paths[*]` 文件内 `reference_review_packages[*].reference_key` 的稳定工作键。
   - `selected_parse_pattern`：必填 parse hypothesis；只能取同一 batch 文件内 `allowed_parse_patterns_by_reference_key` 中列出的值。
@@ -486,12 +486,12 @@ python scripts/run_analysis.py persist_references --db-path "<db_path>" --payloa
   - `review_notes`：可选，说明低置信或人工判断依据。
 - `reference_reviews[*]` 禁止字段：
   - 不得提交 `metadata`、`raw`、`confidence`、`ref_index` 或任何 DB/renderer 审计字段。
-  - 富元数据必须等 runtime 返回 `metadata_review_manifest_path` / `metadata_batch_paths` 后，通过 `metadata_reviews[]` 单独提交。
-- `metadata_reviews[*]` 字段含义：
-  - `reference_key`：来自 `metadata_batch_paths[*]` 文件内的 `metadata_review_packages[*].reference_key`。
-  - `status`：必填，只能是 `enriched`、`confirmed_existing`、`no_metadata_found`。
-  - `metadata`：仅当 `status="enriched"` 时填写；只能填写有证据的 canonical metadata 字段。
-  - `evidence_note`：说明 metadata 证据来自 `metadata_context_text`、原始 reference 或外部可验证来源。
+  - 富元数据必须等 runtime 返回 `metadata_evidence_review_manifest_path` / `metadata_evidence_batch_paths` 后，通过 `metadata_evidence_reviews[]` 单独提交。
+- `metadata_evidence_reviews[*]` 字段含义：
+  - `reference_key`：来自 `metadata_evidence_batch_paths[*]` 文件内的 `metadata_evidence_packages[*].reference_key`。
+  - `status`：必填，只能是 `fields_extracted`、`existing_fields_confirmed`、`no_local_evidence`。
+  - `metadata`：仅当 `status="fields_extracted"` 时填写；只能填写 batch JSON 本地证据支持的 canonical metadata 字段。
+  - `evidence_note`：说明 metadata 证据来自 batch JSON 的 `locked_reference`、`existing_metadata` 或 `metadata_context_text`。
 - Metadata canonical 字段：
   - 首选 `publicationTitle`、`DOI`、`ISBN`、`ISSN`、`archiveID`、`url`、`publisher`、`place`、`pages`、`volume`、`issue`、`itemType`、`date`、`conferenceName`、`university`。
   - Runtime 会把确定性别名如 `journal`、`journalTitle`、`journal_title`、`doi`、`isbn`、`issn`、`arxivId`、裸 arXiv id 规范化为 canonical 字段并写 warning。
@@ -501,11 +501,11 @@ python scripts/run_analysis.py persist_references --db-path "<db_path>" --payloa
   - `action`：来自该 package 的 `allowed_actions`。
   - `corrected_reference_texts`：当需要修正条目边界时，给出修正后的完整 reference 文本数组；可修复换行、空白、Unicode/全角半角、引号、破折号和标点样式差异，但不得翻译、改写、删 DOI/URL/arXiv ID、删作者/标题关键词，或补不存在的内容。
 - Subagent hard rules：
-  - 当环境支持 subagent 且存在 `reference_core_batch_paths` / `metadata_batch_paths` 时，core reference review 和 metadata review 必须默认按 runtime 预切 batch 文件分批委派。
+  - 当环境支持 subagent 且存在 `reference_core_batch_paths` / `metadata_evidence_batch_paths` 时，core reference review 和 Reference Metadata Evidence Review 必须默认按 runtime 预切 batch 文件分批委派。
   - 只有环境不支持、batch 极小，或上下文不可拆时才由主 agent 自行完成；跳过原因写入执行 notes 或 `review_notes`。
   - subagent 只读取被分配的 batch JSON 文件，只返回 batch draft；不得写 DB、不得改 key、不得补 `raw`/`confidence`/`ref_index` 等内部审计字段。
   - 如果 subagent 可写文件，优先写到 batch JSON 中的 `suggested_draft_output_path` 并返回路径；否则直接返回 batch draft JSON。
-  - 主 agent 先合并 core reference drafts 并提交 `reference_reviews[]`；成功后读取 `metadata_batch_paths`，再合并 metadata drafts 并提交 `metadata_reviews[]`。
+  - 主 agent 先合并 core reference drafts 并提交 `reference_reviews[]`；成功后读取 `metadata_evidence_batch_paths`，再合并 metadata evidence drafts 并提交 `metadata_evidence_reviews[]`。
   - 主 agent 是唯一 DB 写入者。
 - Reference core review subagent prompt (short)：
 ```text
@@ -518,14 +518,17 @@ Do not include metadata, raw text, confidence, ref_index, database fields, rende
 If file writing is available, write the draft to suggested_draft_output_path and return that path.
 Do not write DB, run runtime commands, submit payloads, or generate final artifacts.
 ```
-- Metadata enrichment subagent prompt (short)：
+- Reference Metadata Evidence Review subagent prompt (short)：
 ```text
-You are enriching one literature-analysis reference metadata batch.
+This is not a metadata discovery task.
+You are reviewing one literature-analysis reference metadata evidence batch.
 Read the provided batch JSON file path first.
-Use only metadata_review_packages, allowed_metadata_fields, and locked_fields in that batch file.
-Return JSON with metadata_reviews[] only.
-For each package, keep reference_key unchanged and set status to enriched, confirmed_existing, or no_metadata_found.
-Only include metadata for status=enriched, only use canonical metadata fields, and include evidence_note.
+Use only metadata_evidence_packages, allowed_metadata_fields, locked_fields, and evidence_policy in that batch file.
+external_lookup_allowed is false: do not use web search, Crossref, arXiv, Google Scholar, Zotero, Semantic Scholar, DOI resolvers, or any external database.
+Return JSON with metadata_evidence_reviews[] only.
+For each package, keep reference_key unchanged and set status to fields_extracted, existing_fields_confirmed, or no_local_evidence.
+Only include metadata for status=fields_extracted, only use canonical metadata fields, and include evidence_note naming the batch JSON field that supports each value.
+If the information is not visible in locked_reference, existing_metadata, or metadata_context_text, use no_local_evidence. Do not search.
 Do not modify locked fields, stable keys, selected_parse_pattern, raw text, confidence, ref_index, or other internal fields.
 If file writing is available, write the draft to suggested_draft_output_path and return that path.
 Do not write DB, run runtime commands, submit payloads, or generate final artifacts.
@@ -555,28 +558,27 @@ Do not write DB, run runtime commands, submit payloads, or generate final artifa
 - metadata submit 最小合法示例：
 ```json
 {
-  "metadata_reviews": [
+  "metadata_evidence_reviews": [
     {
       "reference_key": "reference-10",
-      "status": "enriched",
+      "status": "fields_extracted",
       "metadata": {
         "conferenceName": "ICLR",
-        "pages": "12-20",
-        "DOI": "10.1000/example"
+        "pages": "12-20"
       },
-      "evidence_note": "Venue and pages are present in the source text."
+      "evidence_note": "Venue and pages are visible in metadata_context_text."
     }
   ]
 }
 ```
 - core submit 成功后应该看到：
   - `stored_reference_items`
-  - `metadata_review_packages`
+  - `metadata_evidence_packages`
   - `instructions.allowed_metadata_fields`
   - `instructions.locked_fields`
   - `next_action = "persist_references"`
 - metadata submit 成功后应该看到：
-  - `metadata_enrichment`
+  - `metadata_evidence_review`
   - `next_action = "persist_citation_analysis"`
 - 关键失败分支：
   - `requires_split_review=true`：先提交 `split_reviews[]` 修正 suspect blocks；若边界改变，runtime 会返回 regenerated reference review packages，随后再提交 `reference_reviews[]`。
@@ -585,7 +587,7 @@ Do not write DB, run runtime commands, submit payloads, or generate final artifa
   - `file_quality_low=true`：只能基于 DB 中 deterministic quality snapshot 做 continue/abandon 决策。
   - invalid pattern：按错误详情中列出的 `allowed_parse_patterns_by_reference_key` 修正所有问题后重交。
   - missing/duplicate/unknown `reference_key`：一次性修正覆盖集合后重交。
-  - core payload 含 `metadata`：改为先提交 core fields，等待 `metadata_review_packages` 后再提交 `metadata_reviews[]`。
+  - core payload 含 `metadata`：改为先提交 core fields，等待 `metadata_evidence_packages` 后再提交 `metadata_evidence_reviews[]`。
   - metadata submit 覆盖不完整：按错误详情一次性补齐 missing/duplicate/unknown `reference_key`。
 
 ### 5. `persist_citation_analysis`
@@ -724,7 +726,7 @@ python scripts/run_analysis.py finalize_outputs --db-path "<db_path>"
 
 - digest 阶段不得提交近最终 Markdown，只能提交结构化槽位。
 - references 阶段不得凭空编造未出现在 `references_scope` 的条目。
-- metadata enrichment 不得修改 locked core fields。
+- Reference Metadata Evidence Review 不得修改 locked core fields，不得联网发现缺失 metadata。
 - citation 语义阶段不得重做 mention-reference join。
 - citation 阶段不得直接写 `report_md`。
 - `citation_analysis.summary` 是必填全局字段。

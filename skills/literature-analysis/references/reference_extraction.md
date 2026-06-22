@@ -51,14 +51,14 @@ Core submit payload:
 }
 ```
 
-Metadata submit payload, after runtime returns `metadata_review_manifest_path` and `metadata_batch_paths`:
+Reference Metadata Evidence Review submit payload, after runtime returns `metadata_evidence_review_manifest_path` and `metadata_evidence_batch_paths`:
 
 ```json
 {
-  "metadata_reviews": [
+  "metadata_evidence_reviews": [
     {
       "reference_key": "reference-0",
-      "status": "enriched",
+      "status": "fields_extracted",
       "metadata": {
         "conferenceName": "ECCV",
         "publicationTitle": "Lecture Notes in Computer Science",
@@ -90,7 +90,7 @@ Split repair payload, before core submit when `split_review_packages` require bo
 }
 ```
 
-`reference_reviews` and `metadata_reviews` are separate submit rounds. Do not submit them together. `reference_reviews[].metadata` is forbidden because metadata enrichment must use the runtime-generated metadata batch files. In plain terms: reference_reviews[].metadata is forbidden. `split_reviews` is used first when boundary repair is required; if it changes boundaries, runtime regenerates reference core batch files and the agent must submit `reference_reviews` with the regenerated keys afterward.
+`reference_reviews` and `metadata_evidence_reviews` are separate submit rounds. Do not submit them together. `reference_reviews[].metadata` is forbidden because Reference Metadata Evidence Review must use the runtime-generated metadata evidence batch files. In plain terms: reference_reviews[].metadata is forbidden. `split_reviews` is used first when boundary repair is required; if it changes boundaries, runtime regenerates reference core batch files and the agent must submit `reference_reviews` with the regenerated keys afterward.
 
 ## Field Guidance
 
@@ -105,10 +105,10 @@ Do not submit metadata, raw source text, confidence values, renderer labels, par
 
 Metadata review fields:
 
-- `reference_key`: stable key from the assigned `metadata_batch_paths` file.
-- `status`: one of `enriched`, `confirmed_existing`, `no_metadata_found`.
-- `metadata`: required only for `status=enriched`; omit or leave empty for `confirmed_existing` and `no_metadata_found`.
-- `evidence_note`: short note tying metadata to `metadata_context_text`, source text, or a verifiable bibliographic source.
+- `reference_key`: stable key from the assigned `metadata_evidence_batch_paths` file.
+- `status`: one of `fields_extracted`, `existing_fields_confirmed`, `no_local_evidence`.
+- `metadata`: required only for `status=fields_extracted`; omit or leave empty for `existing_fields_confirmed` and `no_local_evidence`.
+- `evidence_note`: short note tying metadata to `locked_reference`, `existing_metadata`, `metadata_context_text`, or raw/source text explicitly present in the batch JSON file.
 
 Do not modify locked core fields in metadata review. The workset exposes locked fields once in `instructions.locked_fields`; individual items show `locked_reference` only for reading.
 
@@ -144,7 +144,7 @@ LLM/subagent owns:
 
 - Split review boundary judgment and source-preserving `corrected_reference_texts`.
 - Core reference review: selecting `selected_parse_pattern`, refining authors/title/year, and writing `review_notes`.
-- Metadata enrichment: deciding `status`, evidence-backed canonical metadata fields, and `evidence_note`.
+- Reference Metadata Evidence Review: deciding `status`, local evidence-backed canonical metadata fields, and `evidence_note`.
 
 Do not use a temporary script, regex batch processor, or bulk transformation to infer authors, titles, years, parse pattern choices, split boundaries, or metadata. Scripts may only inspect runtime packages, count key coverage, merge already-returned subagent drafts, normalize JSON syntax, or call `run_analysis.py`.
 
@@ -152,11 +152,11 @@ Do not use a temporary script, regex batch processor, or bulk transformation to 
 
 Use subagents by default when available for batchable work.
 
-When `reference_core_batch_paths` or `metadata_batch_paths` are present and the environment supports subagents, the main agent must delegate core reference review and metadata enrichment by runtime-precut batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes or `review_notes`.
+When `reference_core_batch_paths` or `metadata_evidence_batch_paths` are present and the environment supports subagents, the main agent must delegate core reference review and Reference Metadata Evidence Review by runtime-precut batch unless the batch is trivially small or cannot be split without losing context. If delegation is skipped, keep the reason in execution notes or `review_notes`.
 
 Use the prompt sections below at the exact task points named here.
 
-Subagent prompt template sections are task-specific. Use the core prompt only at the Reference Core Review Delegation Point, and use the metadata prompt only at the Metadata Enrichment Delegation Point.
+Subagent prompt template sections are task-specific. Use the core prompt only at the Reference Core Review Delegation Point, and use the metadata prompt only at the Reference Metadata Evidence Review Delegation Point.
 
 Runtime owns batch splitting. Do not manually split a full workset or review sidecar into subagent inputs. Each batch JSON file contains at most 10 entries, the package subset, allowed enum subset, prompt, merge notes, and `suggested_draft_output_path`.
 
@@ -180,7 +180,7 @@ Read the batch JSON file path provided by the main agent.
 Use only reference_review_packages and allowed_parse_patterns_by_reference_key in that batch file.
 Return JSON with reference_reviews[] only.
 For each package, choose selected_parse_pattern from the allowed list, then provide authors, title, publication_year, and review_notes.
-Do not include metadata. Metadata enrichment happens in the next metadata_review_packages round.
+Do not include metadata. Reference Metadata Evidence Review happens in the next metadata_evidence_packages round.
 Do not include raw text, confidence, database IDs, renderer fields, or entries outside this batch.
 If file writing is available, write the draft to suggested_draft_output_path and return that path.
 Do not write DB, run runtime commands, submit payloads, modify stable keys, or generate final artifacts.
@@ -205,31 +205,35 @@ Subagent batch draft shape:
 }
 ```
 
-### Metadata Enrichment Delegation Point
+### Reference Metadata Evidence Review Delegation Point
 
-When core `reference_reviews[]` submit succeeds and runtime returns `metadata_review_manifest_path` and `metadata_batch_paths`, delegate each metadata batch by passing the batch JSON file path to a subagent. Do this before constructing the final `metadata_reviews[]` payload.
+When core `reference_reviews[]` submit succeeds and runtime returns `metadata_evidence_review_manifest_path` and `metadata_evidence_batch_paths`, delegate each metadata evidence batch by passing the batch JSON file path to a subagent. Do this before constructing the final `metadata_evidence_reviews[]` payload.
 
 Main agent:
 
-1. Reads returned metadata manifest, batch paths, and instruction-level allowed/locked fields.
-2. Sends each metadata batch JSON file path to a subagent by default when subagents are available.
+1. Reads returned metadata evidence manifest, batch paths, and instruction-level allowed/locked fields.
+2. Sends each metadata evidence batch JSON file path to a subagent by default when subagents are available.
 3. Merges returned drafts.
 4. Checks every metadata `reference_key` appears exactly once.
 5. Corrects obvious alias fields to canonical names when merging.
-6. Submits one `metadata_reviews[]` payload.
+6. Submits one `metadata_evidence_reviews[]` payload.
 
-Metadata enrichment subagent prompt template:
+Reference Metadata Evidence Review subagent prompt template:
 
 ```text
-You are enriching one literature-analysis metadata batch.
+This is not a metadata discovery task.
+You are reviewing one literature-analysis metadata evidence batch.
 Read the batch JSON file path provided by the main agent.
-Return JSON with metadata_reviews[] only.
+Return JSON with metadata_evidence_reviews[] only.
 Use reference_key as the key.
-For each item, set status to enriched, confirmed_existing, or no_metadata_found.
-Only add metadata when status is enriched, and only when it appears in source_text, metadata_context_text, or another verifiable bibliographic source.
+For each item, set status to fields_extracted, existing_fields_confirmed, or no_local_evidence.
+Only add metadata when status is fields_extracted, and only when it appears in locked_reference, existing_metadata, metadata_context_text, or raw/source text explicitly present in this batch JSON file.
 Use canonical metadata fields only: publicationTitle, conferenceName, archiveID, university, volume, issue, pages, numPages, DOI, url, publisher, place, ISBN, ISSN, itemType, date.
 Do not modify authors, title, publication_year, selected_parse_pattern, raw text, confidence, ref_index, or other locked/internal fields.
-Prioritize parsing the information already provided in the JSON file to enrich the metadata; do not use web search to supplement information unless absolutely necessary.
+external_lookup_allowed: false.
+No web search. Do not use Crossref, arXiv, Google Scholar, Zotero, Semantic Scholar, DOI resolver, or any external database.
+Do not infer venue from general knowledge, guess DOI from title, or guess publisher/venue from author/year.
+If the information is not visible in the batch JSON file, return no_local_evidence. Do not search.
 Do not write DB or final artifacts. Return only the batch draft.
 If file writing is available, write the draft to suggested_draft_output_path and return that path.
 Do not run runtime commands, submit payloads, or modify stable keys.
@@ -240,10 +244,10 @@ Metadata batch draft shape:
 ```json
 {
   "batch_key": "metadata-batch-0",
-  "metadata_reviews": [
+  "metadata_evidence_reviews": [
     {
       "reference_key": "reference-0",
-      "status": "enriched",
+      "status": "fields_extracted",
       "metadata": {
         "publicationTitle": "Lecture Notes in Computer Science",
         "volume": "8693",
@@ -253,7 +257,7 @@ Metadata batch draft shape:
     },
     {
       "reference_key": "reference-1",
-      "status": "no_metadata_found",
+      "status": "no_local_evidence",
       "evidence_note": "No container, DOI, URL, or archive id appears in metadata_context_text."
     }
   ],
@@ -261,18 +265,20 @@ Metadata batch draft shape:
 }
 ```
 
-The main agent is the only DB writer. It must merge subagent drafts, keep each `reference_key` stable, remove duplicates, cover every metadata package, and prefer canonical metadata names before submitting. Runtime normalizes common aliases as a fallback, but subagent prompts should not rely on that fallback.
+The main agent is the only DB writer. It must merge subagent drafts, keep each `reference_key` stable, remove duplicates, cover every metadata evidence package, and prefer canonical metadata names before submitting. Runtime normalizes common aliases as a fallback, but subagent prompts should not rely on that fallback. The normalizer does not permit external discovery.
 
 ## Metadata Workset Shape
 
 Metadata prepare output uses instruction-level guidance:
 
-- `instructions.allowed_metadata_fields`: canonical metadata fields allowed in `metadata_reviews[].metadata`.
+- `instructions.allowed_metadata_fields`: canonical metadata fields allowed in `metadata_evidence_reviews[].metadata`.
 - `instructions.locked_fields`: core fields that metadata review must not change.
-- `metadata_review_manifest_path`: manifest containing coverage keys and batch paths.
-- `metadata_batch_paths`: runtime-precut subagent input files, each with at most 10 metadata packages.
+- `metadata_evidence_review_manifest_path`: manifest containing coverage keys and batch paths.
+- `metadata_evidence_batch_paths`: runtime-precut subagent input files, each with at most 10 metadata evidence packages.
 - `subagent_prompt_template`: ready-to-use metadata prompt.
 - `merge_contract`: required coverage and forbidden fields.
+- `external_lookup_allowed`: always `false`.
+- `evidence_policy`: local evidence sources and forbidden external lookup actions.
 
 Each metadata package contains item-specific context only:
 
@@ -284,6 +290,33 @@ Each metadata package contains item-specific context only:
 - `status`
 
 Do not expect each item to repeat `allowed_metadata_fields`; read those once from `instructions`.
+
+## Evidence Policy Examples
+
+Reference Metadata Evidence Review is not metadata discovery.
+
+Allowed evidence:
+
+- `locked_reference`
+- `existing_metadata`
+- `metadata_context_text`
+- raw/source text explicitly present in the assigned batch JSON file
+
+Forbidden actions:
+
+- no web search
+- no Crossref/arXiv/DOI resolver
+- no Google Scholar, Zotero, Semantic Scholar, or external database
+- no guessing DOI from title
+- no guessing venue, publisher, or place from author/year
+
+Legal: if raw text contains `arXiv:2004.10934`, return `archiveID: "arXiv:2004.10934"` and cite `metadata_context_text` in `evidence_note`.
+
+Illegal: if no DOI appears in the batch JSON file, do not search the title online and do not return a DOI.
+
+Legal: a web/resource reference may have no authors or year; extract only visible `url` or `itemType` evidence and leave missing core fields unchanged.
+
+Legal: only preserve LNCS volume/pages or conference metadata when `LNCS`, `vol.`, page range, or the venue tail is visible in the batch JSON file.
 
 ## Bibliography Formats
 
@@ -481,7 +514,7 @@ Runtime tables and sidecars used by this stage:
 - `reference_entries`: deterministic entry boundaries.
 - `reference_parse_candidates`: parse hypotheses.
 - `reference_items`: persisted normalized references.
-- `reference_metadata_enrichment_workset`: enrichment review aid.
+- `reference_metadata_evidence_workset`: local metadata evidence review aid.
 
 Public `references.json` is rendered from `reference_items`. It contains bibliographic fields and renderer-owned `ref_index`, but not parse/debug fields. The agent never edits it directly. Parse candidate audit lives in `.literature_analysis_tmp/reference_parse_audit.json`.
 
@@ -508,12 +541,12 @@ Core review:
 }
 ```
 
-Metadata review:
+Metadata evidence review:
 
 ```json
 {
   "reference_key": "reference-1",
-  "status": "enriched",
+  "status": "fields_extracted",
   "metadata": {"archiveID": "arXiv:2004.08483"},
   "evidence_note": "The archive id appears in the source text."
 }
@@ -540,12 +573,12 @@ Core review:
 }
 ```
 
-Metadata review:
+Metadata evidence review:
 
 ```json
 {
   "reference_key": "reference-11",
-  "status": "enriched",
+  "status": "fields_extracted",
   "metadata": {"conferenceName": "ICLR"},
   "evidence_note": "The source text contains `In: ICLR (2018)`."
 }
@@ -572,12 +605,12 @@ Core review:
 }
 ```
 
-Metadata review:
+Metadata evidence review:
 
 ```json
 {
   "reference_key": "reference-3",
-  "status": "enriched",
+  "status": "fields_extracted",
   "metadata": {"conferenceName": "CVPR"},
   "evidence_note": "The venue appears before the year."
 }
@@ -604,12 +637,12 @@ Core review:
 }
 ```
 
-Metadata review:
+Metadata evidence review:
 
 ```json
 {
   "reference_key": "reference-4",
-  "status": "enriched",
+  "status": "fields_extracted",
   "metadata": {"publicationTitle": "Journal of Information Science", "volume": "45", "issue": "2", "pages": "100-115"},
   "evidence_note": "The source text contains the journal title, volume, issue, and page range."
 }
@@ -636,12 +669,12 @@ Core review:
 }
 ```
 
-Metadata review:
+Metadata evidence review:
 
 ```json
 {
   "reference_key": "reference-5",
-  "status": "enriched",
+  "status": "fields_extracted",
   "metadata": {"university": "Tsinghua University", "place": "Beijing"},
   "evidence_note": "The institution and place appear in the thesis tail."
 }
