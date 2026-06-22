@@ -261,7 +261,7 @@ python scripts/run_digest.py --mode render \
     "input_hash": "sha256:0123456789abcdef"
   },
   "warnings": [],
-  "error": null
+  "error": {}
 }
 ```
 
