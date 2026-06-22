@@ -137,6 +137,37 @@ Agent 需要核验 flat 模式下的级别推断是否正确。
 - 公式块：原文保留，不做任何修改。
 - 代码块：原文保留，不做任何修改。包括其中的注释、字符串、变量名等。
 
+### 质量门禁重试细则
+
+当 quality_gate.py 返回 `passed: false` 时，按以下规则处理。
+
+**重试计数由脚本自动维护**。`quality_gate.py` 在 `.literature_translator_tmp/retry_state.json` 中持久化重试状态（`batch_retries` 和 `global_retries`）。每次调用时脚本自动读取、检查、更新。agent 的责任是：
+
+- 读取 stdout JSON 中的 `retry_state` 字段了解当前计数
+- 当收到 `"blocked": true` 时停止重试
+- 不需要自己追踪计数器
+
+**重试预算**：
+- 每个 batch 最多 2 次重试（即总共最多 3 次 quality gate 调用）。脚本自动记录。
+- 全局重试次数（所有 batch 的累计重试）不超过 10 次。
+- `length_check`（弱校验）的失败不计入重试预算。
+- 命中上限时脚本返回 `{"passed": false, "blocked": true, "reason": "..."}`，agent 看到 `blocked: true` 应立即停止。
+
+**修正流程**：
+1. 阅读 stdout JSON 中 `checks` 字段，找到所有 `passed: false` 的 check 详情。
+2. 阅读 `retry_state` 字段，了解当前 batch 和全局重试进度。
+3. 对每个失败项，在原始 batch payload 中定位问题所在的 block_id 和句子编号。
+4. 构建"失败→修正"对照表：
+
+```markdown
+| 失败检查项 | Block ID | 句号 | 缺失内容 | 根因 | 修正方案 |
+|-----------|----------|------|---------|------|---------|
+| term_consistency | b_023 | 3 | "attention mechanism" → "注意力机制" | 译文中翻译为"注意机制" | 替换为术语表译法"注意力机制" |
+| placeholder_preservation | b_041 | 2 | <ENT_006> | 重译时漏掉实体占位符 | 在译文对应位置恢复 <ENT_006> |
+```
+
+5. 逐句修正（不要整批重翻），修正后核对所有占位符。
+
 ## Phase 5a: 占位符保护细则
 
 ### 受保护的行内元素（按替换优先级）

@@ -265,11 +265,14 @@ def check_term_consistency(glossary: dict, translation_text: str, original_text:
 
     Only checks terms that actually appear in the original text for this batch.
 
-    For each entry:
-    - If entry is a "do-not-translate" term (original == translation), verify
-      the original appears in the translation text.
-    - If entry has a defined translation, verify the translation appears
-      at least once in the text (spot check).
+    Matching strategy:
+    - Do-not-translate terms (original == translation): exact case-sensitive
+      match — the original word must appear as-is in the translation.
+    - Terms with a defined translation (original != translation):
+      * translation length >= 3 chars: substring match (case-insensitive).
+        The glossary translation must appear as a contiguous substring.
+      * translation length < 3 chars: exact match to avoid false positives
+        on common short words.
     """
     terms = extract_locked_terms(glossary)
     if not terms:
@@ -285,7 +288,7 @@ def check_term_consistency(glossary: dict, translation_text: str, original_text:
             continue
 
         if original.lower() == translation.lower():
-            # Identity term: check original is preserved
+            # Do-not-translate term: check original is preserved exactly
             if original not in translation_text:
                 violations.append({
                     "term": original,
@@ -293,13 +296,22 @@ def check_term_consistency(glossary: dict, translation_text: str, original_text:
                     "found": False,
                 })
         else:
-            # Check that the defined translation appears
-            if translation not in translation_text:
-                violations.append({
-                    "term": original,
-                    "expected": f"translation '{translation}' should appear in output",
-                    "found": False,
-                })
+            # Term with a defined translation: substring match (len >= 3)
+            if len(translation) >= 3:
+                if translation.lower() not in translation_text.lower():
+                    violations.append({
+                        "term": original,
+                        "expected": f"translation '{translation}' should appear in output (substring match)",
+                        "found": False,
+                    })
+            else:
+                # Short translation (< 3 chars): exact matching only
+                if translation not in translation_text:
+                    violations.append({
+                        "term": original,
+                        "expected": f"translation '{translation}' should appear in output (exact match, short term)",
+                        "found": False,
+                    })
 
     return {
         "passed": len(violations) == 0,
@@ -548,6 +560,79 @@ def resolve_mode() -> str:
     return "high_quality"  # fallback (should not happen in normal execution)
 
 
+# ─── Retry state management ───────────────────────────────────────────────────
+
+MAX_RETRIES_PER_BATCH = 2
+MAX_GLOBAL_RETRIES = 10
+RETRY_STATE_PATH = ".literature_translator_tmp/retry_state.json"
+
+
+def _retry_state_path() -> Path | None:
+    """Resolve the retry state file path."""
+    for candidate in [RETRY_STATE_PATH, "workspace/retry_state.json"]:
+        p = Path(candidate)
+        parent = p.parent
+        if parent.exists() or p.exists():
+            return p
+    # If neither exists, default to the tmp path (will be created on first write)
+    return Path(RETRY_STATE_PATH)
+
+
+def load_retry_state() -> dict:
+    """Load retry state from disk."""
+    p = _retry_state_path()
+    if p and p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"batch_retries": {}, "global_retries": 0}
+
+
+def save_retry_state(state: dict):
+    """Persist retry state to disk."""
+    p = _retry_state_path()
+    if p:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+def check_retry_limits(batch_id: str) -> dict | None:
+    """Check if this batch has exceeded retry limits.
+
+    Returns None if the batch can proceed, or a blocker dict if retrying
+    should be stopped.
+    """
+    state = load_retry_state()
+    per_batch = state.get("batch_retries", {}).get(batch_id, 0)
+    global_retries = state.get("global_retries", 0)
+
+    if per_batch >= MAX_RETRIES_PER_BATCH:
+        return {
+            "passed": False,
+            "blocked": True,
+            "reason": f"per-batch retry limit reached ({per_batch}/{MAX_RETRIES_PER_BATCH}) for {batch_id}",
+            "batch_id": batch_id,
+        }
+    if global_retries >= MAX_GLOBAL_RETRIES:
+        return {
+            "passed": False,
+            "blocked": True,
+            "reason": f"global retry budget exhausted ({global_retries}/{MAX_GLOBAL_RETRIES})",
+            "batch_id": batch_id,
+        }
+    return None
+
+
+def record_retry(batch_id: str):
+    """Increment retry counters for a failed batch."""
+    state = load_retry_state()
+    state.setdefault("batch_retries", {})
+    state["batch_retries"][batch_id] = state["batch_retries"].get(batch_id, 0) + 1
+    state["global_retries"] = state.get("global_retries", 0) + 1
+    save_retry_state(state)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Translation quality gate (v2)")
     parser.add_argument("--original", required=True, help="Original batch payload JSON")
@@ -592,6 +677,14 @@ def main():
             result["pointer"] = glossary_data.get("pointer", "")
             result["hint"] = glossary_data.get("hint", "")
         print(json.dumps(result, ensure_ascii=False))
+        sys.exit(1)
+
+    batch_id = original_data.get("batch_id", translation_data.get("batch_id", "unknown"))
+
+    # Check retry limits before running checks
+    blocker = check_retry_limits(batch_id)
+    if blocker:
+        print(json.dumps(blocker, ensure_ascii=False))
         sys.exit(1)
 
     # Extract sentences
@@ -711,10 +804,21 @@ def main():
         for check in hard_checks.values()
     )
 
+    # Record retry if checks failed
+    if not all_passed:
+        record_retry(batch_id)
+
+    state = load_retry_state()
     result = {
         "passed": all_passed,
-        "batch_id": original_data.get("batch_id", translation_data.get("batch_id", "unknown")),
+        "batch_id": batch_id,
         "checks": checks,
+        "retry_state": {
+            "batch_retries": state.get("batch_retries", {}).get(batch_id, 0),
+            "global_retries": state.get("global_retries", 0),
+            "max_per_batch": MAX_RETRIES_PER_BATCH,
+            "max_global": MAX_GLOBAL_RETRIES,
+        },
     }
 
     print(json.dumps(result, ensure_ascii=False))
