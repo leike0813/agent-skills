@@ -26,10 +26,8 @@
         "type": "array"
     },
     "error": {
-        "type": [
-            "object",
-            "null"
-        ]
+        "type": "object",
+        "additionalProperties": true
     }
   },
   "required": [

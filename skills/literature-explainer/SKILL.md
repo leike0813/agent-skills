@@ -59,7 +59,7 @@ description: An academic paper analysis and question-answering assistant that su
 - `provenance.input_hash`：`sha256:<hex>`（对原始 `source_path` 文件 bytes 计算）
 - `provenance.model`：解析使用的模型
 - `warnings`：数组
-- `error`：`object|null`
+- `error`：`object`, 成功时使用空对象，遇到错误时 `error` 填入 `{code, message}`
 
 输出样式示例：
 ```json
@@ -68,7 +68,7 @@ description: An academic paper analysis and question-answering assistant that su
   "provenance.generated_at": "2026-03-11T12:34:56Z",
   "provenance.input_hash": "7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
   "warnings": [],
-  "error": null
+  "error": {}
 }
 ```
 
