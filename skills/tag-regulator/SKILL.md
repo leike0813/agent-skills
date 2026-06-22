@@ -44,12 +44,12 @@ metadata:
    - `suggest_tags`（对象数组；每项必须包含 `tag`/`note` 字符串；按 `tag` 去重并稳定排序；提供 `valid_tags` 时 `tag` 不得属于 `valid_tags`）
    - `provenance.generated_at`（UTC ISO-8601 字符串，以 `Z` 结尾）
    - `warnings`（数组）
-   - `error`（`object|null`）
+   - `error`（`object`，成功时用 `{}` 表示无错误）
 4) 失败兜底：
    - `input_tags` 缺失时按 `[]` 处理；若已提供但不是字符串数组，则按输入非法失败。
    - 读取/解析已提供的 `{{ input.valid_tags }}` 失败（不可读/类型错误/编码异常/格式不符）时，必须返回 schema 兼容 JSON：
      - `remove_tags=[]`，`add_tags=[]`
-     - `error` 为非空对象，至少包含 `{ "type": "...", "message": "..." }`
+     - `error` 为非空对象，至少包含 `{ "code": "...", "message": "..." }`
      - 仍需包含 `warnings`、`provenance.generated_at`，并在可用时回显 `metadata`/`input_tags`
    - `{{ input.valid_tags }}` 缺失或空值不是错误，必须进入纯推断模式并在成功时输出 `error=null`。
    - 若 `metadata`、可读非空 `digest_markdown`、`input_tags`、`valid_tags` 均缺失或为空，必须直接返回 `error.type="insufficient_input"` 的 schema 兼容 JSON。
@@ -235,7 +235,7 @@ JSON：
 - required keys（全部必须存在）
 - `provenance.generated_at` 为 UTC ISO-8601（例如 `2026-02-11T12:34:56Z`）
 - `warnings`：描述不确定性或降级行为
-- 成功时 `error=null`
+- 成功时 `error={}`
 
 ## 输出 schema（required keys）
 
@@ -248,7 +248,7 @@ JSON：
   "suggest_tags": [{ "tag": "facet:value", "note": "explanation text" }],
   "provenance": { "generated_at": "YYYY-MM-DDTHH:MM:SSZ" },
   "warnings": [],
-  "error": null
+  "error": {}
 }
 ```
 
@@ -287,7 +287,7 @@ JSON：
   "suggest_tags": [],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
   "warnings": [],
-  "error": null
+  "error": {}
 }
 ```
 
@@ -325,7 +325,7 @@ JSON：
   "suggest_tags": [],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
   "warnings": [],
-  "error": null
+  "error": {}
 }
 ```
 
@@ -375,7 +375,7 @@ JSON：
   ],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
   "warnings": ["推断具有启发式性质；如结果异常请人工复核"],
-  "error": null
+  "error": {}
 }
 ```
 
@@ -422,7 +422,7 @@ JSON：
   ],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
   "warnings": [],
-  "error": null
+  "error": {}
 }
 ```
 
@@ -463,7 +463,7 @@ JSON：
   ],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
   "warnings": ["纯推断模式下已忽略 infer_tag=false，以避免无输出"],
-  "error": null
+  "error": {}
 }
 ```
 
@@ -500,7 +500,7 @@ tags:
   "suggest_tags": [],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
   "warnings": [],
-  "error": { "type": "invalid_input", "message": "`valid_tags` must parse as a top-level list of strings" }
+  "error": { "code": "invalid_input", "message": "`valid_tags` must parse as a top-level list of strings" }
 }
 ```
 
@@ -523,6 +523,6 @@ tags:
   "suggest_tags": [],
   "provenance": { "generated_at": "2026-02-11T00:00:00Z" },
   "warnings": [],
-  "error": { "type": "insufficient_input", "message": "No metadata, digest_markdown, input_tags, or valid_tags evidence was provided" }
+  "error": { "code": "insufficient_input", "message": "No metadata, digest_markdown, input_tags, or valid_tags evidence was provided" }
 }
 ```
