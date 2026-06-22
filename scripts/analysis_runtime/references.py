@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,13 @@ from .payload_normalization import CANONICAL_METADATA_FIELDS, merge_warnings, no
 
 REFERENCE_FORBIDDEN_FIELDS = ["items", "selected_pattern", "ref_index", "raw", "confidence", "metadata_enrichment_items"]
 REFERENCE_REVIEW_FORBIDDEN_FIELDS = ["raw", "confidence", "ref_index", "selected_pattern", "metadata"]
-METADATA_REVIEW_STATUSES = {"enriched", "confirmed_existing", "no_metadata_found"}
+METADATA_EVIDENCE_STATUSES = {"fields_extracted", "existing_fields_confirmed", "no_local_evidence"}
+INTERNAL_METADATA_STATUS = {
+    "fields_extracted": "enriched",
+    "existing_fields_confirmed": "confirmed_existing",
+    "no_local_evidence": "no_metadata_found",
+}
+EVIDENCE_MATCHED_METADATA_FIELDS = {"DOI", "url", "archiveID", "ISBN", "ISSN", "pages", "volume", "issue"}
 METADATA_REVIEW_FORBIDDEN_FIELDS = ["author", "authors", "title", "year", "raw", "raw_reference", "reference", "confidence", "ref_index"]
 
 
@@ -28,7 +35,7 @@ def _reference_core_payload_shape() -> dict[str, Any]:
                 "review_notes": "optional",
             }
         ],
-        "note": "Submit metadata_reviews only after runtime returns metadata_review_packages.",
+        "note": "Submit metadata_evidence_reviews only after runtime returns metadata_evidence_packages.",
     }
 
 
@@ -39,7 +46,7 @@ def _reference_core_field_guidance() -> dict[str, Any]:
         "authors": "Array of author strings in source order.",
         "title": "Title in original language/script.",
         "publication_year": "Integer year or null if not supported by source text.",
-        "metadata": "Do not submit metadata in reference_reviews. Runtime returns metadata_review_packages after core references are stored.",
+        "metadata": "Do not submit metadata in reference_reviews. Runtime returns metadata_evidence_packages after core references are stored.",
         "batch_inputs": "Read reference_core_batch_paths; stdout does not inline reference_review_packages.",
     }
 
@@ -69,12 +76,12 @@ def _reference_core_merge_contract() -> dict[str, Any]:
     }
 
 
-def _metadata_payload_shape() -> dict[str, Any]:
+def _metadata_evidence_payload_shape() -> dict[str, Any]:
     return {
-        "metadata_reviews": [
+        "metadata_evidence_reviews": [
             {
                 "reference_key": "reference-0",
-                "status": "enriched | confirmed_existing | no_metadata_found",
+                "status": "fields_extracted | existing_fields_confirmed | no_local_evidence",
                 "metadata": {},
                 "evidence_note": "required evidence or reason",
             }
@@ -82,15 +89,44 @@ def _metadata_payload_shape() -> dict[str, Any]:
     }
 
 
+def _metadata_evidence_policy() -> dict[str, Any]:
+    return {
+        "external_lookup_allowed": False,
+        "allowed_evidence_sources": [
+            "locked_reference",
+            "existing_metadata",
+            "metadata_context_text",
+            "raw/source text explicitly present in this batch file",
+        ],
+        "forbidden_actions": [
+            "web search",
+            "Crossref lookup",
+            "arXiv lookup",
+            "Google Scholar lookup",
+            "Zotero lookup",
+            "Semantic Scholar lookup",
+            "DOI resolver lookup",
+            "infer venue from general knowledge",
+            "guess DOI from title",
+            "guess publisher or venue from author/year",
+        ],
+    }
+
+
 def _metadata_subagent_policy() -> str:
-    return "Default to delegating metadata review by batch when metadata_batch_paths exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Subagents draft only; main agent is the single DB writer and submits one final metadata_reviews[] payload."
+    return "Default to delegating reference metadata evidence review by batch when metadata_evidence_batch_paths exist and subagents are available. Skip only when subagents are unavailable, the batch is trivially small, or context cannot be split; record the reason. Subagents draft only from local batch evidence; main agent is the single DB writer and submits one final metadata_evidence_reviews[] payload."
 
 
 def _metadata_prompt() -> str:
     return (
-        "Read the provided reference metadata batch JSON file. Return JSON with metadata_reviews[] only. "
-        "Use reference_key as the key. Status must be enriched, confirmed_existing, or no_metadata_found. "
+        "This is not a metadata discovery task. Read the provided reference metadata evidence batch JSON file. "
+        "Return JSON with metadata_evidence_reviews[] only. "
+        "Use only evidence visible in the batch JSON file; external_lookup_allowed is false. "
+        "Do not use web search, Crossref, arXiv, Google Scholar, Zotero, Semantic Scholar, DOI resolvers, or other external databases. "
+        "Use reference_key as the key. Status must be fields_extracted, existing_fields_confirmed, or no_local_evidence. "
         f"Allowed metadata fields: {', '.join(CANONICAL_METADATA_FIELDS)}. "
+        "Only include metadata for status=fields_extracted. If information is not visible in locked_reference, existing_metadata, or metadata_context_text, use no_local_evidence. "
+        "For each added field, evidence_note must name the batch JSON field that supports it. "
         "Do not modify locked reference fields, stable keys, selected_parse_pattern, raw text, confidence, or include ref_index. "
         "If file writing is available, write the draft to suggested_draft_output_path and return that path. "
         "Do not write DB, run runtime commands, submit payloads, or generate final artifacts."
@@ -100,10 +136,10 @@ def _metadata_prompt() -> str:
 def _metadata_merge_contract(required_coverage: list[str]) -> dict[str, Any]:
     return {
         "single_writer": "main_agent",
-        "required_payload_keys": ["metadata_reviews"],
+        "required_payload_keys": ["metadata_evidence_reviews"],
         "forbidden_submit_keys": ["reference_reviews", *REFERENCE_FORBIDDEN_FIELDS],
         "required_coverage": required_coverage,
-        "merge_notes": "Subagents return metadata batch drafts only. Main agent is the single DB writer and must submit exactly one metadata review per metadata package item.",
+        "merge_notes": "Subagents return metadata evidence batch drafts only. Main agent is the single DB writer and must submit exactly one metadata_evidence review per metadata evidence package item.",
     }
 
 
@@ -228,7 +264,7 @@ def _batch_packages(workset: dict[str, Any], packages: list[dict[str, Any]]) -> 
                         "Review this reference batch. Return JSON with reference_reviews[] only. "
                         "Use each package's allowed_parse_patterns; do not invent patterns, metadata, raw text, confidence, or ref_index. "
                         "Keep reference_key unchanged. Do not write DB, run runtime commands, submit payloads, or generate final artifacts. "
-                        "Rich metadata is reviewed in the next metadata_review_packages round."
+                        "Reference metadata evidence is reviewed in the next metadata_evidence_packages round."
                     ),
                 }
             )
@@ -273,7 +309,7 @@ def _batch_packages(workset: dict[str, Any], packages: list[dict[str, Any]]) -> 
                         "Review this reference batch. Return JSON with reference_reviews[] only. "
                         "Use each package's allowed_parse_patterns; do not invent patterns, metadata, raw text, confidence, or ref_index. "
                         "Keep reference_key unchanged. Do not write DB, run runtime commands, submit payloads, or generate final artifacts. "
-                        "Rich metadata is reviewed in the next metadata_review_packages round."
+                        "Reference metadata evidence is reviewed in the next metadata_evidence_packages round."
                     ),
                 }
             )
@@ -360,38 +396,48 @@ def _metadata_agent_work(
         reference_keys = [str(package["reference_key"]) for package in batch_packages]
         return {
             "reference_keys": reference_keys,
-            "metadata_review_packages": batch_packages,
+            "metadata_evidence_packages": batch_packages,
             "allowed_metadata_fields": list(instructions["allowed_metadata_fields"]),
             "locked_fields": list(instructions["locked_fields"]),
-            "required_return_shape": _metadata_payload_shape(),
+            "required_return_shape": _metadata_evidence_payload_shape(),
             "canonical_metadata_fields": list(CANONICAL_METADATA_FIELDS),
             "forbidden_fields": METADATA_REVIEW_FORBIDDEN_FIELDS,
-            "allowed_enum_values": {"status": sorted(METADATA_REVIEW_STATUSES)},
+            "allowed_enum_values": {"status": sorted(METADATA_EVIDENCE_STATUSES)},
+            "evidence_policy": _metadata_evidence_policy(),
+            "external_lookup_allowed": False,
+            "allowed_evidence_sources": _metadata_evidence_policy()["allowed_evidence_sources"],
+            "forbidden_actions": _metadata_evidence_policy()["forbidden_actions"],
             "minimal_valid_example": {
-                "metadata_reviews": [
+                "metadata_evidence_reviews": [
                     {
                         "reference_key": reference_keys[0] if reference_keys else "reference-0",
-                        "status": "no_metadata_found",
-                        "evidence_note": "No additional metadata is supported by metadata_context_text.",
+                        "status": "no_local_evidence",
+                        "evidence_note": "No DOI, URL, archive id, container, volume, issue, or pages are visible in this batch JSON file.",
                     }
                 ]
             },
-            "merge_notes": "Default to delegating this runtime-precut metadata batch when subagents are available. Subagent drafts only this batch. Main agent merges all metadata_reviews[] and submits once.",
+            "merge_notes": "Default to delegating this runtime-precut metadata evidence batch when subagents are available. Subagent drafts only from this batch JSON file. Main agent merges all metadata_evidence_reviews[] and submits once.",
             "subagent_prompt": _metadata_prompt(),
         }
 
     return agent_work.write_manifest(
         db_path=db_path,
-        kind="reference_metadata",
-        batch_kind="reference_metadata_enrichment",
-        package_key="metadata_review_packages",
+        kind="reference_metadata_evidence",
+        batch_kind="reference_metadata_evidence_review",
+        package_key="metadata_evidence_packages",
         packages=packages,
         package_key_field="reference_key",
         batch_payload_builder=build_batch,
         subagent_policy=_metadata_subagent_policy(),
         merge_contract=_metadata_merge_contract(required_coverage),
-        payload_submit_shape=_metadata_payload_shape(),
-        batch_prefix="reference-metadata-batch",
+        payload_submit_shape=_metadata_evidence_payload_shape(),
+        batch_prefix="reference-metadata-evidence-batch",
+        manifest_extra={
+            "evidence_policy": _metadata_evidence_policy(),
+            "external_lookup_allowed": False,
+            "allowed_evidence_sources": _metadata_evidence_policy()["allowed_evidence_sources"],
+            "forbidden_actions": _metadata_evidence_policy()["forbidden_actions"],
+        },
     )
 
 
@@ -609,50 +655,6 @@ def _metadata_review_packages(workset: dict[str, Any]) -> list[dict[str, Any]]:
     return packages
 
 
-def _metadata_batch_packages(packages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_batch: dict[str, list[str]] = {}
-    for package in packages:
-        by_batch.setdefault(str(package["batch_id"]), []).append(str(package["reference_key"]))
-    batches: list[dict[str, Any]] = []
-    for batch_id, reference_keys in sorted(by_batch.items()):
-        batches.append(
-            {
-                "batch_id": batch_id,
-                "reference_keys": reference_keys,
-                "required_return_shape": {
-                    "metadata_reviews": [
-                        {
-                            "reference_key": "copy from this batch",
-                            "status": "enriched | confirmed_existing | no_metadata_found",
-                            "metadata": {},
-                            "evidence_note": "brief source/context evidence",
-                        }
-                    ]
-                },
-                "canonical_metadata_fields": list(CANONICAL_METADATA_FIELDS),
-                "forbidden_fields": METADATA_REVIEW_FORBIDDEN_FIELDS,
-                "allowed_enum_values": {"status": sorted(METADATA_REVIEW_STATUSES)},
-                "minimal_valid_example": {
-                    "metadata_reviews": [
-                        {
-                            "reference_key": reference_keys[0] if reference_keys else "reference-0",
-                            "status": "no_metadata_found",
-                            "evidence_note": "No additional metadata is supported by metadata_context_text.",
-                        }
-                    ]
-                },
-                "merge_notes": "Default to delegating this metadata batch when subagents are available. Subagent drafts only this metadata batch. Main agent is the single DB writer, keeps reference_key unchanged, merges all metadata_reviews[], and submits once.",
-                "subagent_prompt": (
-                    "Review metadata for this literature-analysis batch. Return JSON with metadata_reviews[] only. "
-                    "Use reference_key as the key. Do not modify locked fields or include ref_index. "
-                    f"Allowed metadata fields: {', '.join(CANONICAL_METADATA_FIELDS)}. "
-                    "Do not write DB, run runtime commands, submit payloads, modify stable keys, or generate final artifacts."
-                ),
-            }
-        )
-    return batches
-
-
 def enrich_metadata_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     workset_path = str(payload.get("workset_path", ""))
     if payload.get("error") or not workset_path:
@@ -669,24 +671,28 @@ def enrich_metadata_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "runtime_backend": "analysis_runtime.references",
             "next_action": "persist_references",
             "instructions": instructions,
-            "allowed_payload_shape": _metadata_payload_shape(),
+            "allowed_payload_shape": _metadata_evidence_payload_shape(),
             "field_guidance": {
-                "reference_key": "Stable key from metadata batch files; do not use ref_index.",
-                "status": "Must be enriched, confirmed_existing, or no_metadata_found.",
-                "metadata": "Only allowed when status=enriched. Use canonical metadata fields; deterministic aliases are normalized with warnings.",
+                "reference_key": "Stable key from metadata evidence batch files; do not use ref_index.",
+                "status": "Must be fields_extracted, existing_fields_confirmed, or no_local_evidence.",
+                "metadata": "Only allowed when status=fields_extracted. Use only metadata visible in locked_reference, existing_metadata, or metadata_context_text.",
+                "evidence_note": "Required evidence note naming the batch JSON field that supports each extracted value.",
+                "external_lookup_allowed": "false. Do not use web search, Crossref, arXiv, Google Scholar, Zotero, Semantic Scholar, DOI resolvers, or any external database.",
                 "locked_fields": instructions["locked_fields"],
                 "allowed_metadata_fields": instructions["allowed_metadata_fields"],
-                "batch_inputs": "Read metadata_batch_paths; stdout does not inline metadata_review_packages.",
+                "batch_inputs": "Read metadata_evidence_batch_paths; stdout does not inline metadata_evidence_packages.",
             },
-            "metadata_review_manifest_path": metadata_agent_work["manifest_path"],
-            "metadata_batch_paths": metadata_agent_work["batch_paths"],
-            "metadata_package_count": metadata_agent_work["package_count"],
-            "metadata_batch_count": metadata_agent_work["batch_count"],
-            "metadata_required_coverage_keys": metadata_agent_work["required_coverage_keys"],
+            "metadata_evidence_review_manifest_path": metadata_agent_work["manifest_path"],
+            "metadata_evidence_batch_paths": metadata_agent_work["batch_paths"],
+            "metadata_evidence_package_count": metadata_agent_work["package_count"],
+            "metadata_evidence_batch_count": metadata_agent_work["batch_count"],
+            "metadata_evidence_required_coverage_keys": metadata_agent_work["required_coverage_keys"],
             "batch_max_items": agent_work.BATCH_MAX_ITEMS,
             "subagent_policy": _metadata_subagent_policy(),
             "subagent_prompt_template": _metadata_prompt(),
             "merge_contract": _metadata_merge_contract(metadata_agent_work["required_coverage_keys"]),
+            "evidence_policy": _metadata_evidence_policy(),
+            "external_lookup_allowed": False,
         }
     )
     return payload
@@ -700,6 +706,59 @@ def prepare_reference_metadata_enrichment(db_path: Path) -> tuple[dict[str, Any]
     return prepared, code
 
 
+def _stringify_evidence(value: object) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value or "")
+
+
+def _metadata_evidence_text(package: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            _stringify_evidence(package.get("locked_reference")),
+            _stringify_evidence(package.get("existing_metadata")),
+            _stringify_evidence(package.get("metadata_context_text")),
+        ]
+    )
+
+
+def _compact_evidence_text(text: str) -> str:
+    return re.sub(r"[\s{}()\[\]<>\"'`.,;:/\\_-]+", "", text.casefold())
+
+
+def _metadata_value_supported_by_local_evidence(key: str, value: object, evidence_text: str) -> bool:
+    if key not in EVIDENCE_MATCHED_METADATA_FIELDS:
+        return True
+    if isinstance(value, list):
+        return all(_metadata_value_supported_by_local_evidence(key, item, evidence_text) for item in value if item)
+    text = str(value or "").strip()
+    if not text:
+        return True
+    evidence = evidence_text.casefold()
+    text_cf = text.casefold()
+    if text_cf in evidence:
+        return True
+    compact_evidence = _compact_evidence_text(evidence_text)
+    compact_value = _compact_evidence_text(text)
+    if compact_value and compact_value in compact_evidence:
+        return True
+    if key == "archiveID" and text_cf.startswith("arxiv:"):
+        bare = text_cf.removeprefix("arxiv:").strip()
+        return bare in evidence or _compact_evidence_text(bare) in compact_evidence
+    return False
+
+
+def _metadata_local_evidence_errors(reference_key: str, metadata: dict[str, Any], package: dict[str, Any]) -> list[str]:
+    evidence_text = _metadata_evidence_text(package)
+    errors: list[str] = []
+    for key, value in metadata.items():
+        if not _metadata_value_supported_by_local_evidence(key, value, evidence_text):
+            errors.append(
+                f"{reference_key}.metadata.{key} has no local evidence in locked_reference, existing_metadata, or metadata_context_text"
+            )
+    return errors
+
+
 def _metadata_payload_errors(payload: dict[str, Any], workset: dict[str, Any]) -> tuple[list[str], dict[str, Any], list[str]]:
     errors: list[str] = []
     if "reference_reviews" in payload:
@@ -707,9 +766,11 @@ def _metadata_payload_errors(payload: dict[str, Any], workset: dict[str, Any]) -
     forbidden_top = sorted(key for key in REFERENCE_FORBIDDEN_FIELDS if key in payload)
     if forbidden_top:
         errors.append(f"forbidden top-level keys for current metadata payload: {forbidden_top}")
-    reviews = payload.get("metadata_reviews")
+    if "metadata_reviews" in payload:
+        errors.append("metadata_reviews[] is not accepted; use metadata_evidence_reviews[] for Reference Metadata Evidence Review")
+    reviews = payload.get("metadata_evidence_reviews")
     if not isinstance(reviews, list):
-        return [*errors, "metadata_reviews must be an array"], {"items": []}, []
+        return [*errors, "metadata_evidence_reviews must be an array"], {"items": []}, []
 
     packages = _metadata_review_packages(workset)
     packages_by_key = {str(package["reference_key"]): package for package in packages}
@@ -720,11 +781,11 @@ def _metadata_payload_errors(payload: dict[str, Any], workset: dict[str, Any]) -
 
     for index, review in enumerate(reviews):
         if not isinstance(review, dict):
-            errors.append(f"metadata_reviews[{index}] must be object")
+            errors.append(f"metadata_evidence_reviews[{index}] must be object")
             continue
         forbidden_fields = sorted(field for field in METADATA_REVIEW_FORBIDDEN_FIELDS if field in review)
         if forbidden_fields:
-            errors.append(f"{review.get('reference_key', f'metadata_reviews[{index}')} attempts to modify locked/internal fields: {forbidden_fields}")
+            errors.append(f"{review.get('reference_key', f'metadata_evidence_reviews[{index}')} attempts to modify locked/internal fields: {forbidden_fields}")
         reference_key = str(review.get("reference_key", "")).strip()
         if reference_key in seen:
             errors.append(f"duplicate reference_key: {reference_key}")
@@ -736,8 +797,8 @@ def _metadata_payload_errors(payload: dict[str, Any], workset: dict[str, Any]) -
             continue
 
         status = str(review.get("status", "")).strip()
-        if status not in METADATA_REVIEW_STATUSES:
-            errors.append(f"{reference_key}.status must be one of {sorted(METADATA_REVIEW_STATUSES)}")
+        if status not in METADATA_EVIDENCE_STATUSES:
+            errors.append(f"{reference_key}.status must be one of {sorted(METADATA_EVIDENCE_STATUSES)}")
             continue
         metadata, metadata_warnings = normalize_reference_metadata(review.get("metadata", {}), context=reference_key)
         warnings = merge_warnings(warnings, metadata_warnings)
@@ -747,21 +808,25 @@ def _metadata_payload_errors(payload: dict[str, Any], workset: dict[str, Any]) -
             errors.append(f"{reference_key}.reference_key is invalid")
             continue
 
-        if status == "enriched":
+        if status == "fields_extracted":
             if not metadata:
-                errors.append(f"{reference_key}.metadata must contain at least one allowed field when status=enriched")
+                errors.append(f"{reference_key}.metadata must contain at least one allowed field when status=fields_extracted")
                 continue
-            internal_items.append({"ref_index": ref_index, "status": status, "metadata": metadata, "evidence_note": evidence_note})
+            evidence_errors = _metadata_local_evidence_errors(reference_key, metadata, package)
+            if evidence_errors:
+                errors.extend([f"metadata_without_local_evidence: {error}" for error in evidence_errors])
+                continue
+            internal_items.append({"ref_index": ref_index, "status": INTERNAL_METADATA_STATUS[status], "metadata": metadata, "evidence_note": evidence_note})
         else:
             if metadata:
-                errors.append(f"{reference_key}.metadata is only allowed when status=enriched")
+                errors.append(f"{reference_key}.metadata is only allowed when status=fields_extracted")
                 continue
-            reason = evidence_note or ("existing metadata confirmed" if status == "confirmed_existing" else "no additional metadata found")
-            internal_items.append({"ref_index": ref_index, "status": status, "reason": reason, "evidence_note": evidence_note})
+            reason = evidence_note or ("existing metadata confirmed" if status == "existing_fields_confirmed" else "no local metadata evidence")
+            internal_items.append({"ref_index": ref_index, "status": INTERNAL_METADATA_STATUS[status], "reason": reason, "evidence_note": evidence_note})
 
     missing = sorted(expected_keys - seen)
     if missing:
-        errors.append(f"missing metadata_reviews for reference_key values: {missing}")
+        errors.append(f"missing metadata_evidence_reviews for reference_key values: {missing}")
     return errors, {"items": internal_items}, warnings
 
 
@@ -776,12 +841,13 @@ def persist_reference_metadata_reviews(db_path: Path, payload: dict[str, Any]) -
         return {
             "error": {
                 "code": "reference_metadata_payload_invalid",
-                "message": "reference metadata payload failed validation",
+                "message": "reference metadata evidence payload failed validation",
                 "details": errors,
             },
-            "metadata_review_manifest_path": prepared.get("metadata_review_manifest_path"),
-            "metadata_batch_paths": prepared.get("metadata_batch_paths", []),
+            "metadata_evidence_review_manifest_path": prepared.get("metadata_evidence_review_manifest_path"),
+            "metadata_evidence_batch_paths": prepared.get("metadata_evidence_batch_paths", []),
             "instructions": prepared.get("instructions", {}),
+            "evidence_policy": prepared.get("evidence_policy", {}),
             "warnings": normalization_warnings,
         }, 2
     persisted, code = call_algorithm_handler(
@@ -795,7 +861,7 @@ def persist_reference_metadata_reviews(db_path: Path, payload: dict[str, Any]) -
     )
     _persist_runtime_warnings(db_path, all_warnings)
     return {
-        "metadata_enrichment": {"prepared": prepared, "persisted": persisted},
+        "metadata_evidence_review": {"prepared": prepared, "persisted": persisted},
         "warnings": all_warnings,
         "db_path": str(db_path),
         "runtime_backend": "analysis_runtime.references",
@@ -826,7 +892,7 @@ def _reference_payload_errors(payload: dict[str, Any], workset: dict[str, Any]) 
         if forbidden_review:
             errors.append(f"{review.get('reference_key', f'reference_reviews[{index}')} contains forbidden fields: {forbidden_review}")
             if "metadata" in forbidden_review:
-                errors.append(f"{review.get('reference_key', f'reference_reviews[{index}')} metadata must be submitted through metadata_reviews after metadata_review_packages are returned")
+                errors.append(f"{review.get('reference_key', f'reference_reviews[{index}')} metadata must be submitted through metadata_evidence_reviews after metadata_evidence_packages are returned")
         reference_key = str(review.get("reference_key", "")).strip()
         if reference_key in seen:
             errors.append(f"duplicate reference_key: {reference_key}")
@@ -878,15 +944,23 @@ def _persist_runtime_warnings(db_path: Path, warnings: list[str]) -> None:
 
 
 def persist_references(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
-    if "reference_reviews" in payload and "metadata_reviews" in payload:
+    if "metadata_reviews" in payload:
+        return {
+            "error": {
+                "code": "reference_metadata_payload_invalid",
+                "message": "metadata_reviews[] is not accepted in the current Reference Metadata Evidence Review contract",
+                "details": ["Use metadata_evidence_reviews[] with status fields_extracted, existing_fields_confirmed, or no_local_evidence."],
+            }
+        }, 2
+    if "reference_reviews" in payload and "metadata_evidence_reviews" in payload:
         return {
             "error": {
                 "code": "reference_payload_invalid",
                 "message": "reference payload failed validation",
-                "details": ["reference_reviews and metadata_reviews must be submitted in separate persist_references rounds"],
+                "details": ["reference_reviews and metadata_evidence_reviews must be submitted in separate persist_references rounds"],
             }
         }, 2
-    if "metadata_reviews" in payload:
+    if "metadata_evidence_reviews" in payload:
         return persist_reference_metadata_reviews(db_path, payload)
 
     if "split_reviews" in payload:
@@ -931,10 +1005,10 @@ def persist_references(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str
     if metadata_code != 0:
         return {
             **result,
-            "metadata_enrichment": {
+            "metadata_evidence_review": {
                 "workset_path": metadata_workset.get("workset_path", ""),
-                "item_count": metadata_workset.get("item_count", 0),
-                "batch_count": metadata_workset.get("batch_count", 0),
+                "item_count": metadata_workset.get("item_count", metadata_workset.get("metadata_evidence_package_count", 0)),
+                "batch_count": metadata_workset.get("metadata_evidence_batch_count", 0),
             },
             "warnings": all_warnings,
             "error": metadata_workset.get("error"),
@@ -942,22 +1016,24 @@ def persist_references(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str
     return (
         {
             **result,
-            "metadata_enrichment": {
+            "metadata_evidence_review": {
                 "workset_path": metadata_workset.get("workset_path", ""),
-                "item_count": metadata_workset.get("item_count", 0),
-                "batch_count": metadata_workset.get("batch_count", 0),
+                "item_count": metadata_workset.get("item_count", metadata_workset.get("metadata_evidence_package_count", 0)),
+                "batch_count": metadata_workset.get("metadata_evidence_batch_count", 0),
             },
-            "metadata_review_manifest_path": metadata_workset.get("metadata_review_manifest_path"),
-            "metadata_batch_paths": metadata_workset.get("metadata_batch_paths", []),
-            "metadata_package_count": metadata_workset.get("metadata_package_count", 0),
-            "metadata_batch_count": metadata_workset.get("metadata_batch_count", 0),
-            "metadata_required_coverage_keys": metadata_workset.get("metadata_required_coverage_keys", []),
+            "metadata_evidence_review_manifest_path": metadata_workset.get("metadata_evidence_review_manifest_path"),
+            "metadata_evidence_batch_paths": metadata_workset.get("metadata_evidence_batch_paths", []),
+            "metadata_evidence_package_count": metadata_workset.get("metadata_evidence_package_count", 0),
+            "metadata_evidence_batch_count": metadata_workset.get("metadata_evidence_batch_count", 0),
+            "metadata_evidence_required_coverage_keys": metadata_workset.get("metadata_evidence_required_coverage_keys", []),
             "instructions": metadata_workset.get("instructions", {}),
             "allowed_payload_shape": metadata_workset.get("allowed_payload_shape"),
             "field_guidance": metadata_workset.get("field_guidance"),
             "subagent_policy": metadata_workset.get("subagent_policy"),
             "subagent_prompt_template": metadata_workset.get("subagent_prompt_template"),
             "merge_contract": metadata_workset.get("merge_contract"),
+            "evidence_policy": metadata_workset.get("evidence_policy"),
+            "external_lookup_allowed": metadata_workset.get("external_lookup_allowed"),
             "batch_max_items": metadata_workset.get("batch_max_items", agent_work.BATCH_MAX_ITEMS),
             "warnings": all_warnings,
             "db_path": str(db_path),

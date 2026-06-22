@@ -36,6 +36,7 @@ def write_manifest(
     merge_contract: dict[str, Any],
     payload_submit_shape: dict[str, Any],
     batch_prefix: str,
+    manifest_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = work_root(db_path, kind)
     root.mkdir(parents=True, exist_ok=True)
@@ -76,6 +77,8 @@ def write_manifest(
             "Main agent reads drafts, checks required_coverage_keys exactly once, and submits one official payload.",
         ],
     }
+    if manifest_extra:
+        manifest.update(manifest_extra)
     write_json(manifest_path, manifest)
     return {
         "manifest_path": str(manifest_path),
