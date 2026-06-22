@@ -131,7 +131,7 @@ Allowed reasons to skip a delegation point are limited to: no subagent capabilit
     "model": "gpt-5.4"
   },
   "warnings": [],
-  "error": null
+  "error": {}
 }
 ```
 
