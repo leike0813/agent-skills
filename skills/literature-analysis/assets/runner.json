@@ -15,7 +15,7 @@
       "jsonschema"
     ],
     "default_options": {
-      "hard_timeout_seconds": 1800
+      "hard_timeout_seconds": 3600
     }
   },
   "entrypoint": {
