@@ -3334,15 +3334,18 @@ def _build_citation_workset(
             }
         )
         if ref_index not in grouped:
+            reference_snapshot = {
+                "author": candidate_reference.get("author", []),
+                "title": candidate_reference.get("title", ""),
+                "year": candidate_reference.get("year"),
+            }
+            citation_label = candidate_reference.get("citation_label")
+            if isinstance(citation_label, str) and citation_label.strip():
+                reference_snapshot["citation_label"] = citation_label.strip()
             grouped[ref_index] = {
                 "ref_index": ref_index,
                 "ref_number": candidate_reference.get("ref_number"),
-                "reference": {
-                    "author": candidate_reference.get("author", []),
-                    "title": candidate_reference.get("title", ""),
-                    "year": candidate_reference.get("year"),
-                    "citation_label": candidate_reference.get("citation_label"),
-                },
+                "reference": reference_snapshot,
                 "mentions": [],
                 "metadata": {
                     "resolution_methods": [],
