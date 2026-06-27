@@ -11,6 +11,9 @@ from . import runtime_db
 
 CITATION_FORBIDDEN_FIELDS = ["items", "timeline", "basis", "ref_index", "function"]
 CITATION_REVIEW_FORBIDDEN_FIELDS = ["ref_index", "function", "is_key_reference", "mentions"]
+CITATION_WARNING_DUPLICATE_MERGED = "citation_duplicate_reviews_merged"
+CITATION_WARNING_PARTIAL_REVIEWS = "citation_reviews_partial"
+CITATION_WARNING_EMPTY_SEMANTICS = "citation_semantics_empty"
 
 
 def _citation_payload_shape() -> dict[str, Any]:
@@ -227,36 +230,66 @@ def _function_from_role(role: object) -> str:
     return "uncategorized"
 
 
-def _citation_payload_errors(payload: dict[str, Any], workset_items: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any]], dict[str, str], str]:
+def _dedupe_keywords(values: list[Any]) -> list[str]:
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        keywords.append(text)
+    return keywords
+
+
+def _merge_review_values(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    for field in ("topic", "usage", "role_in_context", "summary", "key_reference_reason"):
+        current = merged.get(field)
+        candidate = incoming.get(field)
+        if (not isinstance(current, str) or not current.strip()) and isinstance(candidate, str) and candidate.strip():
+            merged[field] = candidate
+    merged["keywords"] = _dedupe_keywords([
+        *(merged.get("keywords") if isinstance(merged.get("keywords"), list) else []),
+        *(incoming.get("keywords") if isinstance(incoming.get("keywords"), list) else []),
+    ])
+    return merged
+
+
+def _citation_payload_errors(payload: dict[str, Any], workset_items: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any]], dict[str, str], str, list[str]]:
     errors: list[str] = []
+    warnings: list[str] = []
     forbidden = sorted(key for key in CITATION_FORBIDDEN_FIELDS if key in payload)
     if forbidden:
         errors.append(f"forbidden top-level keys for current citation payload: {forbidden}")
-    reviews = payload.get("citation_semantic_reviews")
+    reviews = payload.get("citation_semantic_reviews", [])
     if not isinstance(reviews, list):
-        return [*errors, "citation_semantic_reviews must be an array"], [], {}, ""
-    timeline_summaries = payload.get("timeline_summaries")
+        return [*errors, "citation_semantic_reviews must be an array"], [], {}, "", warnings
+    timeline_summaries = payload.get("timeline_summaries", {})
     if not isinstance(timeline_summaries, dict):
         errors.append("timeline_summaries must be an object with early, middle, recent")
         timeline_summaries = {}
     normalized_summaries: dict[str, str] = {}
     for key in ("early", "middle", "recent"):
         value = timeline_summaries.get(key)
-        if not isinstance(value, str) or not value.strip():
-            errors.append(f"timeline_summaries.{key} must be non-empty string")
-        else:
+        if isinstance(value, str):
             normalized_summaries[key] = value.strip()
+        elif value is None:
+            normalized_summaries[key] = ""
+        else:
+            errors.append(f"timeline_summaries.{key} must be string when provided")
     summary = payload.get("summary")
-    if not isinstance(summary, str) or not summary.strip():
-        errors.append("summary must be non-empty string")
+    if isinstance(summary, str):
+        summary_text = summary.strip()
+    elif summary is None:
         summary_text = ""
     else:
-        summary_text = summary.strip()
+        errors.append("summary must be string when provided")
+        summary_text = ""
 
     items_by_key = {_citation_work_key(int(item["ref_index"])): item for item in workset_items}
     expected_keys = set(items_by_key)
-    seen: set[str] = set()
-    normalized: list[dict[str, Any]] = []
+    reviews_by_key: dict[str, dict[str, Any]] = {}
     for index, review in enumerate(reviews):
         if not isinstance(review, dict):
             errors.append(f"citation_semantic_reviews[{index}] must be object")
@@ -264,10 +297,6 @@ def _citation_payload_errors(payload: dict[str, Any], workset_items: list[dict[s
         if any(key in review for key in CITATION_REVIEW_FORBIDDEN_FIELDS):
             errors.append(f"{review.get('citation_work_key', f'citation_semantic_reviews[{index}]')} contains forbidden internal fields")
         work_key = str(review.get("citation_work_key", "")).strip()
-        if work_key in seen:
-            errors.append(f"duplicate citation_work_key: {work_key}")
-            continue
-        seen.add(work_key)
         workset_item = items_by_key.get(work_key)
         if workset_item is None:
             errors.append(f"unknown citation_work_key: {work_key}")
@@ -276,47 +305,69 @@ def _citation_payload_errors(payload: dict[str, Any], workset_items: list[dict[s
         usage = review.get("usage")
         role = review.get("role_in_context")
         item_summary = review.get("summary")
-        keywords = review.get("keywords")
-        if not isinstance(topic, str) or not topic.strip():
-            errors.append(f"{work_key}.topic must be non-empty string")
-        if not isinstance(usage, str) or not usage.strip():
-            errors.append(f"{work_key}.usage must be non-empty string")
-        if not isinstance(role, str) or not role.strip():
-            errors.append(f"{work_key}.role_in_context must be non-empty string")
-        if not isinstance(item_summary, str) or not item_summary.strip():
-            errors.append(f"{work_key}.summary must be non-empty string")
-        if not isinstance(keywords, list) or not all(isinstance(item, str) and item.strip() for item in keywords):
-            errors.append(f"{work_key}.keywords must be a string array")
+        keywords = review.get("keywords", [])
+        key_reference_reason = review.get("key_reference_reason")
+        if keywords is None:
+            keywords = []
+        if not isinstance(keywords, list) or not all(isinstance(item, str) for item in keywords):
+            errors.append(f"{work_key}.keywords must be a string array when provided")
+            keywords = []
+        normalized_review = {
+            "citation_work_key": work_key,
+            "topic": topic.strip() if isinstance(topic, str) else "",
+            "usage": usage.strip() if isinstance(usage, str) else "",
+            "role_in_context": role.strip() if isinstance(role, str) else "",
+            "keywords": _dedupe_keywords(keywords),
+            "summary": item_summary.strip() if isinstance(item_summary, str) else "",
+            "key_reference_reason": key_reference_reason.strip() if isinstance(key_reference_reason, str) else "",
+        }
+        if work_key in reviews_by_key:
+            warnings.append(f"{CITATION_WARNING_DUPLICATE_MERGED}: {work_key}")
+            reviews_by_key[work_key] = _merge_review_values(reviews_by_key[work_key], normalized_review)
+        else:
+            reviews_by_key[work_key] = normalized_review
+
+    normalized: list[dict[str, Any]] = []
+    for work_key, review in reviews_by_key.items():
+        workset_item = items_by_key[work_key]
+        role = review["role_in_context"]
         normalized.append(
             {
                 "ref_index": int(workset_item["ref_index"]),
                 "function": _function_from_role(role),
-                "topic": topic.strip() if isinstance(topic, str) else "",
-                "usage": usage.strip() if isinstance(usage, str) else "",
-                "keywords": [str(item).strip() for item in keywords] if isinstance(keywords, list) else [],
-                "summary": item_summary.strip() if isinstance(item_summary, str) else "",
-                "is_key_reference": bool(str(review.get("key_reference_reason", "")).strip()),
+                "topic": review["topic"],
+                "usage": review["usage"],
+                "keywords": review["keywords"],
+                "summary": review["summary"],
+                "is_key_reference": bool(review["key_reference_reason"]),
                 "confidence": 0.85,
                 "metadata": {
                     "citation_work_key": work_key,
-                    "role_in_context": role.strip() if isinstance(role, str) else "",
-                    "key_reference_reason": str(review.get("key_reference_reason", "")).strip(),
+                    "role_in_context": role,
+                    "key_reference_reason": review["key_reference_reason"],
                 },
             }
         )
-    missing = sorted(expected_keys - seen)
+
+    missing = sorted(expected_keys - set(reviews_by_key))
     if missing:
-        errors.append(f"missing citation_semantic_reviews for citation_work_key values: {missing}")
-    return errors, normalized, normalized_summaries, summary_text
+        warnings.append(f"{CITATION_WARNING_PARTIAL_REVIEWS}: missing={missing}")
+    if not normalized:
+        warnings.append(CITATION_WARNING_EMPTY_SEMANTICS)
+    return errors, normalized, normalized_summaries, summary_text, warnings
 
 
-def _derive_timeline_payload(workset_items: list[dict[str, Any]], timeline_summaries: dict[str, str]) -> dict[str, Any]:
+def _derive_timeline_payload(workset_items: list[dict[str, Any]], timeline_summaries: dict[str, str], citation_items: list[dict[str, Any]]) -> dict[str, Any]:
+    reviewed_ref_indexes = {int(item["ref_index"]) for item in citation_items}
     dated: list[tuple[int, int]] = []
     for item in workset_items:
+        ref_index = int(item["ref_index"])
+        if ref_index not in reviewed_ref_indexes:
+            continue
         reference = dict(item.get("reference", {}))
         year = reference.get("year")
         if isinstance(year, int):
-            dated.append((int(item["ref_index"]), year))
+            dated.append((ref_index, year))
     dated.sort(key=lambda pair: (pair[1], pair[0]))
     buckets = {"early": [], "mid": [], "recent": []}
     total = len(dated)
@@ -331,9 +382,9 @@ def _derive_timeline_payload(workset_items: list[dict[str, Any]], timeline_summa
             buckets["recent"].append(ref_index)
     return {
         "timeline": {
-            "early": {"summary": timeline_summaries["early"], "ref_indexes": buckets["early"]},
-            "mid": {"summary": timeline_summaries["middle"], "ref_indexes": buckets["mid"]},
-            "recent": {"summary": timeline_summaries["recent"], "ref_indexes": buckets["recent"]},
+            "early": {"summary": timeline_summaries.get("early", ""), "ref_indexes": buckets["early"]},
+            "mid": {"summary": timeline_summaries.get("middle", ""), "ref_indexes": buckets["mid"]},
+            "recent": {"summary": timeline_summaries.get("recent", ""), "ref_indexes": buckets["recent"]},
         }
     }
 
@@ -341,13 +392,7 @@ def _derive_timeline_payload(workset_items: list[dict[str, Any]], timeline_summa
 def _summary_basis_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
     topics = list(dict.fromkeys(str(item.get("topic", "")).strip() for item in reviews if str(item.get("topic", "")).strip()))
     usages = list(dict.fromkeys(str(item.get("usage", "")).strip() for item in reviews if str(item.get("usage", "")).strip()))
-    if len(topics) < 2:
-        topics.extend(["citation context", "research positioning"][len(topics):])
-    if len(usages) < 2:
-        usages.extend(["supports the source paper's literature positioning", "connects cited work to the source argument"][len(usages):])
     key_ref_indexes = [int(item["ref_index"]) for item in reviews if item.get("is_key_reference")]
-    if not key_ref_indexes and reviews:
-        key_ref_indexes = [int(reviews[0]["ref_index"])]
     return {
         "research_threads": topics[:6],
         "argument_shape": usages[:6],
@@ -395,7 +440,7 @@ def enrich_citation_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def persist_citation_analysis(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     workset_items = _load_citation_workset_items(db_path)
-    errors, normalized_reviews, timeline_summaries, summary_text = _citation_payload_errors(payload, workset_items)
+    errors, normalized_reviews, timeline_summaries, summary_text, warnings = _citation_payload_errors(payload, workset_items)
     if errors:
         return {
             "error": {
@@ -405,6 +450,10 @@ def persist_citation_analysis(db_path: Path, payload: dict[str, Any]) -> tuple[d
             },
             "known_citation_work_keys": [_citation_work_key(int(item["ref_index"])) for item in workset_items],
         }, 2
+    with runtime_db.connect_db(db_path) as connection:
+        for warning in warnings:
+            runtime_db.add_runtime_warning_once(connection, warning)
+        connection.commit()
     semantics, code = call_algorithm_handler(
         "_handle_persist_citation_semantics",
         db_path,
@@ -415,7 +464,7 @@ def persist_citation_analysis(db_path: Path, payload: dict[str, Any]) -> tuple[d
     timeline, code = call_algorithm_handler(
         "_handle_persist_citation_timeline",
         db_path,
-        payload=_derive_timeline_payload(workset_items, timeline_summaries),
+        payload=_derive_timeline_payload(workset_items, timeline_summaries, normalized_reviews),
     )
     if code != 0:
         return {"citation_semantics": semantics, "citation_timeline": timeline, "error": timeline.get("error")}, code

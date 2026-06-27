@@ -9,7 +9,7 @@
 7. Reference review、Reference Metadata Evidence Review、citation semantic review 若 runtime 返回 batch file paths 且环境支持 subagent，必须默认按 runtime 预切 batch 委派；每个 batch 最多 10 条。主 agent 不得手工切 full workset；subagent 读取被分配的 batch JSON 文件，只返回 batch draft；主 agent 是唯一 DB writer，合并后按阶段回合提交。
 8. 禁止用临时脚本、正则批处理或批量规则代替 LLM/subagent 填写 reference core fields、Reference Metadata Evidence Review、citation semantic review、timeline narratives 或全局 summary；脚本只能做 JSON 序列化、key 覆盖检查、draft 合并和 runtime 调用等确定性支持。
 9. `persist_references` 先提交 `reference_reviews[]` core fields；runtime 返回 `metadata_evidence_review_manifest_path` / `metadata_evidence_batch_paths` 后，再单独提交 `metadata_evidence_reviews[]`。Reference Metadata Evidence Review 不是 metadata discovery task，禁止 web search、Crossref、arXiv、Google Scholar、Zotero、Semantic Scholar、DOI resolver 或外部数据库。需要修边界时先提交 `split_reviews[]`。
-10. `persist_citation_analysis` 使用 `citation_semantic_reviews[]`、`timeline_summaries` 与全局 `summary`。
+10. `persist_citation_analysis` 使用 `citation_semantic_reviews[]`、`timeline_summaries` 与全局 `summary`；该阶段是 tolerant best-effort，空字段和部分覆盖合法，runtime 不为缺失 review 生成替代语义。
 11. Payload 文件必须是 UTF-8 JSON；复杂 payload 使用 JSON-safe 方式序列化已经审核过的决策，不要手写容易破坏转义的超长 shell 字符串。
 12. Metadata subagent drafts 必须覆盖 runtime metadata manifest 中的 coverage keys，并优先使用 canonical 字段：`publicationTitle`、`DOI`、`ISBN`、`ISSN`、`archiveID`、`url`、`publisher`、`place`、`pages`、`volume`、`issue`、`itemType`、`date`。
 13. 最终公开产物只能由 runtime renderer 从 DB 与运行时模板生成。
@@ -30,6 +30,6 @@
     "model": "gpt-5.4"
   },
   "warnings": [],
-  "error": null
+  "error": {}
 }
 ```

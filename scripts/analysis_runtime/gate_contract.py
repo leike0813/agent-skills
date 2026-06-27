@@ -154,8 +154,6 @@ def _missing_prerequisites(connection: Any, next_action: str) -> list[str]:
             missing.append("digest_slots")
         if not runtime_db.fetch_digest_section_summaries(connection):
             missing.append("digest_section_summaries")
-        if not runtime_db.fetch_citation_items(connection):
-            missing.append("citation_items")
         if not runtime_db.fetch_citation_timeline(connection):
             missing.append("citation_timeline")
         if not runtime_db.fetch_citation_summary(connection):

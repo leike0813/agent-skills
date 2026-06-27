@@ -1,6 +1,6 @@
 # Citation Analysis
 
-本文件补充 `persist_citation_analysis`。Agent 只写 citation semantic review、三段 timeline narrative 和全局 summary。Mention extraction、mapping、function 分类、timeline bucket membership、renderer labels、`report_md` 都由 runtime 从 DB workset 派生。
+本文件补充 `persist_citation_analysis`。本阶段是 tolerant best-effort 持久化：agent 可写 citation semantic review、三段 timeline narrative 和全局 summary；字段缺失或为空时 runtime 保存空值，不生成替代语义。Mention extraction、mapping、function 分类、timeline bucket membership、renderer labels、`report_md` 都由 runtime 从 DB workset 派生。
 
 ## Stage Shape
 
@@ -73,10 +73,12 @@ Submit payload:
 - `keywords`: 2-5 concise phrases about method, task, dataset, or lineage.
 - `summary`: item-level citation role summary; not a generic abstract of the cited paper.
 - `key_reference_reason`: optional evidence for key-reference treatment.
-- `timeline_summaries.early/middle/recent`: narrative summaries only. Runtime derives bucket membership from publication years.
-- `summary`: global synthesis of how the source organizes and uses citations.
+- `timeline_summaries.early/middle/recent`: optional narrative summaries only. Runtime derives bucket membership from publication years and accepts empty strings.
+- `summary`: optional global synthesis of how the source organizes and uses citations. Empty string is valid.
 
 Do not submit mention arrays, renderer categories, internal indexes, bucket membership, or `report_md`.
+
+Missing or empty `topic`, `usage`, `role_in_context`, `keywords`, and item `summary` are valid. Runtime persists empty strings or empty arrays and does not invent semantic replacement text. Missing reviews for known `citation_work_key` values are valid; runtime persists only submitted known keys.
 
 Web/resource references may have no authors or publication year. That is valid input for citation review. Runtime may emit `missing_authors`, `missing_year`, or `citation_timeline_missing_year` warnings; undated items are excluded from automatic timeline buckets and do not require manual bucket membership.
 
@@ -85,12 +87,12 @@ Web/resource references may have no authors or publication year. That is valid i
 Script/runtime owns:
 
 - Citation mention extraction, false-positive filtering, mention-to-reference mapping, citation workset generation, renderer function/category derivation, timeline bucket membership, validation, DB persistence, and final JSON/Markdown rendering.
-- JSON parsing, stable `citation_work_key` coverage checks, duplicate checks, warnings, and report rendering.
+- JSON parsing, stable `citation_work_key` hard validation, duplicate-key merge, warnings, and report rendering.
 
 LLM/subagent owns:
 
-- Citation semantic review for each `citation_work_key`: `topic`, `usage`, `role_in_context`, `keywords`, item `summary`, and optional `key_reference_reason`.
-- Main agent owns `timeline_summaries` and global `summary` after merging batch drafts.
+- Citation semantic review for known `citation_work_key` values when stable enough: `topic`, `usage`, `role_in_context`, `keywords`, item `summary`, and optional `key_reference_reason`.
+- Main agent may provide `timeline_summaries` and global `summary` after merging batch drafts.
 
 Do not use a temporary script, keyword classifier, or bulk rule to infer citation topics, usage, roles, key-reference reasons, timeline narratives, or global summary. Scripts may only inspect work packages, count key coverage, merge already-returned subagent drafts, serialize JSON, or call `run_analysis.py`.
 
@@ -109,8 +111,8 @@ Main agent:
 1. Runs prepare and reads `citation_semantic_review_manifest_path`, `citation_batch_paths`, `field_guidance`, and unresolved/filtered mention summaries.
 2. Sends each citation batch JSON file path to a subagent by default when subagents are available.
 3. Merges returned `citation_semantic_reviews`.
-4. Checks every `citation_work_key` appears exactly once.
-5. Writes `timeline_summaries` and global `summary`.
+4. Merges duplicate `citation_work_key` entries when needed.
+5. Writes `timeline_summaries` and global `summary` when stable; empty values are valid.
 6. Submits one final payload.
 
 Subagent prompt template:
@@ -120,7 +122,7 @@ You are reviewing one literature-analysis citation semantic batch.
 Read the batch JSON file path provided by the main agent.
 Use only citation_work_packages in that batch file.
 Return JSON with citation_semantic_reviews[] only.
-Each review must include citation_work_key, topic, usage, role_in_context, keywords, summary, and optional key_reference_reason.
+Each review must include citation_work_key and may include topic, usage, role_in_context, keywords, summary, and optional key_reference_reason when stable.
 Do not include internal indexes, mention arrays, renderer categories, timeline buckets, timeline_summaries, global summary, or report markdown.
 If file writing is available, write the draft to suggested_draft_output_path and return that path.
 Do not write DB, run runtime commands, submit payloads, modify citation_work_key, or generate final artifacts.
@@ -146,7 +148,7 @@ Subagent batch draft:
 }
 ```
 
-The main agent is the only DB writer. It merges all subagent `citation_semantic_reviews[]`, keeps every `citation_work_key` unchanged, removes duplicates, and writes the single global `timeline_summaries` and `summary`. Subagents do not decide timeline bucket membership.
+The main agent is the only DB writer. It merges all subagent `citation_semantic_reviews[]`, keeps every `citation_work_key` unchanged, and submits the single global payload. Duplicate known keys are tolerated and merged by runtime. Subagents do not decide timeline bucket membership.
 
 ## Preprocess Rules
 
@@ -184,7 +186,7 @@ Reference-free mode:
 
 - Only valid after DB-backed `file_quality_low=true` and an explicit abandoned reference extraction decision.
 - Reason must be `references_abandoned_file_quality_low`.
-- Semantic reviews may be empty, but `timeline_summaries` and global `summary` must still validate.
+- Semantic reviews, `timeline_summaries`, and global `summary` may be empty; runtime still persists the citation stage and renders a citation artifact.
 
 ## Work Packages
 
@@ -268,17 +270,22 @@ All stable dated items are placed into exactly one bucket by runtime. The agent 
 
 ## Validation Failures
 
-Validation reports all common payload issues in one response:
+Validation reports hard payload issues in one response:
+
+- `citation_semantic_reviews` is present but not an array
+- `timeline_summaries` is present but not an object
+- unknown `citation_work_key`
+- forbidden submit fields
+- forbidden internal fields such as `ref_index`, `function`, `is_key_reference`, or `mentions`
+- invalid `keywords` type when provided
+
+The following are warning-only or normalized conditions:
 
 - missing `citation_semantic_reviews`
-- missing `timeline_summaries.early`
-- missing `timeline_summaries.middle`
-- missing `timeline_summaries.recent`
-- duplicate `citation_work_key`
-- unknown `citation_work_key`
 - missing reviews for expected keys
-- forbidden submit fields
-- missing `topic`, `usage`, `role_in_context`, `keywords`, or `summary`
+- duplicate known `citation_work_key`
+- missing `timeline_summaries.early/middle/recent`
+- missing or empty `topic`, `usage`, `role_in_context`, `keywords`, or `summary`
 
 Example:
 
@@ -287,10 +294,8 @@ Example:
   "error": {
     "code": "citation_payload_invalid",
     "details": [
-      "duplicate citation_work_key: citation-work-8",
       "unknown citation_work_key: citation-work-99",
-      "missing citation_semantic_reviews for citation_work_key values: ['citation-work-13']",
-      "timeline_summaries.middle must be non-empty string"
+      "citation-work-5 contains forbidden internal fields"
     ]
   }
 }
@@ -323,10 +328,10 @@ The agent does not write `report_md`. The renderer derives it from persisted sem
 
 ## Failure And Recovery Notes
 
-- `citation_mentions_not_found`: review `citation_scope`; do not invent semantic reviews.
+- no stable mapped citations: runtime records a warning and still renders an empty or partial citation artifact; review `citation_scope` only if this looks unexpected.
 - `citation_false_positive_filtered`: expected when URLs/images/dates were removed; inspect only if many real citations disappeared.
 - `references_abandoned_file_quality_low`: valid only for reference-free mode after DB-backed low-quality reference decision.
 - `citation_timeline_missing_year`: publication year missing for some items; runtime still closes over dated items.
-- `citation_merge_failed`: repair duplicate or missing `citation_work_key` entries and resubmit.
+- `citation_merge_failed`: repair renderer/schema issues, unknown `citation_work_key`, forbidden fields, or invalid JSON shape and resubmit.
 - `illegal scope override`: do not submit scope changes in this stage.
 - `statistical summary without basis`: global summary should explain the source argument, not just count citations.

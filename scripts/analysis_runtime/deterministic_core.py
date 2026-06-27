@@ -224,6 +224,9 @@ WARNING_REFERENCE_AUTHOR_OVERSPLIT = "reference_author_oversplit_detected"
 WARNING_REFERENCE_ENTRY_GROUPING_SUSPECT = "reference_entry_grouping_suspect"
 WARNING_CITATION_FALSE_POSITIVE_FILTERED = "citation_false_positive_filtered"
 WARNING_CITATION_TIMELINE_MISSING_YEAR = "citation_timeline_missing_year"
+WARNING_CITATION_WORKSET_EMPTY = "citation_workset_empty"
+WARNING_CITATION_MENTIONS_UNRESOLVED = "citation_mentions_unresolved"
+WARNING_CITATION_METADATA_EVIDENCE_MISSING = "citation_metadata_evidence_missing"
 WARNING_SCOPE_FALLBACK_USED = "scope_fallback_used"
 WARNING_DIGEST_UNDERCOVERAGE = "digest_undercoverage"
 REFERENCE_QUALITY_HARD_BLOCK = "hard_block"
@@ -3574,8 +3577,6 @@ def _validate_citation_semantics_payload(
     items = payload.get("items", [])
     if not isinstance(items, list):
         return None, "items must be array"
-    if reference_free_mode and not items:
-        return [], None
 
     expected_ref_indexes = {int(item["ref_index"]) for item in workset_items}
     normalized_items: list[dict[str, Any]] = []
@@ -3588,19 +3589,32 @@ def _validate_citation_semantics_payload(
         ref_index = item.get("ref_index")
         if not isinstance(ref_index, int):
             return None, "items.ref_index must be integer"
+        if ref_index not in expected_ref_indexes:
+            return None, f"unknown ref_index values: [{ref_index}]"
         topic = item.get("topic")
-        if not isinstance(topic, str) or not topic.strip():
-            return None, "items.topic must be non-empty string"
+        if topic is None:
+            topic = ""
+        if not isinstance(topic, str):
+            return None, "items.topic must be string"
         usage = item.get("usage")
-        if not isinstance(usage, str) or not usage.strip():
-            return None, "items.usage must be non-empty string"
+        if usage is None:
+            usage = ""
+        if not isinstance(usage, str):
+            return None, "items.usage must be string"
         summary = item.get("summary")
-        if not isinstance(summary, str) or not summary.strip():
-            return None, "items.summary must be non-empty string"
-        keywords, keyword_error = _normalize_keyword_list(item.get("keywords"), "items.keywords")
+        if summary is None:
+            summary = ""
+        if not isinstance(summary, str):
+            return None, "items.summary must be string"
+        keywords_raw = item.get("keywords")
+        if keywords_raw is None:
+            keywords_raw = []
+        keywords, keyword_error = _normalize_keyword_list(keywords_raw, "items.keywords")
         if keyword_error is not None or keywords is None:
             return None, keyword_error or "items.keywords invalid"
         is_key_reference = item.get("is_key_reference")
+        if is_key_reference is None:
+            is_key_reference = False
         if not isinstance(is_key_reference, bool):
             return None, "items.is_key_reference must be boolean"
         if ref_index in seen_ref_indexes:
@@ -3611,17 +3625,9 @@ def _validate_citation_semantics_payload(
         normalized_item["usage"] = usage.strip()
         normalized_item["summary"] = summary.strip()
         normalized_item["keywords"] = keywords
+        normalized_item["is_key_reference"] = is_key_reference
         normalized_items.append(normalized_item)
 
-    if seen_ref_indexes != expected_ref_indexes:
-        missing = sorted(expected_ref_indexes - seen_ref_indexes)
-        extra = sorted(seen_ref_indexes - expected_ref_indexes)
-        details: list[str] = []
-        if missing:
-            details.append(f"missing ref_index values: {missing}")
-        if extra:
-            details.append(f"unknown ref_index values: {extra}")
-        return None, "; ".join(details) if details else "citation semantics payload does not match workset items"
     return normalized_items, None
 
 
@@ -3634,22 +3640,18 @@ def _validate_citation_summary_basis(
     if not isinstance(basis, dict):
         return None, "basis must be object"
 
-    research_threads_raw = basis.get("research_threads")
+    research_threads_raw = basis.get("research_threads", [])
     if not isinstance(research_threads_raw, list):
         return None, "basis.research_threads must be array"
     research_threads = [str(item).strip() for item in research_threads_raw if str(item).strip()]
-    if len(research_threads) < 2:
-        return None, "basis.research_threads must contain at least 2 non-empty strings"
 
-    argument_shape_raw = basis.get("argument_shape")
+    argument_shape_raw = basis.get("argument_shape", [])
     if not isinstance(argument_shape_raw, list):
         return None, "basis.argument_shape must be array"
     argument_shape = [str(item).strip() for item in argument_shape_raw if str(item).strip()]
-    if len(argument_shape) < 2:
-        return None, "basis.argument_shape must contain at least 2 non-empty strings"
 
-    key_ref_indexes_raw = basis.get("key_ref_indexes")
-    if not isinstance(key_ref_indexes_raw, list) or (not key_ref_indexes_raw and not reference_free_mode):
+    key_ref_indexes_raw = basis.get("key_ref_indexes", [])
+    if not isinstance(key_ref_indexes_raw, list):
         return None, "basis.key_ref_indexes must be non-empty integer array"
     key_ref_indexes: list[int] = []
     for item in key_ref_indexes_raw:
@@ -3700,8 +3702,10 @@ def _validate_citation_timeline_payload(
         if not isinstance(bucket, dict):
             return None, [], f"timeline.{bucket_name} must be object"
         summary = bucket.get("summary")
-        if not isinstance(summary, str) or not summary.strip():
-            return None, [], f"timeline.{bucket_name}.summary must be non-empty string"
+        if summary is None:
+            summary = ""
+        if not isinstance(summary, str):
+            return None, [], f"timeline.{bucket_name}.summary must be string"
         ref_indexes = bucket.get("ref_indexes")
         if not isinstance(ref_indexes, list):
             return None, [], f"timeline.{bucket_name}.ref_indexes must be array"
@@ -3766,9 +3770,11 @@ def _collect_render_semantic_warnings(connection) -> list[str]:  # type: ignore[
 
 def _validate_error_obj(error_val: object) -> list[str]:
     if error_val is None:
-        return []
+        return ["error must be object"]
     if not isinstance(error_val, dict):
-        return ["error must be object or null"]
+        return ["error must be object"]
+    if not error_val:
+        return []
     code = error_val.get("code")
     message = error_val.get("message")
     errors: list[str] = []
@@ -4413,8 +4419,8 @@ def _validate_citation_analysis_obj(obj: object) -> list[str]:
     if not isinstance(unmapped, list):
         errors.append("citation_analysis.unmapped_mentions must be array")
         unmapped = []
-    if not isinstance(obj.get("summary"), str) or not str(obj.get("summary", "")).strip():
-        errors.append("citation_analysis.summary must be non-empty string")
+    if not isinstance(obj.get("summary"), str):
+        errors.append("citation_analysis.summary must be string")
     if not isinstance(obj.get("report_md"), str):
         errors.append("citation_analysis.report_md must be string")
 
@@ -6561,11 +6567,14 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         reference_items = fetch_reference_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
         if not reference_free_mode and not has_action_receipt(connection, "persist_reference_metadata_enrichment"):
-            message = "reference metadata evidence review missing; run persist_references core submit and Reference Metadata Evidence Review before citation workset"
-            set_runtime_error(connection, "citation_scope_failed", message, "stage_5_citation")
+            if not reference_items:
+                message = "reference metadata evidence review missing; run persist_references core submit and Reference Metadata Evidence Review before citation workset"
+                set_runtime_error(connection, "citation_scope_failed", message, "stage_5_citation")
+                connection.commit()
+                print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": message}}, ensure_ascii=False))
+                return 2
+            add_runtime_warning_once(connection, WARNING_CITATION_METADATA_EVIDENCE_MISSING)
             connection.commit()
-            print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": message}}, ensure_ascii=False))
-            return 2
         if source_doc is None:
             set_runtime_error(connection, "citation_scope_failed", "normalized source missing", "stage_5_citation")
             connection.commit()
@@ -6652,14 +6661,11 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         workset_payload["stats"]["unresolved_mentions"] = len(workset["unresolved_mentions"])
         workset_payload["stats"]["filtered_false_positive_mentions"] = filtered_false_positive_mentions
         workset_payload["review_items"] = _build_citation_review_view(workset_payload)["items"]
-        if (
-            not workset_payload["mentions"]
-            or not workset_payload["workset_items"]
-        ) and not reference_free_mode and (_is_review_like_scope(scope) or _scope_contains_citation_signals(lines, scope)):
-            workset_payload["error"] = {
-                "code": "citation_mentions_not_found",
-                "message": "citation scope contains citation-like signals but prepare_citation_workset produced no stable mentions/workset items",
-            }
+        if not reference_free_mode and (_is_review_like_scope(scope) or _scope_contains_citation_signals(lines, scope)):
+            if not workset_payload["mentions"]:
+                workset_payload.setdefault("warnings", []).append(WARNING_CITATION_WORKSET_EMPTY)
+            elif not workset_payload["workset_items"]:
+                workset_payload.setdefault("warnings", []).append(WARNING_CITATION_MENTIONS_UNRESOLVED)
 
     if not args.persist_db_only:
         _write_json(out_path, workset_payload)
@@ -6729,6 +6735,8 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
             add_runtime_warning_once(connection, WARNING_CITATION_FALSE_POSITIVE_FILTERED)
         if workset_payload["meta"]["scope_decision"].get("fallback_reason"):
             add_runtime_warning_once(connection, WARNING_SCOPE_FALLBACK_USED)
+        for warning in workset_payload.get("warnings", []):
+            add_runtime_warning_once(connection, str(warning))
         _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_semantics", next_action="persist_citation_semantics", status="citation workset prepared")
         _record_action_receipt(
             connection,
@@ -6907,10 +6915,12 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
             connection.commit()
             print(json.dumps({"error": {"code": "citation_timeline_failed", "message": "citation timeline missing; persist_citation_timeline must run first"}}, ensure_ascii=False))
             return 2
-        if not isinstance(summary, str) or not summary.strip():
-            set_runtime_error(connection, "citation_semantics_failed", "summary must be non-empty string", "stage_5_citation")
+        if summary is None:
+            summary = ""
+        if not isinstance(summary, str):
+            set_runtime_error(connection, "citation_semantics_failed", "summary must be string", "stage_5_citation")
             connection.commit()
-            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "summary must be non-empty string"}}, ensure_ascii=False))
+            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "summary must be string"}}, ensure_ascii=False))
             return 2
         normalized_basis, error = _validate_citation_summary_basis(basis, citation_items, reference_free_mode=reference_free_mode)
         if error is not None or normalized_basis is None:
@@ -6952,10 +6962,6 @@ def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no
         for template_path in (template_paths.digest_template_path, template_paths.citation_analysis_template_path):
             if not template_path.exists():
                 return f"runtime template missing before render: {template_path}"
-    if not fetch_citation_workset_items(connection) and not reference_free_mode:
-        return "citation_workset_items missing before render"
-    if not fetch_citation_items(connection) and not reference_free_mode:
-        return "citation_items missing before render"
     if fetch_citation_timeline(connection) is None:
         return "citation_timeline missing before render"
     if fetch_citation_summary(connection) is None:
@@ -7111,7 +7117,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
             payload = build_public_output_payload(connection)
         _write_render_result_json(payload, result_json_path=result_json_path)
         print(json.dumps(payload, ensure_ascii=False))
-        return 0 if payload.get("error") is None else 2
+        return 0 if not payload.get("error") else 2
 
     in_path = Path(args.in_path) if args.in_path else None
     if in_path is not None:
