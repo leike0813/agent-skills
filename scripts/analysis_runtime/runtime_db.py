@@ -1659,13 +1659,21 @@ def _citation_sort_key(item: dict[str, Any]) -> tuple[int, int, int]:
 
 def _build_citation_label_map(items: list[dict[str, Any]]) -> dict[int, str]:
     label_map: dict[int, str] = {}
-    ay_items = [item for item in items if item.get("ref_number") is None]
+    ay_items = [
+        item
+        for item in items
+        if item.get("ref_number") is None
+        and not str(dict(item.get("reference", {})).get("citation_label", "")).strip()
+    ]
     ay_items.sort(key=_citation_sort_key)
     ay_counter = 1
     for item in items:
         ref_index = int(item["ref_index"])
         ref_number = item.get("ref_number")
-        if ref_number is not None:
+        citation_label = str(dict(item.get("reference", {})).get("citation_label", "")).strip()
+        if citation_label:
+            label_map[ref_index] = citation_label if citation_label.startswith("[") else f"[{citation_label}]"
+        elif ref_number is not None:
             label_map[ref_index] = f"[{ref_number}]"
         else:
             label_map[ref_index] = ""

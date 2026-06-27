@@ -118,6 +118,9 @@ LATEX_ADDBIBRESOURCE_RE = re.compile(r"\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\
 LATEX_BIBITEM_RE = re.compile(r"\\bibitem\{([^}]+)\}")
 LATEX_CITE_RE = re.compile(r"\\cite(?:p|t|author|year)?(?:\[[^\]]*\]){0,2}\{([^}]+)\}")
 BIBTEX_ENTRY_START_RE = re.compile(r"(?m)^\s*@([A-Za-z]+)\s*\{\s*([^,\s]+)\s*,")
+REFERENCE_ALPHA_LABEL_RE = re.compile(r"^\[([^\[\]\n]{1,80})\]\s*")
+CITATION_LABEL_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+._:-]{1,48}$")
+TEX_LABEL_COMMAND_RE = re.compile(r"\\(?:mathrm|mathsf|textrm|mathbf|mathit)\s*")
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 BRACKET_NUMERIC_RE = re.compile(r"\[([^\[\]\n]{1,160})\]")
@@ -227,6 +230,7 @@ WARNING_CITATION_TIMELINE_MISSING_YEAR = "citation_timeline_missing_year"
 WARNING_CITATION_WORKSET_EMPTY = "citation_workset_empty"
 WARNING_CITATION_MENTIONS_UNRESOLVED = "citation_mentions_unresolved"
 WARNING_CITATION_METADATA_EVIDENCE_MISSING = "citation_metadata_evidence_missing"
+WARNING_CITATION_LABEL_AMBIGUOUS = "citation_label_ambiguous"
 WARNING_SCOPE_FALLBACK_USED = "scope_fallback_used"
 WARNING_DIGEST_UNDERCOVERAGE = "digest_undercoverage"
 REFERENCE_QUALITY_HARD_BLOCK = "hard_block"
@@ -1666,6 +1670,55 @@ def _strip_reference_number_prefix(raw: str) -> tuple[str, int | None]:
     return text, detected_ref_number
 
 
+def _normalize_citation_label_token(raw: str) -> str | None:
+    text = str(raw or "").strip().strip("$")
+    if not text:
+        return None
+    text = TEX_LABEL_COMMAND_RE.sub("", text)
+    text = re.sub(r"\\[A-Za-z]+\s*", "", text)
+    text = text.replace("\\", "")
+    text = re.sub(r"[\{\}\^\s]+", "", text)
+    text = text.strip(".,;:")
+    if not text or text.isdigit():
+        return None
+    if not CITATION_LABEL_TOKEN_RE.match(text):
+        return None
+    return text.upper()
+
+
+def _extract_detected_reference_label(raw: str) -> tuple[str, str] | None:
+    match = REFERENCE_ALPHA_LABEL_RE.match(raw.strip())
+    if match is None:
+        return None
+    raw_label = match.group(1).strip()
+    normalized = _normalize_citation_label_token(raw_label)
+    if normalized is None:
+        return None
+    return raw_label, normalized
+
+
+def _strip_reference_label_prefix(raw: str) -> tuple[str, dict[str, Any]]:
+    text = raw.strip()
+    detected = _extract_detected_reference_label(text)
+    if detected is None:
+        return text, {}
+    raw_label, normalized = detected
+    stripped = REFERENCE_ALPHA_LABEL_RE.sub("", text, count=1).strip()
+    return stripped, {
+        "detected_ref_label": raw_label,
+        "normalized_ref_label": normalized,
+        "citation_label_aliases": [normalized],
+    }
+
+
+def _strip_reference_prefixes(raw: str) -> tuple[str, int | None, dict[str, Any]]:
+    text, detected_ref_number = _strip_reference_number_prefix(raw)
+    if detected_ref_number is not None:
+        return text, detected_ref_number, {}
+    text, label_metadata = _strip_reference_label_prefix(text)
+    return text, None, label_metadata
+
+
 def _normalize_reference_entry_text(raw: str) -> str:
     return re.sub(r"\s+", " ", raw.strip())
 
@@ -2016,7 +2069,7 @@ def _build_reference_entries_from_blocks(blocks: list[dict[str, Any]]) -> list[d
             raw = str(part)
             if not raw:
                 continue
-            normalized_text, detected_ref_number = _strip_reference_number_prefix(raw)
+            normalized_text, detected_ref_number, label_metadata = _strip_reference_prefixes(raw)
             entries.append(
                 {
                     "entry_index": entry_index,
@@ -2028,6 +2081,7 @@ def _build_reference_entries_from_blocks(blocks: list[dict[str, Any]]) -> list[d
                         "block_index": int(block["block_index"]),
                         "normalized_entry_text": normalized_text,
                         "detected_ref_number": detected_ref_number,
+                        **label_metadata,
                         **dict(block.get("metadata", {})),
                     },
                 }
@@ -2378,7 +2432,12 @@ def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]
     raw = str(entry.get("raw", ""))
     metadata = dict(entry.get("metadata", {}))
     source_format = str(metadata.get("source_format", ""))
-    text, _ = _strip_reference_number_prefix(raw)
+    text, _, label_metadata = _strip_reference_prefixes(raw)
+    label_metadata = {
+        key: metadata[key]
+        for key in ("detected_ref_label", "normalized_ref_label", "citation_label_aliases")
+        if key in metadata
+    } or label_metadata
     bibitem_key = _extract_bibitem_key(text)
     if bibitem_key is not None:
         text = LATEX_BIBITEM_RE.sub("", text, count=1).strip()
@@ -2415,6 +2474,8 @@ def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]
         seen.add(key)
         if bibitem_key is not None:
             candidate.setdefault("metadata", {})["bibitem_key"] = bibitem_key
+        if label_metadata:
+            candidate.setdefault("metadata", {}).update(label_metadata)
         candidate["candidate_index"] = len(candidates)
         candidates.append(candidate)
     fallback = _candidate_fallback_raw_split(entry_index, text, terminal_year)
@@ -2427,6 +2488,8 @@ def _generate_reference_candidates(entry: dict[str, Any]) -> list[dict[str, Any]
     if fallback_key not in seen:
         if bibitem_key is not None:
             fallback.setdefault("metadata", {})["bibitem_key"] = bibitem_key
+        if label_metadata:
+            fallback.setdefault("metadata", {}).update(label_metadata)
         fallback["candidate_index"] = len(candidates)
         candidates.append(fallback)
     return candidates
@@ -2449,7 +2512,7 @@ def _candidate_cjk_type_marker_entry(entry: dict[str, Any]) -> dict[str, Any] | 
     raw = str(entry.get("raw", ""))
     entry_index = int(entry.get("entry_index", 0))
     normalized = _normalize_fullwidth_reference_text(raw)
-    text, _ = _strip_reference_number_prefix(normalized)
+    text, _, _ = _strip_reference_prefixes(normalized)
     text = _normalize_reference_entry_text(text)
     match = CJK_TYPE_MARKER_ENTRY_RE.match(text)
     if match is None:
@@ -2958,6 +3021,44 @@ def _extract_numeric_mentions(line: str, line_no: int, mention_seed: int) -> tup
     return mentions, current
 
 
+def _looks_like_citation_label_part(raw: str, normalized: str) -> bool:
+    text = str(raw or "").strip()
+    if not text:
+        return False
+    has_tex_noise = any(token in text for token in ("\\", "{", "}", "^"))
+    if re.search(r"[A-Za-z]\s+\d", text) and not has_tex_noise:
+        return False
+    return bool(re.search(r"\d", normalized) or "+" in normalized or len(normalized) <= 5)
+
+
+def _extract_citation_label_mentions(line: str, line_no: int, mention_seed: int) -> tuple[list[dict[str, Any]], int]:
+    mentions: list[dict[str, Any]] = []
+    current = mention_seed
+    for bracket_match in BRACKET_NUMERIC_RE.finditer(line):
+        inside = bracket_match.group(1)
+        if not re.search(r"[A-Za-z]", inside):
+            continue
+        for raw_part in [part.strip() for part in re.split(r"[;,]", inside) if part.strip()]:
+            normalized_label = _normalize_citation_label_token(raw_part)
+            if normalized_label is None:
+                continue
+            if not _looks_like_citation_label_part(raw_part, normalized_label):
+                continue
+            mentions.append(
+                {
+                    "mention_id": f"m{current:05d}",
+                    "marker": f"[{normalized_label}]",
+                    "style": "citation-label",
+                    "line_start": line_no,
+                    "line_end": line_no,
+                    "snippet": line.strip(),
+                    "citation_label_hint": normalized_label,
+                }
+            )
+            current += 1
+    return mentions, current
+
+
 def _extract_surname(segment: str) -> str | None:
     candidate = segment.strip()
     if not candidate:
@@ -3055,15 +3156,38 @@ def _extract_mentions(lines: list[str], scope: Scope) -> tuple[list[dict[str, An
         filtered_count += _count_false_positive_noise(original_line)
         line = _sanitize_citation_line(original_line)
         numeric_mentions, counter = _extract_numeric_mentions(line, line_no, counter)
+        label_mentions, counter = _extract_citation_label_mentions(line, line_no, counter)
         author_year_mentions, counter = _extract_author_year_mentions(line, line_no, counter)
         latex_mentions, counter = _extract_latex_cite_mentions(line, line_no, counter)
-        for mention in [*numeric_mentions, *author_year_mentions, *latex_mentions]:
+        for mention in [*numeric_mentions, *label_mentions, *author_year_mentions, *latex_mentions]:
             mention["snippet"] = original_line.strip()
             if _is_false_positive_mention(mention):
                 filtered_count += 1
                 continue
             mentions.append(mention)
     return mentions, filtered_count
+
+
+def _citation_label_aliases_from_metadata(metadata: dict[str, Any]) -> tuple[str | None, set[str]]:
+    aliases: set[str] = set()
+    display_label = metadata.get("detected_ref_label")
+    display = str(display_label).strip() if isinstance(display_label, str) and display_label.strip() else None
+    for value in (
+        metadata.get("detected_ref_label"),
+        metadata.get("normalized_ref_label"),
+    ):
+        if isinstance(value, str):
+            normalized = _normalize_citation_label_token(value)
+            if normalized is not None:
+                aliases.add(normalized)
+    aliases_value = metadata.get("citation_label_aliases")
+    if isinstance(aliases_value, list):
+        for value in aliases_value:
+            if isinstance(value, str):
+                normalized = _normalize_citation_label_token(value)
+                if normalized is not None:
+                    aliases.add(normalized)
+    return display, aliases
 
 
 def _build_citation_workset(
@@ -3076,6 +3200,9 @@ def _build_citation_workset(
     by_ref_number: dict[int, dict[str, Any]] = {}
     by_author_year: list[dict[str, Any]] = []
     by_citekey: dict[str, dict[str, Any]] = {}
+    by_citation_label: dict[str, dict[str, Any]] = {}
+    ambiguous_citation_labels: set[str] = set()
+    warnings: list[str] = []
     for item in reference_items:
         ref_number = item.get("detected_ref_number")
         if ref_number is None:
@@ -3101,6 +3228,11 @@ def _build_citation_workset(
             }
         pattern_candidate = dict(metadata.get("pattern_candidate", {}))
         pattern_metadata = dict(pattern_candidate.get("metadata", {})) if isinstance(pattern_candidate.get("metadata"), dict) else {}
+        citation_label, citation_label_aliases = _citation_label_aliases_from_metadata(metadata)
+        pattern_label, pattern_label_aliases = _citation_label_aliases_from_metadata(pattern_metadata)
+        if citation_label is None:
+            citation_label = pattern_label
+        citation_label_aliases.update(pattern_label_aliases)
         citekey_aliases: set[str] = set()
         for value in (
             metadata.get("citekey"),
@@ -3111,6 +3243,8 @@ def _build_citation_workset(
             if isinstance(value, str) and value.strip():
                 citekey_aliases.add(value.strip())
         entry["citekey_aliases"] = sorted(citekey_aliases)
+        entry["citation_label"] = citation_label
+        entry["citation_label_aliases"] = sorted(citation_label_aliases)
         reference_index.append(entry)
         if isinstance(ref_number, int):
             by_ref_number[ref_number] = entry
@@ -3119,6 +3253,14 @@ def _build_citation_workset(
             by_author_year.append({**entry, "surname_aliases": sorted(_first_author_aliases(authors))})
         for alias in entry["citekey_aliases"]:
             by_citekey[alias] = entry
+        for alias in entry["citation_label_aliases"]:
+            if alias in by_citation_label:
+                ambiguous_citation_labels.add(alias)
+                by_citation_label.pop(alias, None)
+            elif alias not in ambiguous_citation_labels:
+                by_citation_label[alias] = entry
+    for alias in sorted(ambiguous_citation_labels):
+        warnings.append(f"{WARNING_CITATION_LABEL_AMBIGUOUS}: {alias}")
 
     grouped: dict[int, dict[str, Any]] = {}
     mention_links: list[dict[str, Any]] = []
@@ -3128,10 +3270,17 @@ def _build_citation_workset(
         resolution_method = "unresolved"
         resolution_confidence = 0.0
         citekey_hint = str(mention.get("citekey_hint", "")).strip()
+        citation_label_hint = str(mention.get("citation_label_hint", "")).strip()
         if citekey_hint and citekey_hint in by_citekey:
             candidate_reference = by_citekey[citekey_hint]
             resolution_method = "citekey_hint"
             resolution_confidence = 1.0
+        elif citation_label_hint and citation_label_hint in by_citation_label:
+            candidate_reference = by_citation_label[citation_label_hint]
+            resolution_method = "citation_label_hint"
+            resolution_confidence = 1.0
+        elif citation_label_hint and citation_label_hint in ambiguous_citation_labels:
+            resolution_method = "citation_label_ambiguous"
         elif mention.get("ref_number_hint") in by_ref_number:
             candidate_reference = by_ref_number[int(mention["ref_number_hint"])]
             resolution_method = "ref_number_hint"
@@ -3157,6 +3306,7 @@ def _build_citation_workset(
                     "evidence": {
                         "marker": mention.get("marker"),
                         "citekey_hint": mention.get("citekey_hint"),
+                        "citation_label_hint": mention.get("citation_label_hint"),
                         "ref_number_hint": mention.get("ref_number_hint"),
                         "year_hint": mention.get("year_hint"),
                         "surname_hint": mention.get("surname_hint"),
@@ -3176,6 +3326,7 @@ def _build_citation_workset(
                 "evidence": {
                     "marker": mention.get("marker"),
                     "citekey_hint": mention.get("citekey_hint"),
+                    "citation_label_hint": mention.get("citation_label_hint"),
                     "ref_number_hint": mention.get("ref_number_hint"),
                     "year_hint": mention.get("year_hint"),
                     "surname_hint": mention.get("surname_hint"),
@@ -3190,11 +3341,14 @@ def _build_citation_workset(
                     "author": candidate_reference.get("author", []),
                     "title": candidate_reference.get("title", ""),
                     "year": candidate_reference.get("year"),
+                    "citation_label": candidate_reference.get("citation_label"),
                 },
                 "mentions": [],
                 "metadata": {
                     "resolution_methods": [],
                     "resolution_confidence_max": resolution_confidence,
+                    "citation_label": candidate_reference.get("citation_label"),
+                    "citation_label_aliases": candidate_reference.get("citation_label_aliases", []),
                 },
             }
         grouped[ref_index]["mentions"].append(mention)
@@ -3253,6 +3407,7 @@ def _build_citation_workset(
         "workset_items": suggested_items,
         "unresolved_mentions": unresolved_mentions,
         "suggested_batches": suggested_batches,
+        "warnings": warnings,
     }
 
 
@@ -5979,6 +6134,13 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
                 metadata.setdefault("citekey", candidate_metadata["citekey"].strip())
             if isinstance(candidate_metadata.get("bibitem_key"), str) and candidate_metadata["bibitem_key"].strip():
                 metadata.setdefault("bibitem_key", candidate_metadata["bibitem_key"].strip())
+            for label_key in ("detected_ref_label", "normalized_ref_label", "citation_label_aliases"):
+                entry_label_value = entry_metadata.get(entry_index, {}).get(label_key)
+                candidate_label_value = candidate_metadata.get(label_key)
+                if entry_label_value not in (None, "", []):
+                    metadata.setdefault(label_key, entry_label_value)
+                elif candidate_label_value not in (None, "", []):
+                    metadata.setdefault(label_key, candidate_label_value)
             numbering = dict(entry_metadata.get(entry_index, {}).get("numbering", {}))
             if numbering:
                 metadata["numbering"] = numbering
@@ -6610,11 +6772,13 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         "stats": {
             "total_mentions": 0,
             "numeric_mentions": 0,
+            "citation_label_mentions": 0,
             "author_year_mentions": 0,
             "resolved_items": 0,
             "unresolved_mentions": 0,
             "filtered_false_positive_mentions": 0,
         },
+        "warnings": [],
         "error": None,
     }
     if scope_error is not None or scope is None:
@@ -6652,10 +6816,12 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
                 "reference_index": workset["reference_index"],
                 "suggested_batches": workset["suggested_batches"],
                 "unresolved_mentions": workset["unresolved_mentions"],
+                "warnings": list(workset.get("warnings", [])),
             }
         )
         workset_payload["stats"]["total_mentions"] = len(mentions)
         workset_payload["stats"]["numeric_mentions"] = sum(1 for mention in mentions if mention.get("style") == "numeric")
+        workset_payload["stats"]["citation_label_mentions"] = sum(1 for mention in mentions if mention.get("style") == "citation-label")
         workset_payload["stats"]["author_year_mentions"] = sum(1 for mention in mentions if mention.get("style") == "author-year")
         workset_payload["stats"]["resolved_items"] = len(workset["workset_items"])
         workset_payload["stats"]["unresolved_mentions"] = len(workset["unresolved_mentions"])
@@ -6780,7 +6946,7 @@ def _handle_export_citation_workset(args: argparse.Namespace) -> int:
         mentions = fetch_citation_mentions(connection)
         workset_items = fetch_citation_workset_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
-        if (not mentions or not workset_items) and not reference_free_mode:
+        if not has_action_receipt(connection, "prepare_citation_workset") and not reference_free_mode:
             error = {"code": "citation_scope_failed", "message": "citation workset missing; prepare_citation_workset must run first"}
             print(json.dumps({"error": error}, ensure_ascii=False))
             return 2
@@ -6831,7 +6997,7 @@ def _handle_persist_citation_semantics(args: argparse.Namespace) -> int:
     with connect_db(db_path) as connection:
         workset_items = fetch_citation_workset_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
-        if not workset_items and not reference_free_mode:
+        if not has_action_receipt(connection, "prepare_citation_workset") and not reference_free_mode:
             set_runtime_error(connection, "citation_semantics_failed", "citation workset missing; prepare_citation_workset must run first", "stage_5_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation workset missing; prepare_citation_workset must run first"}}, ensure_ascii=False))
@@ -6873,7 +7039,7 @@ def _handle_persist_citation_timeline(args: argparse.Namespace) -> int:
     with connect_db(db_path) as connection:
         citation_items = fetch_citation_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
-        if not citation_items and not reference_free_mode:
+        if not has_action_receipt(connection, "persist_citation_semantics") and not reference_free_mode:
             set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_5_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
@@ -6904,10 +7070,10 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
     with connect_db(db_path) as connection:
         citation_items = fetch_citation_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
-        if not citation_items and not reference_free_mode:
-            set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_5_citation")
+        if not has_action_receipt(connection, "persist_citation_timeline") and not reference_free_mode:
+            set_runtime_error(connection, "citation_timeline_failed", "citation timeline missing; persist_citation_timeline must run first", "stage_5_citation")
             connection.commit()
-            print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
+            print(json.dumps({"error": {"code": "citation_timeline_failed", "message": "citation timeline missing; persist_citation_timeline must run first"}}, ensure_ascii=False))
             return 2
         citation_timeline = fetch_citation_timeline(connection)
         if citation_timeline is None:
