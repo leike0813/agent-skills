@@ -245,7 +245,7 @@ Allowed reasons to skip a delegation point are limited to: no subagent capabilit
 - `keywords`：2-5 个短词组，概括任务、方法、对象或路线。
 - `key_reference_reason`：若该文献是关键引用，说明原因；runtime 据此派生关键文献标记。
 - `summary`：在 citation item 中是条目级作用总结；在 citation payload 顶层是全局引文组织总结。
-- `timeline_summaries`：`early` / `middle` / `recent` 三段自然语言时间线总结；runtime 派生 bucket membership。
+- `timeline_summaries`：`early` / `middle` / `recent` 三段自然语言时间线总结；runtime 派生 bucket membership，缺失或空字符串合法。
 
 ## 参考索引
 
@@ -624,10 +624,11 @@ python scripts/run_analysis.py persist_citation_analysis --db-path "<db_path>"
 ```bash
 python scripts/run_analysis.py persist_citation_analysis --db-path "<db_path>" --payload-file citation.json
 ```
-- 必须 payload：
+- 推荐 payload：
   - `citation_semantic_reviews`
   - `timeline_summaries`
   - `summary`
+- 本阶段是 tolerant best-effort 持久化：payload 字段可以缺失或为空；runtime 只保存 agent 已提交且 key 可识别的 citation items，不为未提交 key 制造占位语义。
 - `citation_semantic_reviews[*]` 字段含义：
   - `citation_work_key`：来自 `citation_batch_paths[*]` 文件内 `citation_work_packages[*].citation_work_key` 的稳定工作键。
   - `topic`：该文献在当前 `citation_scope` 中代表的主题、路线或对象。
@@ -637,14 +638,14 @@ python scripts/run_analysis.py persist_citation_analysis --db-path "<db_path>" -
   - `summary`：该引用在当前 scope 中的具体作用，不写泛化文献简介。
   - `key_reference_reason`：可选；非空时 runtime 将其视为关键引用依据。
 - `timeline_summaries` 字段含义：
-  - 固定包含 `early`、`middle`、`recent` 三段自然语言总结。
+  - 可包含 `early`、`middle`、`recent` 三段自然语言总结；缺段或空字符串合法。
   - agent 不填写 bucket membership；runtime 根据年份派生闭包分桶。
 - `summary` 字段含义：
-  - 全局 citation analysis 总结，概括原文如何组织和使用这些引用。
+  - 全局 citation analysis 总结，概括原文如何组织和使用这些引用；空字符串合法。
 - Subagent hard rules：
   - 当环境支持 subagent 且存在 `citation_batch_paths` 时，citation semantic review 必须默认按 runtime 预切 batch 文件委派。
   - 只有环境不支持、batch 极小，或上下文不可拆时才由主 agent 自行完成；跳过原因写入执行 notes。
-  - subagent 只读取被分配的 citation batch JSON 文件，只返回 `citation_semantic_reviews[]` draft；主 agent 合并、去重、补齐覆盖后提交一次正式 payload。
+  - subagent 只读取被分配的 citation batch JSON 文件，只返回 `citation_semantic_reviews[]` draft；主 agent 合并后提交一次正式 payload。
   - 如果 subagent 可写文件，优先写到 batch JSON 中的 `suggested_draft_output_path` 并返回路径；否则直接返回 batch draft JSON。
   - 主 agent 单独撰写或整合 `timeline_summaries` 与全局 `summary`。
 - Citation semantic review subagent prompt (short)：
@@ -665,7 +666,7 @@ Do not write DB, run runtime commands, or submit payloads.
   - 图片链接、URL、资源路径、日期型字符串等假阳性应由 preprocess 过滤并计入 `citation_false_positive_filtered`。
   - 模糊 mention 进入 `unmapped_mentions`，不得硬猜。
   - Web/resource 型 reference 可以缺 authors/year；这会产生 warning 但不阻断。`publication_year=null` 的引用不会进入 runtime 自动时间线分桶，可能产生 `citation_timeline_missing_year` warning。
-- 最小合法示例：
+- 完整 payload 示例：
 ```json
 {
   "citation_semantic_reviews": [
@@ -690,11 +691,12 @@ Do not write DB, run runtime commands, or submit payloads.
 - 成功后应该看到：
   - runtime 自动渲染最终公开产物。
   - stdout 即最终 JSON。
-- 关键失败分支：
-  - `citation_mentions_not_found`：scope 可能选错或被去噪过滤；重审 `citation_scope`。
-  - missing/duplicate/unknown `citation_work_key`：一次性修正覆盖集合后重交。
-  - `timeline_summaries` 缺段落：补齐 `early` / `middle` / `recent`。
-  - 条目语义缺 `topic` / `usage` / `role_in_context` / `summary`：按错误详情补齐后重交。
+- 宽松持久化规则：
+  - `citation_semantic_reviews` 缺失、为空或只覆盖部分 `citation_work_key` 时合法；未提交 key 不生成 item。
+  - `topic` / `usage` / `role_in_context` / `keywords` / `summary` 缺失或为空时合法；runtime 保存空字符串或空数组，不生成替代语义。
+  - duplicate `citation_work_key` 不阻断；runtime 合并为一条，字符串字段取第一个非空值，`keywords` 合并去重。
+  - unknown `citation_work_key`、forbidden internal fields、非法 JSON 仍然失败。
+  - scope 存在但无稳定 mapped workset 时，runtime 记录 warning 并继续产出空 citation artifact。
 
 ### 6. `finalize_outputs`
 
@@ -719,7 +721,7 @@ python scripts/run_analysis.py finalize_outputs --db-path "<db_path>"
 - 关键失败分支：
   - 缺 `digest_slots` / `section_summaries`：回到 `persist_digest`。
   - 缺 `reference_items`：回到 `persist_references` 或确认 reference-free mode。
-  - 缺 `citation_items` / `citation_timeline` / `citation_summary`：回到 `persist_citation_analysis`。
+  - 缺 `citation_timeline` / `citation_summary`：回到 `persist_citation_analysis`。
   - `citation_analysis_report_path` 内容与 `citation_analysis.json.report_md` 不一致：不要手改产物，重新 finalize。
 
 ## 阶段性最低输出约束
@@ -729,8 +731,8 @@ python scripts/run_analysis.py finalize_outputs --db-path "<db_path>"
 - Reference Metadata Evidence Review 不得修改 locked core fields，不得联网发现缺失 metadata。
 - citation 语义阶段不得重做 mention-reference join。
 - citation 阶段不得直接写 `report_md`。
-- `citation_analysis.summary` 是必填全局字段。
-- `persist_citation_analysis.citation_semantic_reviews[*]` 必须包含 `topic`、`usage`、`role_in_context`、`keywords`、`summary`。
-- `timeline_summaries` 必须包含 `early`、`middle`、`recent`。
+- `citation_analysis.summary` 可以为空字符串；空 summary 代表本阶段未获得稳定全局综合。
+- `persist_citation_analysis.citation_semantic_reviews[*]` 可以缺少 `topic`、`usage`、`role_in_context`、`keywords`、`summary`；runtime 不补造语义。
+- `timeline_summaries` 可以缺少 `early`、`middle`、`recent`；runtime 仍写三段 timeline bucket，summary 可为空。
 - agent 不填写 citation bucket membership；runtime 根据 dated citation items 派生时间线闭包。
 - author-year 型渲染标签由 renderer 合成 `[AY-k]`，不得与原始 numeric `[n]` 混用。

@@ -1206,6 +1206,7 @@ def fetch_reference_metadata_enrichment_workset(connection: sqlite3.Connection) 
                 "locked_reference": json.loads(str(row["locked_reference_json"])),
                 "existing_metadata": json.loads(str(row["existing_metadata_json"])),
                 "metadata_context_text": str(row["metadata_context_text"]),
+                "allowed_fields": json.loads(str(row["allowed_fields_json"])),
                 "batch_id": f"metadata-batch-{int(row['batch_index'])}",
                 "batch_index": int(row["batch_index"]),
                 "status": str(row["status"]),
@@ -2056,7 +2057,7 @@ def build_public_output_payload(connection: sqlite3.Connection) -> dict[str, Any
             "model": inputs.get("model", ""),
         },
         "warnings": fetch_runtime_warnings(connection),
-        "error": None,
+        "error": {},
     }
     if "citation_analysis_report_path" in artifacts:
         payload["citation_analysis_report_path"] = str(Path(artifacts["citation_analysis_report_path"]["path"]).expanduser().resolve())
