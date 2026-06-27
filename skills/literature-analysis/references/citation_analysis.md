@@ -155,6 +155,7 @@ The main agent is the only DB writer. It merges all subagent `citation_semantic_
 Mention extraction supports:
 
 - Numeric citations: `[5]`, `[5, 36]`, `[4,15,38]`, `[40-42]`, `[40–42]`.
+- Source-local bracket-alpha labels: `[RNSS18]`, `[DGV+18]`, `[YDY+19]`, `[Fou]`, and grouped forms like `[RNSS18, DCLT18]`.
 - Author-year citations: `(Smith, 2020)`, `Smith et al. (2020)`, `(Smith & Jones, 2020; Brown, 2019)`.
 - LaTeX citations: `\cite{...}`, `\citep{...}`, `\citet{...}`, multi-key `\cite{a,b,c}`.
 
@@ -171,9 +172,12 @@ Filtered cases contribute to `citation_false_positive_filtered`.
 Mapping preference:
 
 1. LaTeX `citekey_hint` to persisted `citekey` / `bibitem_key`.
-2. Numeric source reference number to persisted reference item.
-3. Author-year `year + first-author surname aliases`.
-4. Local snippet support.
+2. Bracket-alpha `citation_label_hint` to persisted source reference labels.
+3. Numeric source reference number to persisted reference item.
+4. Author-year `year + first-author surname aliases`.
+5. Local snippet support.
+
+Bracket-alpha labels are runtime mapping hints. The agent does not submit them in `citation_semantic_reviews[]`; duplicate source labels remain unmapped rather than guessed.
 
 Author-year aliases:
 
@@ -328,7 +332,7 @@ The agent does not write `report_md`. The renderer derives it from persisted sem
 
 ## Failure And Recovery Notes
 
-- no stable mapped citations: runtime records a warning and still renders an empty or partial citation artifact; review `citation_scope` only if this looks unexpected.
+- no stable mapped citations: when prepare returns `citation_package_count=0`, submit an empty citation payload. Runtime persists empty semantics, timeline, and summary rows, then renders an empty citation artifact. Review `citation_scope` only if this looks unexpected.
 - `citation_false_positive_filtered`: expected when URLs/images/dates were removed; inspect only if many real citations disappeared.
 - `references_abandoned_file_quality_low`: valid only for reference-free mode after DB-backed low-quality reference decision.
 - `citation_timeline_missing_year`: publication year missing for some items; runtime still closes over dated items.
