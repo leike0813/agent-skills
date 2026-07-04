@@ -4,68 +4,82 @@
         "digest_path": {
             "type": "string",
             "x-type": "artifact",
-            "x-role": "digest"
+            "x-role": "digest",
+            "description": "Absolute path to the rendered digest Markdown file (digest.md). On success, must be a non-empty absolute path. On failure, set to empty string."
         },
         "references_path": {
             "type": "string",
             "x-type": "artifact",
-            "x-role": "references"
+            "x-role": "references",
+            "description": "Absolute path to the rendered structured references JSON file (references.json). On success, must be a non-empty absolute path. On failure, set to empty string."
         },
         "citation_analysis_path": {
             "type": "string",
             "x-type": "artifact",
-            "x-role": "citation-analysis"
+            "x-role": "citation-analysis",
+            "description": "Absolute path to the rendered citation analysis JSON file (citation_analysis.json). On success, must be a non-empty absolute path. On failure, set to empty string."
         },
         "literature_matching_metadata_path": {
             "type": "string",
             "x-type": "artifact",
-            "x-role": "literature-matching-metadata"
+            "x-role": "literature-matching-metadata",
+            "description": "Absolute path to the rendered literature matching metadata JSON file (literature_matching_metadata.json). On success, must be a non-empty absolute path. On failure, set to empty string."
         },
         "citation_analysis_report_path": {
             "type": "string",
             "x-type": "artifact",
-            "x-role": "citation-analysis-report"
+            "x-role": "citation-analysis-report",
+            "description": "Absolute path to the human-readable citation analysis report (citation_analysis.md). Optional; only present when citation analysis was generated. Its content must match citation_analysis.json.report_md exactly."
         },
         "representative_image": {
             "type": "object",
+            "description": "Representative figure selection result, based solely on textual evidence (captions, figure labels, Markdown/HTML/LaTeX image references, PDF page hints). Only include when a figure was evaluated for selection.",
             "properties": {
                 "status": {
                     "type": "string",
                     "enum": [
                         "selected",
                         "none"
-                    ]
+                    ],
+                    "description": "Selection outcome. Set to \"selected\" when a reliable figure candidate was found; set to \"none\" when no figure met the selection criteria."
                 },
                 "source_kind": {
                     "type": "string",
                     "enum": [
                         "markdown_image_ref",
                         "pdf_figure_caption"
-                    ]
+                    ],
+                    "description": "Source type of the figure evidence. \"markdown_image_ref\" for Markdown/HTML image references; \"pdf_figure_caption\" for PDF-extracted figure captions. Required when status is \"selected\"."
                 },
                 "label": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Figure label from the source text, e.g. \"Figure 1\", \"Fig. 2\", \"Table 3\". Required when status is \"selected\"."
                 },
                 "caption_quote": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Quoted figure caption text from the source. Required when status is \"selected\"."
                 },
                 "section_hint": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Section name where the figure appears, e.g. \"Methods\", \"Results\", \"Introduction\". Optional contextual hint."
                 },
                 "page_hint": {
                     "type": [
                         "integer",
                         "null"
                     ],
-                    "minimum": 1
+                    "minimum": 1,
+                    "description": "Page number where the figure appears, if determinable from the source. Set to null when unavailable."
                 },
                 "markdown_src_hint": {
                     "type": "string",
                     "minLength": 1,
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Image source path from Markdown/HTML reference, e.g. \"figures/overview.png\". Required when source_kind is \"markdown_image_ref\"; must not be present when source_kind is \"pdf_figure_caption\"."
                 },
                 "selection_reason": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Natural language explanation of why this figure was selected as representative. Required when status is \"selected\"."
                 },
                 "confidence": {
                     "type": "string",
@@ -73,7 +87,8 @@
                         "high",
                         "medium",
                         "low"
-                    ]
+                    ],
+                    "description": "Confidence level of the selection. \"high\" for clear unambiguous evidence; \"medium\" for reasonable but with some ambiguity; \"low\" for tentative with weak evidence. Required when status is \"selected\"."
                 }
             },
             "required": [
@@ -166,24 +181,30 @@
         },
         "provenance": {
             "type": "object",
+            "description": "Generation provenance metadata. On success, all sub-fields must be populated with real values. On failure, all sub-fields must be empty strings.",
             "properties": {
                 "generated_at": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "ISO 8601 timestamp (e.g. 2026-03-31T09:00:00Z) when the artifacts were generated. On failure, set to empty string."
                 },
                 "input_hash": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "SHA256 hash of the input source file, prefixed with \"sha256:\" (e.g. sha256:0123456789abcdef). On failure, set to empty string."
                 },
                 "model": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Identifier string of the model used for generation (e.g. gpt-5.4). On failure, set to empty string."
                 }
             }
         },
         "warnings": {
-            "type": "array"
+            "type": "array",
+            "description": "Array of warning strings collected during execution. Empty array when no warnings were generated."
         },
         "error": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "description": "Structured error information. On success, must be an empty object {}. On failure, must contain at least \"code\" and \"message\" fields."
         }
     },
     "required": [
