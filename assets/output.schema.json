@@ -27,27 +27,30 @@
     },
     "status": {
       "type": "string",
-      "enum": ["success", "cancelled", "failed"]
+      "enum": ["success", "cancelled", "failed"],
+      "description": "Execution outcome. success: translation completed, all artifact paths must be absolute. cancelled: aborted before translation (e.g. source and target are the same language), artifact paths must be null. failed: unrecoverable error, artifact paths must be null."
     },
     "reason": {
       "type": "string",
-      "description": "Human-readable explanation. For cancelled: why; for failed: error description"
+      "description": "Human-readable explanation. For success: brief summary of completed work (free-form). For cancelled: why the task was aborted. For failed: error description including root cause."
     },
     "provenance": {
       "type": "object",
+      "description": "Translation run metadata: source/target language identification, input provenance, and work statistics. Populated regardless of status; statistics fields (total_blocks etc.) may be omitted for non-success statuses.",
       "properties": {
-        "source_path": { "type": "string" },
-        "source_language": { "type": "string" },
-        "target_language": { "type": "string" },
-        "total_blocks": { "type": "integer" },
-        "total_sentences": { "type": "integer" },
-        "total_batches": { "type": "integer" }
+        "source_path": { "type": "string", "description": "The original source_path input value, preserved verbatim." },
+        "source_language": { "type": "string", "description": "Detected source language in BCP-47 format (e.g. en-US, zh-CN, ja-JP). Must match Phase 2 analysis output." },
+        "target_language": { "type": "string", "description": "Target language in BCP-47 format (e.g. zh-CN, en, ja). Must match the resolved target_language parameter." },
+        "total_blocks": { "type": "integer", "description": "Total number of blocks produced by blockify phase (Phase 4). Omit when status is not success." },
+        "total_sentences": { "type": "integer", "description": "Total number of sentences produced by sentencify/build_block_sentences phase (Phase 5). Omit when status is not success." },
+        "total_batches": { "type": "integer", "description": "Total number of translation batches produced by partition phase (Phase 6). Omit when status is not success." }
       },
       "required": ["source_path", "source_language", "target_language"]
     },
     "warnings": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": { "type": "string" },
+      "description": "Non-fatal issues collected during execution (e.g. risky sentence pairs, partial retry exhaustion, missing block translations). Empty array when none. Present regardless of status."
     }
   },
   "required": ["status"]
