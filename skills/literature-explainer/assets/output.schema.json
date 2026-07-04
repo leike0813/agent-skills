@@ -10,24 +10,31 @@
     },
     "provenance": {
       "type": "object",
+      "description": "Provenance metadata tracking the generation context of this skill execution. All sub-fields must be populated regardless of whether a note was produced.",
       "properties": {
         "generated_at": {
-            "type": "string"
+          "type": "string",
+          "description": "UTC ISO‑8601 timestamp of note generation (e.g. '2026-03-11T12:34:56Z'). Use an empty string when no note was generated."
         },
         "input_hash": {
-            "type": "string"
+          "type": "string",
+          "description": "SHA‑256 hash of the raw source_path file bytes, formatted as 'sha256:<hex>'. Must always be populated — computed at dispatch time and carried through to output."
         },
         "model": {
-            "type": "string"
+          "type": "string",
+          "description": "Identifier of the model used for the core analysis task (e.g. 'claude-sonnet-4-20250514'). Use a human-readable model name; do not use provider-internal opaque IDs."
         }
-      }
+      },
+      "required": ["generated_at", "input_hash", "model"]
     },
     "warnings": {
-        "type": "array"
+      "type": "array",
+      "description": "Non-fatal issues accumulated during execution. Empty array when clean."
     },
     "error": {
-        "type": "object",
-        "additionalProperties": true
+      "type": "object",
+      "description": "Empty object {} on success. On failure, populate with {code, message} and treat other fields as invalid.",
+      "additionalProperties": true
     }
   },
   "required": [
