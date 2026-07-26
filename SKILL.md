@@ -11,6 +11,61 @@ description: Create, update, review, and architect high-quality agent skills by 
 
 本 skill 自身采用 reference-backed 架构：`SKILL.md` 是运行时主控，`references/` 存放细节。使用时先读本文件，只在当前设计问题需要时读取对应 reference。
 
+## **Agent Skill Hard Constraints**
+
+**将本节的指令要求视为起草、修订、审查 Skill 的硬约束，贯穿于整个设计过程，并且在交付前必须复查！**
+
+### Structural Principles
+
+- 遵守 Open Agent Skills 规范，除非用户明确要求或有特殊需求外，Skill 包中仅包含以下内容：(1) `SKILL.md` 写 Skill 指令，(2) `references/` 目录存放扩展指令、参考资料，(3) `scripts/` 目录存放执行脚本，(4) `assets/` 目录存放资源文件。
+- **`SKILL.md` 中的 yaml frontmatter 中的 description 必须精炼，只写两件事：(1)这个 Skill 是做什么的；(2)这个 Skill 该在什么情况下使用。**
+- **`SKILL.md` 中必须包含以下几部分内容（具体形式、内容、体量根据 Skill 特点来定，但结构上必须有）：(1) `目标`/`Goal`，即这个 Skill 是做什么的，执行怎样性质的任务，预期达到怎样的效果；(2) `非目标`/`Non-goal`，即这个 Skill 不做什么，不试图解决哪些问题；(3) `输入输出契约`/`I/O Contract`，即 Skill 的输入、输出应该遵守怎样的形式约定；(4) `禁止事项`/`FORBIDDEN`，即 Agent 在执行 Skill 时绝对不能做的事，通常以 `**` 包裹以示强调；(5) `执行流程`/`Execution Flow`，即 Skill 的执行步骤、阶段划分、决策点、失败恢复等；(6) `LLM 与脚本职责分工`/`LLM vs Script Responsibilities`，即 Skill 中哪些任务必须由 LLM (Agent) 完成，哪些任务必须由脚本完成；(7) `参考资料引用`/`References`，即 Skill 中需要引用哪些参考资料（指向 `references` 目录下的文档，或外部链接）以及在何时去阅读；Skill 执行依赖哪些脚本、各脚本的作用是什么、脚本的调用说明（如果有）去哪里找。** 
+- `SKILL.md` 中还建议包含以下内容（若 `SKILL.md` 篇幅已接近建议阈值，也可以放在 `references` 目录下）：(1) `成功标准`/`Success Criteria`，即 Skill 执行成功的表现，如果有可量化验证的指标更好；(2) `易错点`/`Common Pitfalls`，即 Skill 执行中容易出错的地方，通常是 Agent 需要特别注意的地方；(3) `流程示例`/`Example Flow`，即 Skill 执行的示例流程，通常是一个完整的执行案例，帮助 Agent 理解 Skill 的执行方式。
+- 参考资料、不适合放入 `SKILL.md` 的详细指令（例如长篇的语义解释、正/反例、最佳实践、执行技巧等），应放到 `references` 目录下，并在 `SKILL.md` 中显式引用并说明该在何时阅读，确保 Agent 可以按需加载。
+- **确保 `SKILL.md` 是“最小完备可执行契约”，即假定 Skill 执行者（Agent）在没有任何额外信息的情况下，能够仅凭 `SKILL.md` 的内容就能理解并完整、稳定地执行 Skill；不能假定 Agent 一定会加载 `references` 目录中的指令，因此 `references` 目录中的指令必须视为补充信息而非强约束条件。**
+- 如果脚本是正式执行契约的一部分，`SKILL.md` 必须写命令示例（可以放在 `执行流程` 中），不能只在 `References` 里简单引用。
+- `references` 目录中不应出现短篇幅的碎片化指令，只要 `SKILL.md` 的篇幅未大幅超限，都应优先考虑将这些碎片指令并入 `SKILL.md`。
+
+### **STRICTLY FORBIDDEN (Common Pitfalls)**
+
+- **Skill 的指令必须是 current-state only：不得保留历史协议、旧字段兼容、fallback 提醒、版本对比，或“以前/曾经/旧版如何处理”的说明；修改/更新 Skill 后不得添加“不再怎么怎么做/XXX不再适用”之类的说明和指令！**
+- **对 Skill 执行必要的流程说明、输入/输出契约、硬约束等关键内容不得分散至 `references` 目录下，而是必须直接写入 `SKILL.md`。**
+- **不要随便给 Skill 写测试！Skill 的测试应该主要针对内置脚本的业务逻辑，切勿静态断言 Skill 包中的指令文本！**
+- 不创建无运行价值的辅助文档或资源目录。
+
+### Language Principles
+
+- 用命令式、可执行的流畅自然语言语言写 Skill 指令。
+- 解释关键规则背后的原因，但不要写长篇理论，确保 Skill 的执行者（可能是弱模型）能够理解和执行，并在遇到问题时能够根据理解来调整策略，但不偏离 Skill 指令的大方向。
+- 保持上下文经济；只写对任务稳定性有帮助、且 Agent 不会自然知道的信息。具体哪些是“自然知道”，可以由你（本 Skill 的执行者）来判断。
+- 制定 `禁止事项` 时应审慎，每个禁止事项都应该对应真实错误风险；优先确保那些会直接导致 Skill 执行失败的硬边界被禁止事项防住，对于可能存在的软错误，应放在 `易错点` 中。
+
+### Script Principles
+
+- 脚本应配有 `--help` 或 `-h` 参数，能输出脚本的功能、参数、输入输出约定和示例，以便 Agent 进行自探索。
+- **如果脚本需要的 payload 有枚举值，必须在指令中显式列出，不要让 Agent 自行猜测或需要通过自探索/试错才能获得。**
+- **脚本的 payload 应尽量扁平化，字段名称应具有语义自明性，避免容易导致误解的字段名。**
+- 如果脚本的输出需要被机器消费，则脚本执行无论成功或失败，其输出都必须有稳定 shape/schema。
+
+### Long-Running Task Principles
+
+- **长程任务必须在 `SKILL.md` 中写明完整的执行流程、阶段划分、决策点、失败恢复和最终汇总责任。**
+- 长程任务应在 `references` 目录中提供各阶段的详细指令、正/反例、最佳实践、执行技巧等，供 Agent 在执行至相应阶段时动态加载，起到提高上下文经济性、提升指令遵循质量的作用（LLM 普遍存在 Forget in the Middle 问题）。
+- 长程任务的阶段划分应以 Agent 的决策点为依据，不需要 Agent 决策的流程不应切分、不应中断，不应让 Agent 仅成为驱动脚本执行的工具。
+- 长程任务建议设计门禁机制，确保 Agent 不会擅自跳过某些步骤导致执行失败或给出不稳定的结果。
+- 超长程任务建议配备可以提供 `Just In Time` （JIT）指令的门禁脚本，让 Agent 在通过门禁时可以自然地获得下一步的指令，保证 Skill 流程得以顺畅继续。
+
+### Subagent Delegation Principles
+
+- 需要 Subagent 委派的 Skill 必须考虑到 Agent 执行环境可能存在的差异，确保 Subagent 委派只是加快执行效率、优化上下文的一个可选项，而非 Skill 业务功能的硬约束；例如，在需要委派 Subagent 的位置可以使用“如果当前环境可以委派 Subagent，...”之类的软指令，给 Agent 选择空间。
+- 委派给 Subagent 的业务 payload 应优先文件化；结果优先写文件返回，但 prompt 必须要求 subagent 先做写盘能力探测，无法写文件时通过 stdout 返回同等结构内容。
+- 能被脚本稳定切分的业务批次，优先由脚本生成 batch payload；主 agent 切分时必须写清切分原则、目标批次大小、均衡标准和边界处理。
+
+### Misc
+
+- 如果是公开或共享 Skill，必须考虑脱敏、安全扫描、许可证、内部路径泄露和无惊讶原则。
+- 如果用户要求兼容旧调用方，把兼容逻辑设计为外部 adapter、上游转换或单独迁移任务；不要把兼容 fallback 写进 Skill 运行时说明。
+
 ## Operating Modes
 
 先判断用户请求属于哪一种模式，不要所有任务都当成“从零创建 skill”。
@@ -173,27 +228,7 @@ description: Create, update, review, and architect high-quality agent skills by 
    - 公开、共享、迁移到他人环境，或包含脚本/外部服务/产品特定 metadata 时，必须检查脱敏、安全副作用、依赖和无惊讶原则。
    - 最终 skill 只能呈现当前有效行为；发现历史协议说明、迁移说明、fallback、旧版字段或版本对比时必须删除或改写为当前契约。
 
-## Writing Rules
-
-- 用命令式、可执行的语言写 skill。
-- 解释关键规则背后的原因，但不要写长篇理论。
-- 保持上下文经济；只写对任务稳定性有帮助、且 Codex 不会自然知道的信息。
-- 每个禁止事项都应该对应真实错误风险。
-- 如果某段内容只在少数场景需要，放进 reference，并在 `SKILL.md` 写清读取时机。
-- 如果脚本是正式执行契约的一部分，`SKILL.md` 必须写命令示例；不能只在 reference 里提脚本名。
-- 如果 payload 有枚举值，显式列出；不要让 agent 自行猜。
-- payload 应尽量扁平化，字段名称应具有语义自明性，避免容易导致误解的字段名。
-- 长程任务的阶段划分应以 agent 的决策点为依据，不需要 agent 决策的流程不应切分、不应中断，不应让 agent 仅成为驱动脚本执行的工具。
-- 需要 subagent 委派的 skill 必须说明“如果当前环境可以委派 subagent”，不得把 subagent 可用性作为硬门禁。
-- 委派给 subagent 的业务 payload 应优先文件化；结果优先写文件返回，但 prompt 必须要求 subagent 先做写盘能力探测，无法写文件时通过 stdout 返回同等结构内容。
-- 能被脚本稳定切分的业务批次，优先由脚本生成 batch payload；主 agent 切分时必须写清切分原则、目标批次大小、均衡标准和边界处理。
-- 如果输出被机器消费，成功和失败都必须有稳定 shape。
-- 不创建无运行价值的辅助文档或资源目录。
-- 如果是公开或共享 skill，必须考虑脱敏、安全扫描、许可证、内部路径泄露和无惊讶原则。
-- 最终 skill 必须 current-state only：不得保留历史协议、旧字段兼容、fallback 提醒、版本对比，或“以前/曾经/旧版如何处理”的说明。
-- 如果用户要求兼容旧调用方，把兼容逻辑设计为外部 adapter、上游转换或单独迁移任务；不要把兼容 fallback 写进 skill 运行时说明。
-
-## LLM And Script Responsibilities
+## About `LLM vs Script Responsibilities`
 
 必须在每个被设计的 skill 中显式写出职责分工。
 
@@ -324,26 +359,25 @@ description: Create, update, review, and architect high-quality agent skills by 
 
 完成前必须检查：
 
-- description 是否足以触发，且不过度抢占相邻任务。
-- 复杂度和架构是否匹配。
-- `SKILL.md` 是否包含运行时主流程，而不只是目录索引。
-- 所有 references 是否被直接链接并说明读取时机。
-- 是否保持上下文经济，没有无运行价值的 README、安装指南、变更日志或空资源目录。
-- 使用模板时，模板组合是否与复杂度匹配，且落稿是否已删除占位符和 authoring hints。
-- 脚本职责是否没有越过语义边界。
-- 有脚本时是否有调用示例和 payload 示例。
-- 有机器消费输出时是否有 schema、成功/失败 shape、枚举值和验证方式。
-- 有长程状态时是否有 gate、恢复协议、只读视图与真源边界。
-- 是否存在 runtime-only 的阶段，运行流程中是否含有让 agent 机械执行某些固定指令的设计。
-- 是否包含正例、反例或 near-miss 验收场景。
-- 如建议正式评估迭代，是否已通过用户同意、子代理可用性、输入输出可评价性三条件 gate。
-- 如建议 subagent 业务委派，是否是可选路径，且 payload、写盘能力探测、结果协议、批次拆分和主 agent 汇总责任清楚。
-- 若存在 `agents/openai.yaml`，是否与 `SKILL.md` 能力一致且只作为可选产品元数据。
-- 公开发布时是否考虑脱敏、安全、许可证、依赖副作用和无惊讶原则。
-- 当设计依赖外部资料、已有 skill、失败记录或第三方工具时，来源是否足够支撑当前设计，缺口是否已声明。
-- 产品特定字段是否与可移植核心隔离，且没有隐藏运行时能力、权限或依赖。
-- 如果是第三方工具 wrapper，是否已做 adopt / extend / build 判断，而不是默认新建重型 skill。
-- 最终 skill 是否只呈现当前有效协议，且没有历史说明、旧字段兼容、fallback 提醒或版本对比。
+- Skill 包是否遵守 Open Agent Skills 结构约定；除非有明确需求，是否仅包含 `SKILL.md`、`references/`、`scripts/` 和 `assets/`，且没有无运行价值的文档、目录或资源。
+- YAML frontmatter 的 description 是否只说明 Skill 做什么，以及应在何时使用；是否足以触发而不过度抢占相邻任务。
+- 复杂度、模板组合和架构是否匹配；落稿中是否已删除占位符和 authoring hints。
+- `SKILL.md` 是否完整包含目标、非目标、输入输出契约、禁止事项、执行流程、LLM 与脚本职责分工、参考资料引用，以及适用时的成功标准、易错点和流程示例。
+- `SKILL.md` 是否构成最小完备可执行契约：即使不加载 `references/`，Agent 也能理解并稳定执行主流程、关键约束和 I/O 契约。
+- 所有 references 是否都被直接链接并说明读取时机；必要流程、I/O 契约和硬约束是否全部留在 `SKILL.md`，且 references 中没有应合并回主文件的短小碎片化指令。
+- 指令是否使用命令式、自然且可执行的语言；规则理由是否足够支撑理解和调整，但没有长篇理论或 Agent 自然已知的冗余信息。
+- 每项禁止事项是否对应真实的执行风险，并优先覆盖会直接导致执行失败的硬边界。
+- 使用脚本时，`SKILL.md` 是否提供命令、调用和 payload 示例；每个脚本是否支持 `--help` 或 `-h` 并清楚说明功能、参数、I/O 契约和示例。
+- 脚本职责是否没有越过语义边界；payload 是否扁平、字段语义自明，枚举值是否在指令中明确列出。
+- 有机器消费输出时，是否定义 schema、成功/失败的稳定 shape 及验证方式；测试是否只覆盖脚本的稳定业务行为，而未静态断言 Skill 指令文本。
+- 有长程任务时，`SKILL.md` 是否明确完整流程、阶段、决策点、失败恢复和最终汇总责任；阶段是否按 Agent 决策点划分，而非让 Agent 机械驱动固定指令或脚本。
+- 有长程状态时，是否具备 gate、恢复协议、只读视图与真源边界；超长程任务是否评估需要提供 Just In Time 指令的门禁脚本。
+- 是否包含正例、反例或 near-miss 验收场景；如建议正式评估迭代，是否已通过用户同意、子代理可用性、输入输出可评价性三条件 gate。
+- 如建议 subagent 业务委派，是否为可选路径；payload、写盘能力探测、结果协议、批次拆分和主 Agent 汇总责任是否清楚；可脚本化切分时，是否明确切分原则、目标批次大小、均衡标准和边界处理。
+- 若存在 `agents/openai.yaml`，是否与 `SKILL.md` 能力一致且只作为可选产品元数据；产品特定字段是否与可移植核心隔离，且没有隐藏运行时能力、权限或依赖。
+- 公开或共享时，是否考虑脱敏、安全扫描、许可证、依赖副作用、内部路径泄露和无惊讶原则。
+- 当设计依赖外部资料、已有 Skill、失败记录或第三方工具时，来源是否足够支撑当前设计，缺口是否已声明；如果是第三方工具 wrapper，是否已做 adopt / extend / build 判断，而非默认新建重型 Skill。
+- 最终 Skill 是否只呈现当前有效协议，没有历史说明、旧字段兼容、fallback 提醒、版本对比或反向的废弃说明；如需兼容旧调用方，是否已将兼容逻辑放在外部 adapter、上游转换或独立迁移任务中。
 
 详细审查见 [quality-gates.md](references/quality-gates.md)。
 
