@@ -2,11 +2,12 @@
 
 ## Purpose
 
-本文件用于完成前审查一个 skill 设计是否合格。读它的时机：已经起草或修改完 skill，准备向用户汇报或落盘。
+本文件用于完成前审查一个 skill 设计是否合格。读它的时机：已经起草或修改完 skill，准备向用户汇报或落盘。`SKILL.md` 中的 `Quality Gates` 是简明总清单；本文件用于对其中的检查项做细化审查，不替代主文件中的运行时契约。
 
 ## Gate 1: Trigger And Scope
 
 - `description` 是否说明能力和使用时机？
+- 是否只写这两项信息，而没有混入实现细节、安装步骤、兼容说明或产品营销语？
 - 是否覆盖用户真实说法、近义词和关键工件？
 - 是否存在明显误触发风险？
 - 是否说明 near-miss 或不适用场景？
@@ -14,6 +15,7 @@
 失败信号：
 
 - description 只有 “helps with ...”。
+- description 同时承诺工作流细节、未验证能力、权限或隐含依赖。
 - 触发条件只写在正文。
 - 覆盖范围大到会抢占其它 skill。
 
@@ -21,6 +23,7 @@
 
 - 是否先做复杂度判断？
 - 当前架构是否是最低但足够的厚度？
+- 模板组合是否与复杂度匹配，并已完全改写为当前 Skill 的运行时指令？
 - 简单任务是否被不必要地引入 SQLite/gate？
 - 长程任务是否缺少状态持久化和恢复协议？
 
@@ -30,7 +33,25 @@
 - 多阶段强依赖任务只有普通步骤列表。
 - 输出被机器消费却没有 schema 或稳定 shape。
 
-## Gate 3: Source Coverage And Portability
+## Gate 3: Structural Contract And Writing Quality
+
+- 除非有明确需求，Skill 包是否只使用 Open Agent Skills 约定的 `SKILL.md`、`references/`、`scripts/` 和 `assets/`；任何额外文件或目录是否有直接运行价值？
+- `SKILL.md` 是否明确包含目标、非目标、输入输出契约、禁止事项、执行流程、LLM 与脚本职责分工和参考资料引用？
+- 是否按复杂度适当补充成功标准、易错点和流程示例，避免用空泛原则代替可验收行为？
+- `SKILL.md` 是否是最小完备可执行契约：即使 Agent 不加载任何 reference，也能理解主流程、关键约束和 I/O 契约？
+- 指令是否采用命令式、自然且可执行的语言；关键规则是否给出足够的理由，使执行者能在异常时调整策略而不偏离边界？
+- 是否只保留对稳定执行有帮助、且 Agent 不会自然知道的信息？
+- 每个禁止事项是否对应真实错误风险，并优先覆盖会直接导致执行失败的硬边界？
+
+失败信号：
+
+- `SKILL.md` 缺少非目标、I/O 契约、禁止事项或职责分工等必需部分。
+- 把关键流程或硬约束放进 reference，导致只读 `SKILL.md` 时无法稳定执行。
+- 用“注意质量”“合理处理”“必要时执行”等抽象表述代替明确动作、决策条件或输出要求。
+- 禁止事项只是在罗列偏好，无法对应具体的失败模式。
+- 创建 README、安装指南、变更日志、空资源目录或其他没有运行价值的辅助产物。
+
+## Gate 4: Source Coverage And Portability
 
 当设计依赖用户经验、已有 skill、外部文档、失败记录或第三方工具时检查：
 
@@ -47,13 +68,17 @@
 - 第三方工具经验没有沉淀安装、认证、调用、失败处理或环境限制。
 - 产品特定配置隐藏了 `SKILL.md` 未说明的能力、权限或副作用。
 
-## Gate 4: Runtime Executability
+## Gate 5: Runtime Executability And Long-running Flow
 
 - `SKILL.md` 是否告诉 agent 第一件事做什么？
 - 是否有清楚的 mode / workflow / state transition？
 - 遇到歧义时是否知道什么时候问用户？
 - 是否有完成定义？
 - 如果使用模板，是否已把模板提示改写成具体运行时指令？
+- 长程任务是否在 `SKILL.md` 中完整写明流程、阶段、决策点、失败恢复和最终汇总责任？
+- 阶段是否按 Agent 的决策点划分，而非无意义地中断流程，或让 Agent 机械驱动固定指令和脚本？
+- 有长程状态时，是否定义 gate、恢复协议、只读视图和真源边界？
+- 超长程任务是否评估了可提供 Just In Time 指令的门禁脚本，以便在通过门禁时获得下一阶段所需信息？
 
 失败信号：
 
@@ -61,8 +86,10 @@
 - 只有目录结构，没有执行顺序。
 - 没有失败处理。
 - 残留 `<<...>>` 占位符、authoring hints、空表格或空示例。
+- 长程任务只给出普通步骤列表，没有决策点、恢复路径或最终汇总责任。
+- 将所有阶段细节塞进启动上下文，或把阶段切分为单纯的脚本驱动动作。
 
-## Gate 5: Current-state Only Protocol
+## Gate 6: Current-state Only Protocol
 
 - 最终 skill 是否只描述当前有效字段、命令、脚本入口、目录协议和输出契约？
 - 更新已有 skill 时，是否删除了历史演进说明，而不是追加“旧方式不要用”的提醒？
@@ -78,12 +105,14 @@
 - “上一版/旧版/曾经如何处理”。
 - 在最终 `SKILL.md` 中保留 changelog、版本对比、过渡期说明或协议迁移说明。
 
-## Gate 6: Progressive Disclosure
+## Gate 7: Progressive Disclosure
 
 - `SKILL.md` 是否只保留运行时高频规则？
 - references 是否按主题拆分？
 - 每个 reference 是否从 `SKILL.md` 直接链接？
 - 是否说明每个 reference 的读取时机？
+- references 是否只包含补充性的详细说明、正反例、最佳实践或执行技巧，而没有执行所必需的流程、I/O 契约或硬约束？
+- 是否避免将本应纳入 `SKILL.md` 的短小碎片化指令拆散到 references？
 - 普通设计任务是否只读取压缩后的说明性样例，而不是要求通读原始作者 skill 包？
 - 模板读取是否按复杂度选择，而不是启动时通读全部模板？
 - 是否避免无运行价值的 README、安装指南、变更日志、quick reference 或空资源目录？
@@ -98,27 +127,33 @@
 - 简单 skill 套用了 gate/SQLite 模板但没有具体恢复或门禁需求。
 - `SKILL.md` 过长且没有拆分，或 reference 很大但没有导航。
 - 创建了与运行无关的辅助文档。
+- 只有加载 reference 才能知道必填字段、关键禁止事项、主流程或失败恢复方式。
 
-## Gate 7: LLM / Script Boundary
+## Gate 8: LLM / Script Boundary And Script Discoverability
 
 - 语义任务是否明确归 LLM？
 - 确定性任务是否归脚本？
 - 是否禁止临时脚本替代语义判断？
 - 是否禁止 LLM 手拼脚本/renderer 权威产物？
+- 所有正式脚本是否支持 `--help` 或 `-h`，并输出功能、参数、I/O 契约和示例？
+- `SKILL.md` 是否给出每个正式脚本的职责、调用命令和必要 payload 示例，而不是只在 reference 中提及脚本名？
+- 测试是否只覆盖脚本可观察的稳定业务行为，而没有静态断言 Skill 指令文本？
 
 失败信号：
 
 - 脚本负责摘要、策略、语义合并。
 - LLM 直接写最终机器消费 JSON。
 - 有脚本但没有调用示例。
+- 脚本没有可发现的参数和 I/O 说明，Agent 只能试错或依赖隐含知识调用。
 
-## Gate 8: I/O And Schema
+## Gate 9: I/O And Schema
 
 适用于 automation-facing 或 machine-facing skill。
 
 - 是否写清输入字段、输出字段、成功 shape 和失败 shape？
 - required keys 为空时是否仍保留？
 - 枚举值是否显式列出？
+- payload 是否尽量扁平，字段名是否语义自明，避免含混缩写或需依赖上下文猜测的名称？
 - stdout 是否禁止混入日志和 Markdown fence？
 - 是否有 schema 或验证脚本建议？
 
@@ -128,7 +163,7 @@
 - 失败时自由发挥。
 - 文件名/目录不固定。
 
-## Gate 9: Examples And Failure Modes
+## Gate 10: Examples And Failure Modes
 
 - 是否至少有 happy path？
 - 是否至少有 near-miss 或失败模式？
@@ -141,7 +176,7 @@
 - 只展示成功，不展示失败。
 - 没有说明哪些方案已经失败过。
 
-## Gate 10: Evaluation And Iteration
+## Gate 11: Evaluation And Iteration
 
 - 是否区分轻量验收和正式评估反馈迭代？
 - 是否默认先给轻量 prompts、expectations 或人工 review checklist？
@@ -161,7 +196,7 @@
 - 只测 happy path，没有 near-miss。
 - 用户反馈只导致过拟合式补丁，没有抽象为通用 skill 规则。
 
-## Gate 11: Subagent Delegation
+## Gate 12: Subagent Delegation
 
 适用于设计了 subagent 业务委派的 skill。
 
@@ -184,7 +219,7 @@
 - subagent prompt 依赖主 agent 对话上下文，而不是文件化 payload。
 - subagent 无写文件权限时没有 probe 和 stdout 返回方案。
 
-## Gate 12: Product Metadata
+## Gate 13: Product Metadata
 
 - 是否真的需要 `agents/openai.yaml` 或其它产品特定配置？
 - 若存在 `agents/openai.yaml`，其 `display_name`、`short_description`、`default_prompt` 是否与 `SKILL.md` 能力一致？
@@ -197,7 +232,7 @@
 - UI 元数据夸大能力，或与 `description` 冲突。
 - 产品元数据里隐藏了 `SKILL.md` 中没有说明的关键约束或依赖。
 
-## Gate 13: Safety, Privacy, Distribution
+## Gate 14: Safety, Privacy, Distribution
 
 公开或共享 skill 需要检查：
 
