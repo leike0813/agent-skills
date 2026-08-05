@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Humanizer"
+  short_description: "Review and humanize prose through controlled revision"
+  default_prompt: "Use $paper-humanizer to review or humanize this prose while preserving its meaning, information, voice, and structure; use the interactive gated workflow for a full rewrite."
