@@ -43,9 +43,11 @@ Do not add a top-level title such as `# 文献摘要` / `# Paper Digest`, and do
 
 ## Content Density Rules
 
+Choose digest depth from the normalized source's substantive length and information density. Treat the ranges below as common-output guidance, not payload limits or validation thresholds. Expand beyond them when a long source contains additional grounded methods, experiments, findings, limitations, chapters, or independent subtopics. Do not expand mechanically for layout, appendices, or repetition, and do not pad the digest with synonymous bullets, repeated claims, or unsupported detail.
+
 `TL;DR` should be materially richer than a short abstract:
 
-- Prefer 8-15 lines when source length permits.
+- Prefer about 8-20 informative lines or paragraphs for an ordinary paper; use more when distinct source content warrants it.
 - Cover problem, method, result, limits, and reproducibility clues.
 - Include concrete terms, modules, datasets, metrics, losses, or assumptions when they appear in source.
 - Do not hallucinate missing quantitative results.
@@ -56,7 +58,7 @@ Do not add a top-level title such as `# 文献摘要` / `# Paper Digest`, and do
 - Prefer original source headings.
 - Cover all major non-reference sections when source structure permits.
 - If a major section is long or contains multiple subthemes, split into smaller entries using source headings or clear subtopic labels.
-- Prefer at least 8 section/subsection summaries for normal-length papers.
+- An ordinary paper may use roughly 8 or more section/subsection summaries. Longer, information-dense sources should use substantially more entries or items when their chapter and subtopic structure warrants it; there is no upper limit.
 - If headings are unreliable, use `Segment 1`, `Segment 2`, etc., and explain the fallback in the summary wording.
 
 ## Slot Requirements
@@ -65,10 +67,12 @@ Do not add a top-level title such as `# 文献摘要` / `# Paper Digest`, and do
 
 - `tldr.paragraphs`: global summary paragraphs/lines.
 - `research_question_and_contributions.research_question`: one clear sentence.
-- `research_question_and_contributions.contributions`: 2-5 contribution bullets.
-- `method_highlights.items`: 3-6 concrete method points.
-- `key_results.items`: 2-5 quantitative or qualitative findings.
-- `limitations_and_reproducibility.items`: 1-3 honest limitations or reproducibility clues.
+- `research_question_and_contributions.contributions`: commonly 2-8 contribution bullets.
+- `method_highlights.items`: commonly 3-12 concrete method points.
+- `key_results.items`: commonly 2-10 quantitative or qualitative findings.
+- `limitations_and_reproducibility.items`: commonly 1-6 honest limitations or reproducibility clues.
+
+These ranges are soft references. Exceed them when the source contains more distinct, grounded content; do not treat range deviations as failures or warnings by themselves.
 
 Mapping to final Markdown:
 

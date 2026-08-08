@@ -8,6 +8,8 @@ Prompt payload 只读取：
 
 - `source_path`：唯一内容来源；可以是 Markdown、PDF、单文件 `.tex`、LaTeX 工程目录、无扩展名文本文件。
 - `language`：digest 与 citation report 的目标语言。用户显式指定时直接使用；否则从 prompt 主要语言推断；无法稳定判断时回退 `zh-CN`。
+- `score_only`：可选 boolean，默认 `false`；为 `true` 时归一化完成后直接进入论文评分，不生成 analysis plan、digest、references 或 citation analysis。
+- `identifier`：可选 DOI 或 arXiv 来源标识，只用于 reference 阶段的精确公开 API 查询；不做标题搜索。
 
 `source_path` 约束：
 
@@ -25,7 +27,8 @@ Script/runtime owns:
 
 LLM/agent owns:
 
-- Reading the normalized source and deciding `outline_nodes`, `references_scope`, `citation_scope`, and `literature_matching_metadata`.
+- Reading the normalized source and deciding `outline_nodes`, `references_scope`, `citation_scope`, `source_identity`, and `literature_matching_metadata`.
+- Grounding a non-null `source_identity` in a normalized-source line range outside `references_scope`; use `null` when the paper's DOI/arXiv identity is not reliably present.
 - Explaining fallback scope choices in `metadata.selection_reason`.
 - Keeping parent/child section coverage coherent.
 
@@ -63,6 +66,8 @@ Normalization behavior:
 - `output_dir`
 - `source_path`
 - `language`
+- `score_only`
+- `identifier`
 - `generated_at`
 - `input_hash`
 - `digest_template_path`
@@ -76,7 +81,7 @@ After `init_runtime`, later stages may depend only on:
 - `source_documents.normalized_source`
 - `source_profile`
 
-They must not pass a new `source_path`, `language`, output directory, template path, or normalized source override.
+They must not pass a new `source_path`, `language`, `score_only`, `identifier`, output directory, template path, or normalized source override.
 
 ## Analysis Plan Payload
 
@@ -110,6 +115,12 @@ They must not pass a new `source_path`, `language`, output directory, template p
       "covered_sections": ["Introduction", "Related Work"]
     }
   },
+  "source_identity": {
+    "identifier": "10.1109/CVPR.2016.90",
+    "evidence_quote": "DOI: 10.1109/CVPR.2016.90",
+    "line_start": 3,
+    "line_end": 3
+  },
   "literature_matching_metadata": {
     "schema": "literature_matching_metadata.v1",
     "key_terms": ["citation-aware literature review"],
@@ -136,6 +147,8 @@ Hard constraints:
 - `references_scope` / `citation_scope` 不接受章节名列表或纯语义描述。
 - `parent_node_id` 必须显式出现；一级标题写 `null`。
 - `metadata` 必须显式出现；没有补充信息时传 `{}`。
+- `source_identity` 必须显式出现；只能是 `null` 或含 `identifier`、`evidence_quote`、`line_start`、`line_end` 的对象。
+- 非空 `source_identity.identifier` 必须是有效 DOI/arXiv；证据行必须在 `normalized_source` 范围内、位于 `references_scope` 之外，且 `evidence_quote` 同时出现在该行范围并包含该标识符。
 - `literature_matching_metadata` 必须显式出现；不得省略或留到 finalization 临时补写。
 
 ## Scope Decision Rules

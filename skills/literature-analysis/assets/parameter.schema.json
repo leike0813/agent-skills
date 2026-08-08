@@ -5,6 +5,16 @@
             "type": "string",
             "default": "zh-CN",
             "description": "Target language for the digest"
+        },
+        "score_only": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, run source normalization and paper scoring only; skip digest, references, and citation analysis"
+        },
+        "identifier": {
+            "type": "string",
+            "default": "",
+            "description": "Optional DOI or arXiv identifier for exact public reference API lookup"
         }
     },
     "required": []
