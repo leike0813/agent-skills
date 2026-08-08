@@ -60,36 +60,38 @@ compatibility: Requires local filesystem read access to source_path; no network 
 
 **language=zh-CN 时**：
 - 必须严格使用如下标题（顺序与标题文本均固定）：
-  - `## TL;DR`（建议 8~15 行；覆盖问题/方法/结果/局限与可复现性线索）
+  - `## TL;DR`
   - `## 研究问题与贡献`
   - `## 方法要点`
   - `## 关键结果`
   - `## 局限与可复现性线索`
   - `## 分章节总结`
 - 不要输出额外的顶层标题（例如 `# 文献摘要`）或"论文信息/元数据"区块
-- 全局总结（`## TL;DR` 到 `## 局限与可复现性线索`）的总输出量应显著增加：相较"精简版"约提升至约 3 倍信息量
-- `## 分章节总结` 必须存在，并尽可能细化章节切分：
-  - 优先按"全文大纲骨架"的章节标题逐章总结（推荐使用 `### <原文章节标题>`）
-  - 章节粒度要求：尽量覆盖主要一级章节；若某一级章节过长或包含多个子主题，优先进一步拆成二级小节（`#### <子节标题或子主题>`）
-  - 数量要求：至少输出 8 个章节/小节块（`###` 或 `####`），并尽量更多
-  - 内容要求：分章节总结的总输出量应显著增加：相较"精简版"约提升至约 5 倍信息量
-  - 若无法可靠识别大纲：退化为 `### 片段 1/2/3...` 的分段总结，并将片段数量提升（至少 8 段）
 
 **language=en-US 时**：
 - Must use the exact headings below (fixed order and text):
-  - `## TL;DR` (prefer 8–15 lines)
+  - `## TL;DR`
   - `## Research Question & Contributions`
   - `## Method Highlights`
   - `## Key Results`
   - `## Limitations & Reproducibility`
   - `## Section-by-Section Summary`
 - Do not add an extra top-level title or a "Paper Info/Metadata" section
-- The overall "global summary" volume should be ~3× a short version
-- `## Section-by-Section Summary` must exist and be as fine-grained as possible:
-  - Prefer `### <Original section heading>` in outline order
-  - If a section is long or covers multiple themes, split further into `#### <subtopic>` blocks
-  - Output at least 8 section/subsection blocks (`###` or `####`) and preferably more
-  - Fallback to `### Segment 1/2/3...` with at least 8 segments if headings are unreliable
+
+### 篇幅与内容密度（适用于所有语言）
+
+- 根据标准化正文的实质篇幅与信息密度决定 digest 深度。可扩写的信号包括更多彼此独立的方法、实验、结果、局限、章节和子主题。
+- 不按页数、字符数或行数设置机械档位。篇幅主要来自排版、附录或重复内容时，不要因此强行扩写。
+- 一般论文可参考以下常见区间：
+  - `tldr.paragraphs`：约 8-20 个信息充分的行或段落
+  - `research_question_and_contributions.contributions`：2-8 项
+  - `method_highlights.items`：3-12 项
+  - `key_results.items`：2-10 项
+  - `limitations_and_reproducibility.items`：1-6 项
+- 这些数字是写作提示，不是 payload 上限或校验条件。长且内容密集的来源有更多独立、可追溯信息时可以超过；短或稀疏的来源也不要为达到区间而凑数。
+- `section_summaries` 按可靠的原文大纲顺序覆盖主要非参考文献章节。一般论文可用约 8 个或更多章节/小节块；长且内容密集的来源应随实质章节和子主题显著增加，不设上限。
+- 某一章节较长或包含多个主题时，继续拆成有意义的子节或子主题；无法可靠识别大纲时，使用 `片段 1/2/3...` / `Segment 1/2/3...`，片段数量以充分覆盖实质内容为准。
+- 禁止用同义条目、重复结论或原文没有依据的细节填充篇幅。
 
 ### 结构化 payload 契约
 
@@ -120,12 +122,12 @@ LLM 必须提供结构化 payload：
 - LLM 只负责槽位内容，不负责最终标题文本与排版
 
 **各槽位内容要求**：
-- `tldr.paragraphs`：全局摘要，8-15 行，覆盖问题/方法/结果/局限与可复现性线索
+- `tldr.paragraphs`：全局摘要，覆盖问题、方法、结果、局限与可复现性线索
 - `research_question_and_contributions.research_question`：研究问题，1 句清晰表述
-- `research_question_and_contributions.contributions`：核心贡献，2-5 个要点
-- `method_highlights.items`：方法要点，3-6 个具体技术点
-- `key_results.items`：关键结果，2-5 个定量或定性结果
-- `limitations_and_reproducibility.items`：局限与可复现性线索，1-3 个诚实的局限性
+- `research_question_and_contributions.contributions`：有原文依据的核心贡献
+- `method_highlights.items`：具体且彼此有区分的方法要点
+- `key_results.items`：关键定量或定性结果
+- `limitations_and_reproducibility.items`：诚实的局限与可复现性线索
 - `section_summaries[*].source_heading`：对应原文章节标题
 - `section_summaries[*].items`：该章节的要点列表，细粒度覆盖
 
