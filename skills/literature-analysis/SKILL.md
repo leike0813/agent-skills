@@ -492,6 +492,7 @@ python scripts/run_analysis.py persist_literature_score --db-path "<db_path>"
   - 只编辑 `scoring_review_draft_path` 中 `editable_fields` 列出的语义字段。
   - 在 `paper_type_choices[*].selected` 中选择一个且仅一个选项并填写理由。
   - 为每个 criterion 填写 `applicable`、`score`、`reason` 和 `evidence_quotes`；为每个 dimension 填写 `summary`，并为 active dimension 填写 `confidence`。
+  - `evidence_quotes` 应填写**最能支撑评分的、简短的原文片段**。
   - 只使用归一化原文证据；不依据外部声誉、引用量、venue 或联网信息评分。
 - agent 不得提交：
   - 手写或修改 `form_id`、paper-type 值、key、名称、prompt、criterion 满分、权重或数组顺序。
@@ -501,6 +502,59 @@ python scripts/run_analysis.py persist_literature_score --db-path "<db_path>"
 python scripts/run_analysis.py persist_literature_score \
   --db-path "<db_path>" \
   --payload-file "<scoring_review_draft_path>"
+```
+- 已填写 draft 示例：
+  - 下例展示当前评分表的完整填写形态，包括未选中的论文类型、active dimension、适用 criterion、N/A criterion，以及有/无直接 quote 的证据数组。
+  - 实际执行时必须从本次 prepare 返回的 `scoring_review_draft_path` 原位填写，保留其中的 `form_id`、全部 locked fields、数组成员与顺序；不要复制下例的 `form_id` 或依据示例重建表单。
+  - 下例中的 `evidence_quotes` 仅为形态示意；实际值必须逐字来自当前 normalized source。空数组表示没有合适的直接引文，不能填虚构的否定句。
+```json
+{
+  "form_id": "<keep the runtime-generated form_id unchanged>",
+  "paper_type_choices": [
+    {"paper_type": "empirical", "description": "以实验、观测或量化分析检验主张", "selected": true},
+    {"paper_type": "review", "description": "以系统整理、比较或综合已有研究为主", "selected": false},
+    {"paper_type": "theoretical", "description": "以定理、证明、形式模型或理论推导为主", "selected": false},
+    {"paper_type": "qualitative", "description": "以访谈、案例、田野材料或质性编码为主", "selected": false},
+    {"paper_type": "mixed_methods", "description": "质性与量化证据共同承担主要论证", "selected": false},
+    {"paper_type": "other", "description": "以上类别都不能稳定描述论文", "selected": false}
+  ],
+  "paper_type_reason": "论文以多个数据集上的对照实验检验所提方法的效果与效率。",
+  "dimension_reviews": [
+    {"dimension_key": "methodological_rigor", "name": "Methodological Rigor", "configured_weight": 0.25, "prompt": "判断方法是否可靠、合理且可审查。", "confidence": 0.88, "summary": "研究问题、方法和对照设置清楚，但参数选择依据仍有少量缺口。"},
+    {"dimension_key": "evidence_completeness", "name": "Evidence Completeness", "configured_weight": 0.2, "prompt": "判断论文给出的证据是否足以支持其结论。", "confidence": 0.84, "summary": "主要主张得到多数据集实验支持，统计不确定性报告较少。"},
+    {"dimension_key": "reproducibility", "name": "Reproducibility", "configured_weight": 0.15, "prompt": "判断第三方能否根据论文文本重建研究材料与过程。", "confidence": 0.82, "summary": "数据、代码和主要步骤可获得，环境与部分配置说明不够完整。"},
+    {"dimension_key": "innovation_signals", "name": "Innovation Signals", "configured_weight": 0.15, "prompt": "判断文本是否展示创新行为及其依据。", "confidence": 0.8, "summary": "论文提出明确的新架构并针对已有瓶颈验证改进；没有以新理论解释为目标。"},
+    {"dimension_key": "research_impact_potential", "name": "Research Impact Potential", "configured_weight": 0.15, "prompt": "判断论文是否具备产生研究或应用影响的结构性条件。", "confidence": 0.76, "summary": "问题具有实际意义，方法可迁移，但跨领域适用范围仍需验证。"},
+    {"dimension_key": "writing_quality", "name": "Writing Quality", "configured_weight": 0.1, "prompt": "判断表达是否帮助读者准确理解与审查研究。", "confidence": 0.92, "summary": "结构、术语和论证总体清楚，图表能够支撑主要结果说明。"}
+  ],
+  "criterion_reviews": [
+    {"criterion_key": "research_question_clarity", "dimension_key": "methodological_rigor", "name": "Research Question Clarity", "max_score": 5, "prompt": "论文是否清楚说明研究目标、问题或假设？", "applicable": true, "score": 5, "reason": "引言直接说明了研究目标和约束。", "evidence_quotes": ["We study how to reduce inference cost while preserving accuracy."]},
+    {"criterion_key": "method_description_sufficiency", "dimension_key": "methodological_rigor", "name": "Method Description Sufficiency", "max_score": 5, "prompt": "方法信息是否足以理解其核心机制？", "applicable": true, "score": 4, "reason": "核心模块和训练目标均有说明，但个别实现细节只在附录简述。", "evidence_quotes": ["Our model consists of a hierarchical encoder and a lightweight prediction head."]},
+    {"criterion_key": "analysis_process_completeness", "dimension_key": "methodological_rigor", "name": "Experiment Or Analysis Process Completeness", "max_score": 5, "prompt": "实验、证明、分析或质性流程是否完整闭合？", "applicable": true, "score": 4, "reason": "训练、比较和消融流程基本闭合。", "evidence_quotes": []},
+    {"criterion_key": "baseline_or_control_adequacy", "dimension_key": "methodological_rigor", "name": "Baseline Or Control Adequacy", "max_score": 5, "prompt": "是否使用与论文类型相称的基线、对照材料或替代解释检验？", "applicable": true, "score": 4, "reason": "覆盖强基线并提供统一设置下的比较。", "evidence_quotes": ["We compare against six competitive baselines under the same evaluation protocol."]},
+    {"criterion_key": "parameter_transparency", "dimension_key": "methodological_rigor", "name": "Parameter Transparency", "max_score": 5, "prompt": "关键参数、阈值、选择规则或分析设定是否透明？", "applicable": true, "score": 3, "reason": "主要超参数已给出，但阈值选择依据不完整。", "evidence_quotes": []},
+    {"criterion_key": "experiment_coverage", "dimension_key": "evidence_completeness", "name": "Experiment Coverage", "max_score": 5, "prompt": "证据是否覆盖主要主张和重要边界？", "applicable": true, "score": 4, "reason": "实验覆盖准确率、效率和消融，尚缺更极端分布条件。", "evidence_quotes": []},
+    {"criterion_key": "data_scale_adequacy", "dimension_key": "evidence_completeness", "name": "Data Scale Adequacy", "max_score": 5, "prompt": "样本、数据集、案例或证明范围是否与结论相称？", "applicable": true, "score": 4, "reason": "三个公开数据集与论文结论范围基本相称。", "evidence_quotes": ["Experiments are conducted on three public benchmark datasets."]},
+    {"criterion_key": "statistical_analysis", "dimension_key": "evidence_completeness", "name": "Statistical Analysis", "max_score": 5, "prompt": "需要统计或不确定性分析时，处理是否充分？", "applicable": true, "score": 2, "reason": "报告均值但缺少方差、置信区间或显著性分析。", "evidence_quotes": []},
+    {"criterion_key": "claim_evidence_alignment", "dimension_key": "evidence_completeness", "name": "Claim Evidence Alignment", "max_score": 5, "prompt": "结论是否严格落在证据支持的范围内？", "applicable": true, "score": 4, "reason": "结论主要限定在已测试任务内，仅有少量泛化表述超出直接证据。", "evidence_quotes": []},
+    {"criterion_key": "data_source_clarity", "dimension_key": "reproducibility", "name": "Data Source Clarity", "max_score": 3, "prompt": "数据、样本或材料来源是否明确？", "applicable": true, "score": 3, "reason": "数据集名称、划分和来源均有说明。", "evidence_quotes": []},
+    {"criterion_key": "code_availability", "dimension_key": "reproducibility", "name": "Code Availability", "max_score": 3, "prompt": "论文是否提供代码、实现或可访问的等价工件？", "applicable": true, "score": 3, "reason": "原文提供了公开代码仓库地址。", "evidence_quotes": ["Code and configuration files are available at the project repository."]},
+    {"criterion_key": "parameter_availability", "dimension_key": "reproducibility", "name": "Parameter Availability", "max_score": 3, "prompt": "关键参数和配置是否公开？", "applicable": true, "score": 2, "reason": "主体列出主要参数，部分数据预处理配置缺失。", "evidence_quotes": []},
+    {"criterion_key": "procedure_detail", "dimension_key": "reproducibility", "name": "Procedure Detail", "max_score": 3, "prompt": "训练、实验、证明、编码或分析步骤是否详细？", "applicable": true, "score": 2, "reason": "训练与评估步骤可追踪，但复现实验仍需推断少量步骤。", "evidence_quotes": []},
+    {"criterion_key": "environment_description", "dimension_key": "reproducibility", "name": "Environment Description", "max_score": 3, "prompt": "软件、硬件、依赖或实验环境是否说明？", "applicable": true, "score": 1, "reason": "只报告硬件，未完整列出软件与依赖版本。", "evidence_quotes": []},
+    {"criterion_key": "new_method_or_framework", "dimension_key": "innovation_signals", "name": "New Method Or Framework", "max_score": 5, "prompt": "是否提出清楚的新方法、框架或组合方式？", "applicable": true, "score": 4, "reason": "提出了结构明确且可与既有路线区分的架构。", "evidence_quotes": []},
+    {"criterion_key": "addresses_known_limitations", "dimension_key": "innovation_signals", "name": "Addresses Known Limitations", "max_score": 5, "prompt": "是否针对已有方法的明确缺陷提出并验证解决方案？", "applicable": true, "score": 4, "reason": "针对推理成本问题提出设计，并以延迟实验验证。", "evidence_quotes": ["The proposed model reduces latency by 18% while maintaining comparable accuracy."]},
+    {"criterion_key": "new_theoretical_explanation", "dimension_key": "innovation_signals", "name": "New Theoretical Explanation", "max_score": 5, "prompt": "是否提出新的机制解释、理论推导或概念关系？", "applicable": false, "score": null, "reason": "该实证论文不提出理论机制、形式推导或新的概念关系，因此本项没有评价对象。", "evidence_quotes": []},
+    {"criterion_key": "problem_importance", "dimension_key": "research_impact_potential", "name": "Problem Importance", "max_score": 5, "prompt": "问题是否对应清楚且有意义的研究或应用需求？", "applicable": true, "score": 4, "reason": "论文把推理成本与部署约束建立了直接联系。", "evidence_quotes": []},
+    {"criterion_key": "method_transferability", "dimension_key": "research_impact_potential", "name": "Method Transferability", "max_score": 5, "prompt": "方法、结论或工具是否可能迁移到其他数据、任务或场景？", "applicable": true, "score": 4, "reason": "设计不依赖单一数据集，但尚未跨任务验证。", "evidence_quotes": []},
+    {"criterion_key": "application_breadth", "dimension_key": "research_impact_potential", "name": "Application Breadth", "max_score": 5, "prompt": "潜在使用范围是否超出一个极窄的单点案例？", "applicable": true, "score": 3, "reason": "可用于多类资源受限推理场景，当前证据仍集中在同类任务。", "evidence_quotes": []},
+    {"criterion_key": "structural_clarity", "dimension_key": "writing_quality", "name": "Structural Clarity", "max_score": 2, "prompt": "章节组织和信息层级是否清楚？", "applicable": true, "score": 2, "reason": "章节组织与方法、实验、讨论的层次清楚。", "evidence_quotes": []},
+    {"criterion_key": "terminology_consistency", "dimension_key": "writing_quality", "name": "Terminology Consistency", "max_score": 2, "prompt": "术语、符号和缩写是否一致？", "applicable": true, "score": 2, "reason": "核心术语和缩写在全文保持一致。", "evidence_quotes": []},
+    {"criterion_key": "logical_coherence", "dimension_key": "writing_quality", "name": "Logical Coherence", "max_score": 2, "prompt": "论证是否连贯，前提、过程和结论能否衔接？", "applicable": true, "score": 2, "reason": "研究动机、方法选择和实验结论能够衔接。", "evidence_quotes": []},
+    {"criterion_key": "figure_table_effectiveness", "dimension_key": "writing_quality", "name": "Figure And Table Effectiveness", "max_score": 2, "prompt": "图表是否被有效说明并承担信息表达功能？", "applicable": true, "score": 2, "reason": "方法图和结果表均在正文解释并承担关键信息表达。", "evidence_quotes": []},
+    {"criterion_key": "language_quality", "dimension_key": "writing_quality", "name": "Language Quality", "max_score": 2, "prompt": "语言是否规范、准确且可读？", "applicable": true, "score": 2, "reason": "语言准确，长句较少影响理解。", "evidence_quotes": []}
+  ]
+}
 ```
 - runtime 固定执行：
   - 从本次 rubric snapshot 生成并锁定完整 review form；同一 `form_id` 重复 prepare 不覆盖 draft。
