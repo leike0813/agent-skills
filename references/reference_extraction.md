@@ -1,6 +1,6 @@
 # Reference Extraction
 
-本文件补充 `persist_references`。目标是让 agent 只做语义审核：确认条目边界、选择 parse hypothesis、修正文献核心字段，并在 core references 入库后再补充有证据的 metadata。原文文本、置信度、内部序号、parse audit、渲染字段由 runtime 从 DB workset 派生。
+本文件补充 `persist_references`。Runtime 先按本地条目边界尝试公开 API 解析；agent 只审核未解决条目：确认边界、选择 parse hypothesis、修正文献核心字段，并在 core references 入库后补充本地证据支持的 metadata。原文文本、置信度、内部序号、API/parse audit 与渲染字段由 runtime 从 DB workset 派生。
 
 ## Stage Shape
 
@@ -27,6 +27,21 @@ Prepare 只读取 DB 中的 `source_documents.normalized_source` 和 `section_sc
 - `reference_preprocess_quality`
 - `file_quality_low`
 - `suspect_blocks`
+- `reference_api`
+- `reference_api_audit_path`
+
+Runtime 生成确定性 entries/candidates 后、写出 split review packages 前，按有效标识符执行 API cascade：
+
+1. 有效标识符优先使用 `runtime_inputs.identifier`；否则读取 analysis plan 的 `source_identity`。
+2. DOI 调用 Crossref CSL JSON；仍有未解决条目时调用 Semantic Scholar references。arXiv 只调用 Semantic Scholar。
+3. Runtime 规范化 provider 记录，以 DOI/arXiv 精确匹配优先，再做唯一的高置信 title match。Semantic Scholar 中含规范化 arXiv ID 的非精确 title candidate 使用 `0.95` 阈值；其他 provider/title candidate 使用 `0.90`；mutual-best margin 均为 `0.05`。
+4. 自动接受的记录必须包含 title、至少一位 author 与 year，并保留本地 `entry_index`、`raw`、顺序和 parse candidate。
+5. Provider 额外、乱序、冲突、模糊或不完整记录只写入 `.literature_analysis_tmp/reference_api_audit.json`。
+6. 未解决条目组成 `reference_core_required_coverage_keys`；全部解决时直接进入 citation，不要求 core 或 metadata payload。
+7. 每个 suspect block 通过 `entry_indexes` 映射本地条目。仅当映射条目全部 accepted 时省略该块；部分 accepted 时仍把完整 `source_text`、`current_fragments`、`accepted_reference_keys` 和 `unresolved_reference_keys` 写入一个 split package。
+8. Split submit 只覆盖外部化的块。Runtime 为已省略的 fully-accepted 块补入保留决策；若提交改变边界，旧 resolution 失效，同一来源标识的 provider cache 用于重新匹配新 entries。
+
+公开 API 请求、响应校验、缓存、匹配和 SQLite 写入全部由 runtime 完成。Agent 和 metadata subagent 不自行调用外部服务。
 
 Submit:
 
@@ -90,7 +105,7 @@ Split repair payload, before core submit when `split_review_packages` require bo
 }
 ```
 
-`reference_reviews` and `metadata_evidence_reviews` are separate submit rounds. Do not submit them together. `reference_reviews[].metadata` is forbidden because Reference Metadata Evidence Review must use the runtime-generated metadata evidence batch files. In plain terms: reference_reviews[].metadata is forbidden. `split_reviews` is used first when boundary repair is required; if it changes boundaries, runtime regenerates reference core batch files and the agent must submit `reference_reviews` with the regenerated keys afterward.
+`reference_reviews` and `metadata_evidence_reviews` are separate submit rounds. Do not submit them together. `reference_reviews[].metadata` is forbidden because Reference Metadata Evidence Review must use the runtime-generated metadata evidence batch files. In plain terms: reference_reviews[].metadata is forbidden. `split_reviews` is used first when boundary repair is required; a partially accepted package must still be reviewed as one complete block. If the submit changes boundaries, runtime regenerates reference core batch files and the agent must submit `reference_reviews` with the regenerated keys afterward.
 
 ## Field Guidance
 
@@ -137,7 +152,7 @@ Unknown metadata fields do not block persistence by themselves, but they produce
 
 Script/runtime owns:
 
-- Reference scope reading from DB, deterministic preprocess, split suspicion detection, candidate generation, allowed parse pattern lists, quality metrics, metadata workset generation, validation, DB persistence, and final `references.json` rendering.
+- Reference scope reading from DB, deterministic preprocess, split suspicion detection, public API lookup/cache/normalization/matching, candidate generation, allowed parse pattern lists, quality metrics, metadata workset generation, validation, DB persistence, and final `references.json` rendering.
 - JSON parsing, stable key coverage checks, duplicate checks, metadata alias normalization, and warning/audit sidecars.
 
 LLM/subagent owns:

@@ -11,6 +11,10 @@ from typing import Any
 from . import deterministic_core
 
 
+def reference_hard_quality_reason_codes(item: dict[str, Any]) -> list[str]:
+    return deterministic_core.reference_hard_quality_reason_codes(item)
+
+
 def _temp_payload(payload: dict[str, Any]) -> Path:
     tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False)
     with tmp:

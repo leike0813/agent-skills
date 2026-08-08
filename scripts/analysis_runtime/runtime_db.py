@@ -11,7 +11,13 @@ from typing import Any
 DB_FILENAME = "literature_analysis.db"
 TMP_DIRNAME = ".literature_analysis_tmp"
 
-REQUIRED_ARTIFACT_KEYS = {"digest_path", "references_path", "citation_analysis_path", "literature_matching_metadata_path"}
+REQUIRED_ARTIFACT_KEYS = {
+    "digest_path",
+    "references_path",
+    "citation_analysis_path",
+    "literature_matching_metadata_path",
+    "literature_score_path",
+}
 OPTIONAL_ARTIFACT_KEYS = {"citation_analysis_report_path"}
 
 DIGEST_SLOT_KEYS = (
@@ -27,10 +33,11 @@ ALLOWED_STAGES = {
     "stage_1_normalize_source",
     "stage_2_outline_and_scopes",
     "stage_3_digest",
-    "stage_4_references",
-    "stage_5_citation",
-    "stage_6_render_and_validate",
-    "stage_7_completed",
+    "stage_4_scoring",
+    "stage_5_references",
+    "stage_6_citation",
+    "stage_7_render_and_validate",
+    "stage_8_completed",
 }
 ALLOWED_STAGE_GATES = {"blocked", "ready"}
 
@@ -130,6 +137,17 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS source_identity (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            canonical_identifier TEXT NOT NULL,
+            identifier_kind TEXT NOT NULL,
+            identifier_value TEXT NOT NULL,
+            evidence_quote TEXT NOT NULL,
+            line_start INTEGER NOT NULL,
+            line_end INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS outline_nodes (
             node_id TEXT PRIMARY KEY,
             heading_level INTEGER NOT NULL,
@@ -171,6 +189,13 @@ def _create_schema(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS literature_matching_metadata (
             id INTEGER PRIMARY KEY CHECK (id = 1),
+            content_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS literature_score (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            rubric_id TEXT NOT NULL,
             content_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -259,6 +284,30 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             metadata_json TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (entry_index, candidate_index)
+        );
+
+        CREATE TABLE IF NOT EXISTS reference_api_fetches (
+            canonical_identifier TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            status TEXT NOT NULL,
+            http_status INTEGER,
+            response_json TEXT NOT NULL,
+            response_sha256 TEXT NOT NULL,
+            error_json TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (canonical_identifier, provider)
+        );
+
+        CREATE TABLE IF NOT EXISTS reference_api_resolutions (
+            entry_index INTEGER PRIMARY KEY,
+            status TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            providers_json TEXT NOT NULL,
+            provider_record_ids_json TEXT NOT NULL,
+            match_basis TEXT NOT NULL,
+            match_score REAL,
+            item_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS citation_mentions (
@@ -416,6 +465,11 @@ def set_runtime_input(connection: sqlite3.Connection, key: str, value: str) -> N
 def fetch_runtime_inputs(connection: sqlite3.Connection) -> dict[str, str]:
     rows = connection.execute("SELECT key, value FROM runtime_inputs").fetchall()
     return {str(row["key"]): str(row["value"]) for row in rows}
+
+
+def is_score_only(connection: sqlite3.Connection) -> bool:
+    value = fetch_runtime_inputs(connection).get("score_only", "false")
+    return value.strip().lower() == "true"
 
 
 def add_runtime_warning(connection: sqlite3.Connection, warning: str) -> None:
@@ -741,6 +795,49 @@ def fetch_source_document(connection: sqlite3.Connection, doc_key: str) -> dict[
     }
 
 
+def store_source_identity(connection: sqlite3.Connection, identity: dict[str, Any] | None) -> None:
+    connection.execute("DELETE FROM source_identity")
+    if identity is not None:
+        connection.execute(
+            """
+            INSERT INTO source_identity (
+                id, canonical_identifier, identifier_kind, identifier_value,
+                evidence_quote, line_start, line_end, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(identity["canonical_identifier"]),
+                str(identity["identifier_kind"]),
+                str(identity["identifier_value"]),
+                str(identity["evidence_quote"]),
+                int(identity["line_start"]),
+                int(identity["line_end"]),
+                utc_now_iso(),
+            ),
+        )
+    touch_runtime(connection)
+
+
+def fetch_source_identity(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT canonical_identifier, identifier_kind, identifier_value,
+               evidence_quote, line_start, line_end
+        FROM source_identity WHERE id = 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "canonical_identifier": str(row["canonical_identifier"]),
+        "identifier_kind": str(row["identifier_kind"]),
+        "identifier_value": str(row["identifier_value"]),
+        "evidence_quote": str(row["evidence_quote"]),
+        "line_start": int(row["line_start"]),
+        "line_end": int(row["line_end"]),
+    }
+
+
 def store_outline_nodes(connection: sqlite3.Connection, nodes: list[dict[str, Any]]) -> None:
     connection.execute("DELETE FROM outline_nodes")
     now = utc_now_iso()
@@ -1042,6 +1139,159 @@ def fetch_reference_parse_candidates(connection: sqlite3.Connection) -> list[dic
     return candidates
 
 
+def store_reference_api_fetch(
+    connection: sqlite3.Connection,
+    *,
+    canonical_identifier: str,
+    provider: str,
+    status: str,
+    http_status: int | None,
+    response: object,
+    response_sha256: str,
+    error: dict[str, Any] | None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO reference_api_fetches (
+            canonical_identifier, provider, status, http_status, response_json,
+            response_sha256, error_json, fetched_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(canonical_identifier, provider) DO UPDATE SET
+            status = excluded.status,
+            http_status = excluded.http_status,
+            response_json = excluded.response_json,
+            response_sha256 = excluded.response_sha256,
+            error_json = excluded.error_json,
+            fetched_at = excluded.fetched_at
+        """,
+        (
+            canonical_identifier,
+            provider,
+            status,
+            http_status,
+            _json_dump(response),
+            response_sha256,
+            _json_dump(error or {}),
+            utc_now_iso(),
+        ),
+    )
+    touch_runtime(connection)
+
+
+def fetch_reference_api_fetch(
+    connection: sqlite3.Connection,
+    *,
+    canonical_identifier: str,
+    provider: str,
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT canonical_identifier, provider, status, http_status, response_json,
+               response_sha256, error_json, fetched_at
+        FROM reference_api_fetches
+        WHERE canonical_identifier = ? AND provider = ?
+        """,
+        (canonical_identifier, provider),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "canonical_identifier": str(row["canonical_identifier"]),
+        "provider": str(row["provider"]),
+        "status": str(row["status"]),
+        "http_status": int(row["http_status"]) if row["http_status"] is not None else None,
+        "response": json.loads(str(row["response_json"])),
+        "response_sha256": str(row["response_sha256"]),
+        "error": json.loads(str(row["error_json"])),
+        "fetched_at": str(row["fetched_at"]),
+    }
+
+
+def fetch_reference_api_fetches(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT canonical_identifier, provider, status, http_status, response_json,
+               response_sha256, error_json, fetched_at
+        FROM reference_api_fetches
+        ORDER BY canonical_identifier, provider
+        """
+    ).fetchall()
+    return [
+        {
+            "canonical_identifier": str(row["canonical_identifier"]),
+            "provider": str(row["provider"]),
+            "status": str(row["status"]),
+            "http_status": int(row["http_status"]) if row["http_status"] is not None else None,
+            "response": json.loads(str(row["response_json"])),
+            "response_sha256": str(row["response_sha256"]),
+            "error": json.loads(str(row["error_json"])),
+            "fetched_at": str(row["fetched_at"]),
+        }
+        for row in rows
+    ]
+
+
+def clear_reference_api_fetches(connection: sqlite3.Connection) -> None:
+    connection.execute("DELETE FROM reference_api_fetches")
+    touch_runtime(connection)
+
+
+def store_reference_api_resolutions(connection: sqlite3.Connection, resolutions: list[dict[str, Any]]) -> None:
+    connection.execute("DELETE FROM reference_api_resolutions")
+    now = utc_now_iso()
+    for resolution in resolutions:
+        connection.execute(
+            """
+            INSERT INTO reference_api_resolutions (
+                entry_index, status, reason, providers_json, provider_record_ids_json,
+                match_basis, match_score, item_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(resolution["entry_index"]),
+                str(resolution.get("status", "unresolved")),
+                str(resolution.get("reason", "")),
+                _json_dump(resolution.get("providers", [])),
+                _json_dump(resolution.get("provider_record_ids", [])),
+                str(resolution.get("match_basis", "")),
+                float(resolution["match_score"]) if resolution.get("match_score") is not None else None,
+                _json_dump(resolution.get("item", {})),
+                now,
+            ),
+        )
+    touch_runtime(connection)
+
+
+def fetch_reference_api_resolutions(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT entry_index, status, reason, providers_json, provider_record_ids_json,
+               match_basis, match_score, item_json, updated_at
+        FROM reference_api_resolutions
+        ORDER BY entry_index
+        """
+    ).fetchall()
+    return [
+        {
+            "entry_index": int(row["entry_index"]),
+            "status": str(row["status"]),
+            "reason": str(row["reason"]),
+            "providers": json.loads(str(row["providers_json"])),
+            "provider_record_ids": json.loads(str(row["provider_record_ids_json"])),
+            "match_basis": str(row["match_basis"]),
+            "match_score": float(row["match_score"]) if row["match_score"] is not None else None,
+            "item": json.loads(str(row["item_json"])),
+            "updated_at": str(row["updated_at"]),
+        }
+        for row in rows
+    ]
+
+
+def clear_reference_api_resolutions(connection: sqlite3.Connection) -> None:
+    connection.execute("DELETE FROM reference_api_resolutions")
+    touch_runtime(connection)
+
+
 def store_reference_preprocess_quality(connection: sqlite3.Connection, quality: dict[str, Any]) -> None:
     now = utc_now_iso()
     connection.execute(
@@ -1062,6 +1312,44 @@ def fetch_reference_preprocess_quality(connection: sqlite3.Connection) -> dict[s
     if row is None:
         return None
     return json.loads(str(row["content_json"]))
+
+
+def store_literature_score(connection: sqlite3.Connection, score: dict[str, Any]) -> None:
+    rubric_id = str(score.get("rubric_id", "")).strip()
+    if not rubric_id:
+        raise ValueError("literature score rubric_id must be non-empty")
+    now = utc_now_iso()
+    connection.execute(
+        """
+        INSERT INTO literature_score (id, rubric_id, content_json, updated_at)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            rubric_id = excluded.rubric_id,
+            content_json = excluded.content_json,
+            updated_at = excluded.updated_at
+        """,
+        (rubric_id, _json_dump(score), now),
+    )
+    touch_runtime(connection)
+
+
+def fetch_literature_score(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    row = connection.execute(
+        "SELECT rubric_id, content_json, updated_at FROM literature_score WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        return None
+    payload = json.loads(str(row["content_json"]))
+    if isinstance(payload, dict):
+        payload.setdefault("rubric_id", str(row["rubric_id"]))
+        return payload
+    return None
+
+
+def clear_literature_score(connection: sqlite3.Connection) -> None:
+    connection.execute("DELETE FROM literature_score")
+    connection.execute("DELETE FROM artifact_registry WHERE artifact_key = 'literature_score_path'")
+    touch_runtime(connection)
 
 
 def store_reference_extraction_decision(
@@ -2067,6 +2355,7 @@ def build_public_output_payload(connection: sqlite3.Connection) -> dict[str, Any
         "references_path": str(Path(artifacts.get("references_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("references_path", {}).get("path", "") else "",
         "citation_analysis_path": str(Path(artifacts.get("citation_analysis_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("citation_analysis_path", {}).get("path", "") else "",
         "literature_matching_metadata_path": str(Path(artifacts.get("literature_matching_metadata_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("literature_matching_metadata_path", {}).get("path", "") else "",
+        "literature_score_path": str(Path(artifacts.get("literature_score_path", {}).get("path", "")).expanduser().resolve()) if artifacts.get("literature_score_path", {}).get("path", "") else "",
         "provenance": {
             "generated_at": inputs.get("generated_at", ""),
             "input_hash": inputs.get("input_hash", ""),

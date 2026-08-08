@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import deterministic_core
+from . import reference_api
 from . import runtime_db
 
 
@@ -12,6 +13,8 @@ RESULT_JSON_FILENAME = "literature-analysis.result.json"
 RUNTIME_TEMPLATES_DIRNAME = "templates"
 RUNTIME_DIGEST_TEMPLATE_FILENAME = "digest.runtime.md.j2"
 RUNTIME_CITATION_TEMPLATE_FILENAME = "citation_analysis.runtime.md.j2"
+RUNTIME_SCORE_TEMPLATE_FILENAME = "literature_score.runtime.json.j2"
+RUNTIME_SCORING_RUBRIC_FILENAME = "scoring_rubric.runtime.json"
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,8 @@ def initialize_runtime(
     source_path: Path,
     language: str,
     model: str,
+    score_only: bool = False,
+    identifier: str = "",
 ) -> AnalysisRuntimePaths:
     runtime_paths = AnalysisRuntimePaths(
         working_dir=working_dir.resolve(),
@@ -60,6 +65,26 @@ def initialize_runtime(
         }.items():
             runtime_db.set_runtime_input(connection, key, str(value))
         runtime_db.set_runtime_input(connection, "language", language or "zh-CN")
+        runtime_db.set_runtime_input(connection, "score_only", "true" if score_only else "false")
+        runtime_db.set_runtime_input(connection, "identifier", identifier.strip())
+        normalized_identifier = reference_api.normalize_identifier(identifier)
+        runtime_db.set_runtime_input(
+            connection,
+            "identifier_canonical",
+            normalized_identifier.canonical if normalized_identifier is not None else "",
+        )
+        runtime_db.set_runtime_input(
+            connection,
+            "identifier_kind",
+            normalized_identifier.kind if normalized_identifier is not None else "",
+        )
+        runtime_db.set_runtime_input(
+            connection,
+            "identifier_value",
+            normalized_identifier.value if normalized_identifier is not None else "",
+        )
+        if identifier.strip() and normalized_identifier is None:
+            runtime_db.add_runtime_warning_once(connection, "invalid_identifier: falling back to analysis-plan source identity")
         runtime_db.set_runtime_input(connection, "input_hash", deterministic_core.sha256_path(source_path.resolve()) if source_path.exists() else "")
         runtime_db.set_runtime_input(connection, "generated_at", runtime_db.utc_now_iso())
         if model:
@@ -93,14 +118,22 @@ def persist_default_templates(*, db_path: Path, runtime_paths: AnalysisRuntimePa
     target_language = language or "zh-CN"
     digest_template = deterministic_core._repo_digest_template_path(target_language).read_text(encoding="utf-8")
     citation_template = deterministic_core._repo_citation_template_path(target_language).read_text(encoding="utf-8")
+    score_template = (deterministic_core.TEMPLATES_DIR / "literature_score.json.j2").read_text(encoding="utf-8")
+    scoring_rubric = (deterministic_core.ASSETS_DIR / "scoring_rubric.json").read_text(encoding="utf-8")
     templates_dir = runtime_paths.tmp_dir / RUNTIME_TEMPLATES_DIRNAME
     digest_template_path = (templates_dir / RUNTIME_DIGEST_TEMPLATE_FILENAME).resolve()
     citation_template_path = (templates_dir / RUNTIME_CITATION_TEMPLATE_FILENAME).resolve()
+    score_template_path = (templates_dir / RUNTIME_SCORE_TEMPLATE_FILENAME).resolve()
+    scoring_rubric_path = (templates_dir / RUNTIME_SCORING_RUBRIC_FILENAME).resolve()
     _write_text(digest_template_path, digest_template)
     _write_text(citation_template_path, citation_template)
+    _write_text(score_template_path, score_template)
+    _write_text(scoring_rubric_path, scoring_rubric)
     with runtime_db.connect_db(db_path) as connection:
         runtime_db.set_runtime_input(connection, "digest_template_path", str(digest_template_path))
         runtime_db.set_runtime_input(connection, "citation_analysis_template_path", str(citation_template_path))
+        runtime_db.set_runtime_input(connection, "literature_score_template_path", str(score_template_path))
+        runtime_db.set_runtime_input(connection, "scoring_rubric_path", str(scoring_rubric_path))
         runtime_db.set_workflow_state(
             connection,
             current_stage="stage_1_normalize_source",
@@ -117,6 +150,8 @@ def persist_default_templates(*, db_path: Path, runtime_paths: AnalysisRuntimePa
                 "target_language": target_language,
                 "digest_template_path": str(digest_template_path),
                 "citation_analysis_template_path": str(citation_template_path),
+                "literature_score_template_path": str(score_template_path),
+                "scoring_rubric_path": str(scoring_rubric_path),
             },
         )
         connection.commit()
@@ -124,6 +159,8 @@ def persist_default_templates(*, db_path: Path, runtime_paths: AnalysisRuntimePa
         "target_language": target_language,
         "digest_template_path": str(digest_template_path),
         "citation_analysis_template_path": str(citation_template_path),
+        "literature_score_template_path": str(score_template_path),
+        "scoring_rubric_path": str(scoring_rubric_path),
     }
 
 
@@ -137,6 +174,13 @@ def source_profile(db_path: Path) -> dict[str, object]:
     return {
         "source_path": inputs.get("source_path", ""),
         "language": inputs.get("language", "zh-CN"),
+        "score_only": inputs.get("score_only", "false").strip().lower() == "true",
+        "identifier": inputs.get("identifier_canonical", ""),
+        "identifier_status": (
+            "valid"
+            if inputs.get("identifier_canonical")
+            else ("invalid" if inputs.get("identifier") else "absent")
+        ),
         "input_hash": inputs.get("input_hash", ""),
         "source_type": metadata.get("source_type", ""),
         "conversion_backend": metadata.get("conversion_backend", ""),

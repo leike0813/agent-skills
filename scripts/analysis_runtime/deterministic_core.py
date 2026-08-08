@@ -17,6 +17,8 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from jsonschema import validate  # type: ignore[import-untyped]
 
+from . import reference_api
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -35,6 +37,9 @@ from .runtime_db import (  # noqa: E402
     build_public_output_payload,
     build_reference_parse_audit_context,
     build_references_render_context,
+    clear_reference_api_fetches,
+    clear_reference_api_resolutions,
+    clear_literature_score,
     connect_db,
     count_citation_mentions,
     default_db_path,
@@ -57,9 +62,11 @@ from .runtime_db import (  # noqa: E402
     fetch_reference_preprocess_quality,
     fetch_runtime_inputs,
     fetch_section_scope,
+    fetch_source_identity,
     fetch_source_document,
     fetch_workflow_state,
     initialize_database,
+    is_score_only,
     delete_action_receipts,
     has_action_receipt,
     register_artifact,
@@ -91,6 +98,7 @@ from .runtime_db import (  # noqa: E402
     store_reference_parse_candidates,
     store_reference_preprocess_quality,
     store_section_scope,
+    store_source_identity,
     store_source_document,
     update_reference_metadata_enrichment_statuses,
     is_reference_extraction_abandoned,
@@ -348,6 +356,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "normalize_source",
         "persist_outline_and_scopes",
         "persist_digest",
+        "persist_literature_score",
         "prepare_references_workset",
         "persist_reference_entry_splits",
         "decide_reference_extraction",
@@ -359,12 +368,14 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_citation_timeline",
         "persist_citation_summary",
         "render_and_validate",
+        "render_score_only",
     ],
     "bootstrap_runtime_db": [
         "persist_render_templates",
         "normalize_source",
         "persist_outline_and_scopes",
         "persist_digest",
+        "persist_literature_score",
         "prepare_references_workset",
         "persist_reference_entry_splits",
         "decide_reference_extraction",
@@ -376,11 +387,13 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_citation_timeline",
         "persist_citation_summary",
         "render_and_validate",
+        "render_score_only",
     ],
     "persist_render_templates": [
         "normalize_source",
         "persist_outline_and_scopes",
         "persist_digest",
+        "persist_literature_score",
         "prepare_references_workset",
         "persist_reference_entry_splits",
         "decide_reference_extraction",
@@ -392,10 +405,12 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_citation_timeline",
         "persist_citation_summary",
         "render_and_validate",
+        "render_score_only",
     ],
     "normalize_source": [
         "persist_outline_and_scopes",
         "persist_digest",
+        "persist_literature_score",
         "prepare_references_workset",
         "persist_reference_entry_splits",
         "decide_reference_extraction",
@@ -407,6 +422,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "persist_citation_timeline",
         "persist_citation_summary",
         "render_and_validate",
+        "render_score_only",
     ],
     "persist_outline_and_scopes": [
         "persist_digest",
@@ -423,7 +439,9 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "render_and_validate",
     ],
     "persist_digest": ["render_and_validate"],
+    "persist_literature_score": ["render_and_validate", "render_score_only"],
     "prepare_references_workset": [
+        "resolve_reference_api",
         "persist_reference_entry_splits",
         "decide_reference_extraction",
         "persist_references",
@@ -436,6 +454,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
         "render_and_validate",
     ],
     "persist_reference_entry_splits": [
+        "resolve_reference_api",
         "decide_reference_extraction",
         "persist_references",
         "prepare_reference_metadata_enrichment",
@@ -506,6 +525,7 @@ ACTION_RECEIPT_INVALIDATIONS: dict[str, list[str]] = {
     ],
     "persist_citation_summary": ["render_and_validate"],
     "render_and_validate": [],
+    "render_score_only": [],
 }
 
 REQUIRED_STAGE5_RECEIPTS = (
@@ -702,6 +722,8 @@ def _record_action_receipt(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     delete_action_receipts(connection, ACTION_RECEIPT_INVALIDATIONS.get(action_name, []))
+    if action_name in {"persist_render_templates", "normalize_source"}:
+        clear_literature_score(connection)
     resolve_runtime_errors(connection, stage=stage)
     store_action_receipt(connection, action_name=action_name, stage=stage, status=status, metadata=metadata)
 
@@ -1451,6 +1473,53 @@ def _validate_scope_payload(scope_obj: object, scope_name: str) -> tuple[dict[st
         "line_start": line_start,
         "line_end": line_end,
         "metadata": dict(metadata),
+    }, None
+
+
+def _validate_source_identity_payload(
+    identity_obj: object,
+    *,
+    source_content: str,
+    references_scope: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    if identity_obj is None:
+        return None, None
+    if not isinstance(identity_obj, dict):
+        return None, "source_identity must be object or null"
+    required = ("identifier", "evidence_quote", "line_start", "line_end")
+    missing = [key for key in required if key not in identity_obj]
+    if missing:
+        return None, f"source_identity missing required keys: {', '.join(missing)}"
+    identifier = reference_api.normalize_identifier(identity_obj.get("identifier"))
+    if identifier is None:
+        return None, "source_identity.identifier must be a DOI or arXiv identifier"
+    evidence_quote = str(identity_obj.get("evidence_quote", "")).strip()
+    if not evidence_quote:
+        return None, "source_identity.evidence_quote must be non-empty string"
+    try:
+        line_start = int(identity_obj["line_start"])
+        line_end = int(identity_obj["line_end"])
+    except (TypeError, ValueError):
+        return None, "source_identity.line_start/line_end must be integers"
+    lines = source_content.splitlines()
+    if line_start < 1 or line_end < line_start or line_end > len(lines):
+        return None, "source_identity line range is outside normalized_source"
+    references_start = int(references_scope["line_start"])
+    references_end = int(references_scope["line_end"])
+    if line_start <= references_end and line_end >= references_start:
+        return None, "source_identity evidence must be outside references_scope"
+    evidence_text = "\n".join(lines[line_start - 1 : line_end])
+    if unicodedata.normalize("NFKC", evidence_quote).casefold() not in unicodedata.normalize("NFKC", evidence_text).casefold():
+        return None, "source_identity.evidence_quote must occur in the submitted line range"
+    if not reference_api.identifier_in_text(identifier, evidence_quote):
+        return None, "source_identity.evidence_quote must contain the submitted identifier"
+    return {
+        "canonical_identifier": identifier.canonical,
+        "identifier_kind": identifier.kind,
+        "identifier_value": identifier.value,
+        "evidence_quote": evidence_quote,
+        "line_start": line_start,
+        "line_end": line_end,
     }, None
 
 
@@ -2643,6 +2712,13 @@ def _detect_reference_block_suspicions(
             for member_block_index in member_block_indexes:
                 member_block = block_by_index[member_block_index]
                 proposed.extend([str(item) for item in member_block.get("proposed_entries", []) if str(item)])
+            entry_indexes = sorted(
+                {
+                    int(entry["entry_index"])
+                    for member_block_index in member_block_indexes
+                    for entry in entries_by_block.get(member_block_index, [])
+                }
+            )
             suspicions.append(
                 {
                     "block_index": block_index,
@@ -2653,6 +2729,7 @@ def _detect_reference_block_suspicions(
                     "proposed_entries": proposed,
                     "suspicion_kind": suspicion_kind or "mixed_or_ambiguous_boundary",
                     "member_block_indexes": member_block_indexes,
+                    "entry_indexes": entry_indexes,
                 }
             )
             consumed_blocks.update(member_block_indexes)
@@ -2685,6 +2762,9 @@ def _replace_reference_workset(
     candidates: list[dict[str, Any]],
     batches: list[dict[str, Any]],
 ) -> None:  # type: ignore[no-untyped-def]
+    clear_reference_api_resolutions(connection)
+    store_reference_items(connection, [])
+    connection.execute("DELETE FROM reference_metadata_enrichment_workset")
     store_reference_entries(connection, entries)
     connection.execute("DELETE FROM reference_batches")
     for batch in batches:
@@ -2915,6 +2995,7 @@ def _build_reference_workset_export(
                 "reasons": list(block.get("reasons", [])),
                 "proposed_entries": list(block.get("proposed_entries", [])),
                 "suspicion_kind": str(block.get("suspicion_kind", "")),
+                "entry_indexes": [int(item) for item in block.get("entry_indexes", [])],
             }
             for block in suspect_blocks
         ],
@@ -4242,6 +4323,14 @@ def _classify_reference_quality(item: dict[str, Any]) -> list[dict[str, Any]]:
     return issues
 
 
+def reference_hard_quality_reason_codes(item: dict[str, Any]) -> list[str]:
+    return [
+        str(issue["reason_code"])
+        for issue in _classify_reference_quality(item)
+        if issue["severity"] == REFERENCE_QUALITY_HARD_BLOCK
+    ]
+
+
 def _reference_quality_recommendation(reason_code: str) -> str:
     recommendations = {
         "empty_title": "Recover the cited work title from the raw reference or prepared candidates in its original language/script; if impossible, omit this row from the next persist_references payload.",
@@ -4719,6 +4808,7 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
         "references_path": str(references_path),
         "citation_analysis_path": str(citation_path),
         "literature_matching_metadata_path": str(matching_metadata_path),
+        "literature_score_path": str(candidate.get("literature_score_path", "")),
         "provenance": {
             "generated_at": str(generated_at),
             "input_hash": str(input_hash),
@@ -4749,6 +4839,7 @@ def _validate_public_output(
         "references_path",
         "citation_analysis_path",
         "literature_matching_metadata_path",
+        "literature_score_path",
         "provenance",
         "warnings",
         "error",
@@ -4823,6 +4914,12 @@ def _validate_public_output(
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"literature_matching_metadata_path unreadable JSON: {exc}")
 
+    score_path = payload.get("literature_score_path", "")
+    if isinstance(score_path, str) and score_path:
+        from .scoring import validate_public_score
+
+        errors.extend(validate_public_score(Path(score_path)))
+
     expected_mentions, preprocess_error = _extract_preprocess_expected_mentions(preprocess_artifact)
     if preprocess_error is not None:
         errors.append(preprocess_error)
@@ -4840,6 +4937,7 @@ def _validate_public_output(
                 "references_path",
                 "citation_analysis_path",
                 "literature_matching_metadata_path",
+                "literature_score_path",
                 "citation_analysis_report_path",
             ]:
                 if key in db_payload and payload.get(key, "") != db_payload.get(key, ""):
@@ -5001,32 +5099,41 @@ def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
 
 
 def _repair_state_from_receipts(connection) -> tuple[str, str, str, str]:  # type: ignore[no-untyped-def]
+    if is_score_only(connection):
+        if has_action_receipt(connection, "render_score_only") and has_action_receipt(connection, "persist_literature_score"):
+            return ("stage_8_completed", "completed", "completed", "score-only workflow completed")
+        if has_action_receipt(connection, "persist_literature_score"):
+            return ("stage_7_render_and_validate", "render_score_only", "render_score_only", "ready to render score-only artifact")
+        if has_action_receipt(connection, "normalize_source"):
+            return ("stage_4_scoring", "persist_literature_score", "persist_literature_score", "ready to score literature")
+    if has_action_receipt(connection, "persist_digest") and not has_action_receipt(connection, "persist_literature_score"):
+        return ("stage_4_scoring", "persist_literature_score", "persist_literature_score", "ready to score literature")
     if has_action_receipt(connection, "render_and_validate"):
-        return ("stage_7_completed", "completed", "completed", "workflow completed")
+        return ("stage_8_completed", "completed", "completed", "workflow completed")
     if has_action_receipt(connection, "persist_citation_summary"):
-        return ("stage_6_render_and_validate", "render_and_validate", "render_and_validate", "ready to render final artifacts")
+        return ("stage_7_render_and_validate", "render_and_validate", "render_and_validate", "ready to render final artifacts")
     if has_action_receipt(connection, "persist_citation_timeline"):
-        return ("stage_5_citation", "persist_citation_summary", "persist_citation_summary", "ready to persist citation summary")
+        return ("stage_6_citation", "persist_citation_summary", "persist_citation_summary", "ready to persist citation summary")
     if has_action_receipt(connection, "persist_citation_semantics"):
-        return ("stage_5_citation", "persist_citation_timeline", "persist_citation_timeline", "ready to persist citation timeline")
+        return ("stage_6_citation", "persist_citation_timeline", "persist_citation_timeline", "ready to persist citation timeline")
     if has_action_receipt(connection, "prepare_citation_workset"):
-        return ("stage_5_citation", "persist_citation_semantics", "persist_citation_semantics", "ready to persist citation semantics")
+        return ("stage_6_citation", "persist_citation_semantics", "persist_citation_semantics", "ready to persist citation semantics")
     if has_action_receipt(connection, "persist_reference_metadata_enrichment"):
-        return ("stage_5_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
+        return ("stage_6_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
     if has_action_receipt(connection, "prepare_reference_metadata_enrichment"):
         if is_reference_extraction_abandoned(connection):
-            return ("stage_5_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
-        return ("stage_4_references", "persist_reference_metadata_enrichment", "persist_reference_metadata_enrichment", "ready to persist reference metadata evidence review")
+            return ("stage_6_citation", "prepare_citation_workset", "prepare_citation_workset", "ready to prepare citation workset")
+        return ("stage_5_references", "persist_reference_metadata_enrichment", "persist_reference_metadata_enrichment", "ready to persist reference metadata evidence review")
     if has_action_receipt(connection, "review_reference_quality"):
-        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata evidence review")
+        return ("stage_5_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata evidence review")
     if has_action_receipt(connection, "persist_references"):
-        return ("stage_4_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata evidence review")
+        return ("stage_5_references", "prepare_reference_metadata_enrichment", "prepare_reference_metadata_enrichment", "ready to prepare reference metadata evidence review")
     if has_action_receipt(connection, "persist_reference_entry_splits"):
-        return ("stage_4_references", "persist_references", "persist_references", "ready to persist references")
+        return ("stage_5_references", "persist_references", "persist_references", "ready to persist references")
     if has_action_receipt(connection, "prepare_references_workset"):
-        return ("stage_4_references", "persist_references", "persist_references", "ready to persist references")
+        return ("stage_5_references", "persist_references", "persist_references", "ready to persist references")
     if has_action_receipt(connection, "persist_digest"):
-        return ("stage_4_references", "prepare_references_workset", "prepare_references_workset", "ready to prepare references workset")
+        return ("stage_5_references", "prepare_references_workset", "prepare_references_workset", "ready to prepare references workset")
     if has_action_receipt(connection, "persist_outline_and_scopes"):
         return ("stage_3_digest", "persist_digest", "persist_digest", "ready to persist digest")
     if has_action_receipt(connection, "normalize_source"):
@@ -5320,7 +5427,24 @@ def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
     )
 
     with connect_db(db_path) as connection:
-        first_error = outline_error or references_scope_error or citation_scope_error or literature_matching_metadata_error
+        source_doc = fetch_source_document(connection, "normalized_source")
+        if "source_identity" not in payload:
+            source_identity, source_identity_error = None, "source_identity must be explicitly present as object or null"
+        elif source_doc is None or references_scope is None:
+            source_identity, source_identity_error = None, "source_identity validation requires normalized_source and references_scope"
+        else:
+            source_identity, source_identity_error = _validate_source_identity_payload(
+                payload.get("source_identity"),
+                source_content=str(source_doc["content"]),
+                references_scope=references_scope,
+            )
+        first_error = (
+            outline_error
+            or references_scope_error
+            or citation_scope_error
+            or literature_matching_metadata_error
+            or source_identity_error
+        )
         if (
             first_error is not None
             or outline_nodes is None
@@ -5332,6 +5456,13 @@ def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
             connection.commit()
             print(json.dumps({"error": {"code": "citation_scope_failed", "message": first_error or "invalid outline/scope payload"}}, ensure_ascii=False))
             return 2
+        existing_identity = fetch_source_identity(connection)
+        existing_canonical = str(existing_identity.get("canonical_identifier", "")) if existing_identity else ""
+        new_canonical = str(source_identity.get("canonical_identifier", "")) if source_identity else ""
+        if existing_canonical != new_canonical:
+            clear_reference_api_fetches(connection)
+            clear_reference_api_resolutions(connection)
+        store_source_identity(connection, source_identity)
         store_outline_nodes(connection, outline_nodes)
         store_literature_matching_metadata(connection, literature_matching_metadata)
         store_section_scope(
@@ -5367,6 +5498,7 @@ def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
                 "stored_outline_nodes": len(outline_nodes),
                 "references_scope": references_scope,
                 "citation_scope": citation_scope,
+                "source_identity": source_identity,
                 "literature_matching_metadata": literature_matching_metadata,
                 "error": None,
             },
@@ -5400,9 +5532,9 @@ def _handle_persist_digest(args: argparse.Namespace) -> int:
             add_runtime_warning_once(connection, warning)
         _set_success_state(
             connection,
-            stage="stage_4_references",
-            substep="prepare_references_workset",
-            next_action="prepare_references_workset",
+            stage="stage_4_scoring",
+            substep="persist_literature_score",
+            next_action="persist_literature_score",
             status="digest sections persisted",
         )
         _record_action_receipt(connection, action_name="persist_digest", stage="stage_3_digest")
@@ -5433,12 +5565,12 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
         source_doc = fetch_source_document(connection, "normalized_source")
         scope_row = fetch_section_scope(connection, "references_scope")
         if source_doc is None:
-            set_runtime_error(connection, "references_stage_failed", "normalized source missing", "stage_4_references")
+            set_runtime_error(connection, "references_stage_failed", "normalized source missing", "stage_5_references")
             connection.commit()
             print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": "normalized source missing"}}, ensure_ascii=False))
             return 2
         if scope_row is None:
-            set_runtime_error(connection, "references_stage_failed", "references_scope missing", "stage_4_references")
+            set_runtime_error(connection, "references_stage_failed", "references_scope missing", "stage_5_references")
             connection.commit()
             print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": "references_scope missing"}}, ensure_ascii=False))
             return 2
@@ -5446,7 +5578,7 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
         lines = str(source_doc["content"]).splitlines()
         if scope.line_start < 1 or scope.line_end < scope.line_start or scope.line_end > len(lines):
             message = "references_scope is out of bounds for normalized source"
-            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"workset_path": "", "review_path": "", "error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
             return 2
@@ -5472,7 +5604,7 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
         next_action = "decide_reference_extraction" if file_quality_low else ("persist_reference_entry_splits" if requires_split_review else "persist_references")
         _set_success_state(
             connection,
-            stage="stage_4_references",
+            stage="stage_5_references",
             substep=next_action,
             next_action=next_action,
             status=(
@@ -5484,7 +5616,7 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
         _record_action_receipt(
             connection,
             action_name="prepare_references_workset",
-            stage="stage_4_references",
+            stage="stage_5_references",
             metadata={
                 "requires_split_review": requires_split_review,
                 "entry_style": str(prepared["entry_style"]),
@@ -5535,6 +5667,7 @@ def _handle_prepare_references_workset(args: argparse.Namespace) -> int:
                         "reasons": block["reasons"],
                         "proposed_entries": block["proposed_entries"],
                         "suspicion_kind": block["suspicion_kind"],
+                        "entry_indexes": [int(item) for item in block.get("entry_indexes", [])],
                     }
                     for block in suspect_blocks
                 ],
@@ -5558,6 +5691,7 @@ def _reference_review_generation_id(suspect_blocks: list[dict[str, Any]]) -> str
                 "block_index": block.get("block_index"),
                 "source_text": block.get("source_text"),
                 "member_block_indexes": block.get("member_block_indexes", []),
+                "entry_indexes": block.get("entry_indexes", []),
             }
             for block in suspect_blocks
         ],
@@ -5582,13 +5716,13 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
         scope_row = fetch_section_scope(connection, "references_scope")
         if source_doc is None or scope_row is None:
             message = "reference split review requires normalized_source and references_scope"
-            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
             return 2
         if not isinstance(blocks_payload, list) or not blocks_payload:
             message = "blocks must be a non-empty array of reviewed suspect blocks"
-            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
             return 2
@@ -5599,7 +5733,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
         suspect_blocks = list(prepared_before_review["suspect_blocks"])
         if not suspect_blocks:
             message = "reference split review is only valid when prepare_references_workset reported suspect_blocks"
-            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
             return 2
@@ -5608,7 +5742,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
         submitted_generation_id = str(payload.get("review_generation_id", "")).strip()
         if submitted_generation_id and submitted_generation_id != review_generation_id:
             message = "review_generation_id is stale; reload the current suspect_blocks and resubmit"
-            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
             connection.commit()
             print(
                 json.dumps(
@@ -5627,7 +5761,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
             int(block.get("block_index", -1)) for block in blocks_payload if isinstance(block, dict)
         }:
             message = "blocks must cover every suspect block exactly once"
-            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}, "review_generation_id": review_generation_id, "suspect_blocks": suspect_blocks}, ensure_ascii=False))
             return 2
@@ -5638,7 +5772,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
         for index, block in enumerate(blocks_payload):
             if not isinstance(block, dict):
                 message = f"blocks[{index}] must be object"
-                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                 return 2
@@ -5646,21 +5780,21 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
             normalized_block_index = block_index if isinstance(block_index, int) else -1
             if normalized_block_index not in suspect_by_index:
                 message = f"blocks[{index}].block_index must refer to a current suspect block"
-                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                 return 2
             resolution = str(block.get("resolution", "")).strip()
             if resolution not in {"split", "keep", "merge", "force_keep"}:
                 message = f"blocks[{index}].resolution must be split, keep, merge, or force_keep"
-                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                 return 2
             entries = block.get("entries", [])
             if not isinstance(entries, list) or not entries:
                 message = f"blocks[{index}].entries must be a non-empty array"
-                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                 return 2
@@ -5669,27 +5803,27 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
                 normalized = _normalize_reference_entry_text(str(entry_text))
                 if not normalized:
                     message = f"blocks[{index}].entries[{entry_pos}] must be non-empty"
-                    set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                    set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
                     connection.commit()
                     print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                     return 2
                 reviewed_entries.append(normalized)
             if resolution in {"merge", "force_keep"} and len(reviewed_entries) != 1:
                 message = f"blocks[{index}].resolution={resolution} requires exactly one entry"
-                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                 return 2
             if resolution == "split" and len(reviewed_entries) < 2:
                 message = f"blocks[{index}].resolution=split requires at least two entries"
-                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
                 return 2
             suspect_block = suspect_by_index[normalized_block_index]
             if suspect_block.get("suspicion_kind") == "grouped_entries_in_single_line" and len(reviewed_entries) < 2:
                 message = "grouped reference block must be split into multiple reviewed entries"
-                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
                 connection.commit()
                 print(
                     json.dumps(
@@ -5717,7 +5851,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
             )
             if not conservation_report["ok"]:
                 message = "reviewed entries do not preserve the suspect block's source tokens"
-                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
                 connection.commit()
                 print(
                     json.dumps(
@@ -5764,7 +5898,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
 
         if not reviewed_raw_entries:
             message = "reviewed entries must produce at least one reference entry"
-            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_entry_splitting_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_entry_splitting_failed", "message": message}}, ensure_ascii=False))
             return 2
@@ -5845,7 +5979,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
         next_action = "decide_reference_extraction" if file_quality_low and existing_decision is None else "persist_references"
         _set_success_state(
             connection,
-            stage="stage_4_references",
+            stage="stage_5_references",
             substep=next_action,
             next_action=next_action,
             status=(
@@ -5857,7 +5991,7 @@ def _handle_persist_reference_entry_splits(args: argparse.Namespace) -> int:
         _record_action_receipt(
             connection,
             action_name="persist_reference_entry_splits",
-            stage="stage_4_references",
+            stage="stage_5_references",
             metadata={
                 "stored_reference_entries": len(normalized_entries),
                 "file_quality_low": file_quality_low,
@@ -5914,7 +6048,7 @@ def _handle_decide_reference_extraction(args: argparse.Namespace) -> int:
         quality = fetch_reference_preprocess_quality(connection)
         if quality is None:
             message = "reference preprocess quality missing; run prepare_references_workset first"
-            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}}, ensure_ascii=False))
             return 2
@@ -5923,31 +6057,31 @@ def _handle_decide_reference_extraction(args: argparse.Namespace) -> int:
             or quality.get("preprocess_version") != REFERENCE_PREPROCESS_VERSION
         ):
             message = "reference preprocess quality was not produced by the deterministic preprocess"
-            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
             return 2
         if decision not in {"continue", "abandon"}:
             message = "decision must be continue or abandon"
-            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
             return 2
         if acknowledged is not True:
             message = "acknowledged_file_quality_low must be true"
-            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
             return 2
         if not reason:
             message = "reason must be a non-empty string"
-            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
             return 2
         if not bool(quality.get("file_quality_low")):
             message = "reference extraction can only be decided here when deterministic file_quality_low is true"
-            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_extraction_decision_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_extraction_decision_failed", "message": message}, "file_quality": _public_reference_preprocess_quality(quality)}, ensure_ascii=False))
             return 2
@@ -5971,7 +6105,7 @@ def _handle_decide_reference_extraction(args: argparse.Namespace) -> int:
             connection.execute("DELETE FROM citation_summary")
             _set_success_state(
                 connection,
-                stage="stage_5_citation",
+                stage="stage_6_citation",
                 substep="prepare_citation_workset",
                 next_action="prepare_citation_workset",
                 status="reference extraction abandoned after deterministic low-quality preprocess signal",
@@ -5980,7 +6114,7 @@ def _handle_decide_reference_extraction(args: argparse.Namespace) -> int:
             store_reference_extraction_decision(connection, status="continue", reason=reason, quality=quality)
             _set_success_state(
                 connection,
-                stage="stage_4_references",
+                stage="stage_5_references",
                 substep="persist_reference_entry_splits" if requires_split_review else "persist_references",
                 next_action="persist_reference_entry_splits" if requires_split_review else "persist_references",
                 status="reference extraction will continue despite low file-quality signal",
@@ -5988,7 +6122,7 @@ def _handle_decide_reference_extraction(args: argparse.Namespace) -> int:
         _record_action_receipt(
             connection,
             action_name="decide_reference_extraction",
-            stage="stage_4_references",
+            stage="stage_5_references",
             metadata={
                 "decision": decision,
                 "file_quality_low": bool(quality.get("file_quality_low")),
@@ -6017,12 +6151,12 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
     with connect_db(db_path) as connection:
         if "entries" in payload or "batches" in payload:
             message = "persist_references now accepts only items[] keyed by entry_index + selected_pattern"
-            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
             return 2
         if not isinstance(items, list):
-            set_runtime_error(connection, "references_stage_failed", "items must be array", "stage_4_references")
+            set_runtime_error(connection, "references_stage_failed", "items must be array", "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "references_stage_failed", "message": "items must be array"}}, ensure_ascii=False))
             return 2
@@ -6031,7 +6165,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
         candidates = fetch_reference_parse_candidates(connection)
         if not entries or not candidates:
             message = "reference workset missing; prepare_references_workset must run first"
-            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
             return 2
@@ -6046,7 +6180,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
         for index, item in enumerate(items):
             if not isinstance(item, dict):
                 message = f"items[{index}] must be object"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
                 return 2
@@ -6054,7 +6188,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
             missing = [key for key in required_keys if key not in item]
             if missing:
                 message = f"items[{index}] missing required keys: {missing}"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
                 return 2
@@ -6062,25 +6196,25 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
             selected_pattern = str(item.get("selected_pattern"))
             if not isinstance(entry_index, int):
                 message = f"items[{index}].entry_index must be integer"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
                 return 2
             if entry_index not in candidates_by_entry:
                 message = f"items[{index}].entry_index has no prepared candidates"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
                 return 2
             if not selected_pattern:
                 message = f"items[{index}].selected_pattern must be non-empty"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
                 return 2
             if selected_pattern not in candidates_by_entry[entry_index]:
                 message = f"items[{index}].selected_pattern does not match prepared candidates"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
                 return 2
@@ -6089,7 +6223,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
             title = "" if title_value is None else str(title_value).strip()
             if LEADING_PUNCTUATION_RE.match(title):
                 message = f"items[{index}].title has suspicious leading punctuation"
-                set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+                set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
                 return 2
@@ -6109,7 +6243,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
                 warning = f"{WARNING_REFERENCE_AUTHOR_OVERSPLIT}: entry_index={entry_index} pattern={selected_pattern}"
                 add_runtime_warning_once(connection, warning)
                 message = f"items[{index}].author invalid: {oversplit_message}"
-                set_runtime_error(connection, "reference_author_refinement_invalid", message, "stage_4_references")
+                set_runtime_error(connection, "reference_author_refinement_invalid", message, "stage_5_references")
                 connection.commit()
                 print(
                     json.dumps(
@@ -6198,11 +6332,11 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
                 connection,
                 "reference_quality_hard_block",
                 "Stage 4 reference quality hard block; repair quality_directives.issues before continuing.",
-                "stage_4_references",
+                "stage_5_references",
             )
             set_workflow_state(
                 connection,
-                current_stage="stage_4_references",
+                current_stage="stage_5_references",
                 current_substep="persist_references",
                 stage_gate="ready",
                 next_action="persist_references",
@@ -6234,7 +6368,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
                 add_runtime_warning_once(connection, warning)
             _set_success_state(
                 connection,
-                stage="stage_4_references",
+                stage="stage_5_references",
                 substep="review_reference_quality",
                 next_action="review_reference_quality",
                 status="reference quality warnings require explicit review",
@@ -6242,7 +6376,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
             _record_action_receipt(
                 connection,
                 action_name="persist_references",
-                stage="stage_4_references",
+                stage="stage_5_references",
                 metadata={"stored_reference_items": len(normalized_items), "quality_issue_count": len(active_issues)},
             )
             connection.commit()
@@ -6264,7 +6398,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
             add_runtime_warning_once(connection, warning)
         _set_success_state(
             connection,
-            stage="stage_4_references",
+            stage="stage_5_references",
             substep="prepare_reference_metadata_enrichment",
             next_action="prepare_reference_metadata_enrichment",
             status="references persisted; prepare metadata evidence review",
@@ -6272,7 +6406,7 @@ def _handle_persist_references(args: argparse.Namespace) -> int:
         _record_action_receipt(
             connection,
             action_name="persist_references",
-            stage="stage_4_references",
+            stage="stage_5_references",
             metadata={"stored_reference_items": len(normalized_items)},
         )
         connection.commit()
@@ -6289,18 +6423,18 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
         if not active_issues:
             _set_success_state(
                 connection,
-                stage="stage_4_references",
+                stage="stage_5_references",
                 substep="prepare_reference_metadata_enrichment",
                 next_action="prepare_reference_metadata_enrichment",
                 status="reference quality review already complete",
             )
-            _record_action_receipt(connection, action_name="review_reference_quality", stage="stage_4_references")
+            _record_action_receipt(connection, action_name="review_reference_quality", stage="stage_5_references")
             connection.commit()
             print(json.dumps({"resolved_issue_ids": [], "remaining_quality_issues": [], "error": None}, ensure_ascii=False))
             return 0
         if not isinstance(resolutions, list) or not resolutions:
             message = "resolutions must be a non-empty array"
-            set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
             return 2
@@ -6316,20 +6450,20 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
         for index, resolution_obj in enumerate(resolutions):
             if not isinstance(resolution_obj, dict):
                 message = f"resolutions[{index}] must be object"
-                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
                 return 2
             issue_id = resolution_obj.get("issue_id")
             if not isinstance(issue_id, int) or issue_id not in issue_by_id:
                 message = f"resolutions[{index}].issue_id must refer to an active quality issue"
-                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
                 return 2
             if issue_id in submitted_ids:
                 message = f"resolutions[{index}].issue_id is duplicated"
-                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
                 return 2
@@ -6339,7 +6473,7 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
             if resolution == "accept_warning":
                 if issue["severity"] != REFERENCE_QUALITY_WARNING:
                     message = f"issue_id {issue_id} is hard_block and cannot be accept_warning"
-                    set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                    set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
                     connection.commit()
                     print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
                     return 2
@@ -6349,7 +6483,7 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
             if resolution == "omit":
                 if issue["severity"] != REFERENCE_QUALITY_HARD_BLOCK:
                     message = f"issue_id {issue_id} is warning and cannot be omit"
-                    set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                    set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
                     connection.commit()
                     print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
                     return 2
@@ -6363,7 +6497,7 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
 
             if resolution != "corrected":
                 message = f"resolutions[{index}].resolution must be corrected, accept_warning, or omit"
-                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
                 return 2
@@ -6373,14 +6507,14 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
                 corrected = resolution_obj.get("corrected_reference")
             if not isinstance(corrected, dict):
                 message = f"resolutions[{index}].reference must be object for corrected"
-                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
                 return 2
             ref_index = issue.get("ref_index")
             if ref_index is None or int(ref_index) not in reference_by_index:
                 message = f"issue_id {issue_id} has no persisted reference item to correct; resubmit persist_references instead"
-                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
                 return 2
@@ -6417,7 +6551,7 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
             remaining_hard_issues = [item for item in remaining_issues if item["severity"] == REFERENCE_QUALITY_HARD_BLOCK]
             if remaining_hard_issues:
                 message = f"corrected reference for issue_id {issue_id} still has hard quality issues: {[issue['reason_code'] for issue in remaining_hard_issues]}"
-                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+                set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
                 connection.commit()
                 print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
                 return 2
@@ -6437,7 +6571,7 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
         missing_issue_ids = sorted(set(issue_by_id) - submitted_ids)
         if missing_issue_ids:
             message = f"resolutions must cover every active quality issue exactly once; missing issue_ids: {missing_issue_ids}"
-            set_runtime_error(connection, "reference_quality_review_failed", message, "stage_4_references")
+            set_runtime_error(connection, "reference_quality_review_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "reference_quality_review_failed", "message": message}, "quality_issues": active_issues}, ensure_ascii=False))
             return 2
@@ -6453,7 +6587,7 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
         if remaining_issues:
             _set_success_state(
                 connection,
-                stage="stage_4_references",
+                stage="stage_5_references",
                 substep="review_reference_quality",
                 next_action="review_reference_quality",
                 status="reference quality warnings remain active",
@@ -6476,7 +6610,7 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
         if not fetch_reference_items(connection):
             set_workflow_state(
                 connection,
-                current_stage="stage_4_references",
+                current_stage="stage_5_references",
                 current_substep="persist_references",
                 stage_gate="ready",
                 next_action="persist_references",
@@ -6500,7 +6634,7 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
 
         _set_success_state(
             connection,
-            stage="stage_4_references",
+            stage="stage_5_references",
             substep="prepare_reference_metadata_enrichment",
             next_action="prepare_reference_metadata_enrichment",
             status="reference quality review complete",
@@ -6508,7 +6642,7 @@ def _handle_review_reference_quality(args: argparse.Namespace) -> int:
         _record_action_receipt(
             connection,
             action_name="review_reference_quality",
-            stage="stage_4_references",
+            stage="stage_5_references",
             metadata={
                 "resolved_issue_ids": resolved_issue_ids,
                 "accepted_issue_ids": accepted_issue_ids,
@@ -6537,7 +6671,7 @@ def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> i
         if is_reference_extraction_abandoned(connection):
             _set_success_state(
                 connection,
-                stage="stage_5_citation",
+                stage="stage_6_citation",
                 substep="prepare_citation_workset",
                 next_action="prepare_citation_workset",
                 status="reference extraction abandoned; metadata evidence review skipped",
@@ -6545,7 +6679,7 @@ def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> i
             _record_action_receipt(
                 connection,
                 action_name="prepare_reference_metadata_enrichment",
-                stage="stage_4_references",
+                stage="stage_5_references",
                 status="skipped",
                 metadata={"reason": "reference_extraction_abandoned"},
             )
@@ -6553,13 +6687,44 @@ def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> i
             print(json.dumps({"workset_path": "", "item_count": 0, "skipped": True, "error": None}, ensure_ascii=False))
             return 0
 
-        reference_items = fetch_reference_items(connection)
-        if not reference_items:
+        all_reference_items = fetch_reference_items(connection)
+        if not all_reference_items:
             message = "reference_items missing; persist_references must run before metadata evidence review"
-            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"workset_path": "", "error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
             return 2
+        reference_items = [
+            item
+            for item in all_reference_items
+            if str(item.get("resolution_source", "")) != "reference_api"
+        ]
+        if not reference_items:
+            store_reference_metadata_enrichment_workset(connection, [])
+            _set_success_state(
+                connection,
+                stage="stage_6_citation",
+                substep="prepare_citation_workset",
+                next_action="prepare_citation_workset",
+                status="all references resolved by public API; metadata evidence review skipped",
+            )
+            _record_action_receipt(
+                connection,
+                action_name="prepare_reference_metadata_enrichment",
+                stage="stage_5_references",
+                status="skipped",
+                metadata={"reason": "all_references_api_resolved", "item_count": 0},
+            )
+            _record_action_receipt(
+                connection,
+                action_name="persist_reference_metadata_enrichment",
+                stage="stage_5_references",
+                status="skipped",
+                metadata={"reason": "all_references_api_resolved", "item_count": 0},
+            )
+            connection.commit()
+            print(json.dumps({"workset_path": "", "item_count": 0, "skipped": True, "error": None}, ensure_ascii=False))
+            return 0
 
         inputs = fetch_runtime_inputs(connection)
         runtime_paths = _runtime_paths_from_inputs(inputs, fallback_db_path=db_path)
@@ -6578,7 +6743,7 @@ def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> i
         _write_json(out_path, workset_payload)
         _set_success_state(
             connection,
-            stage="stage_4_references",
+            stage="stage_5_references",
             substep="persist_reference_metadata_enrichment",
             next_action="persist_reference_metadata_enrichment",
             status="reference metadata evidence workset prepared",
@@ -6586,7 +6751,7 @@ def _handle_prepare_reference_metadata_enrichment(args: argparse.Namespace) -> i
         _record_action_receipt(
             connection,
             action_name="prepare_reference_metadata_enrichment",
-            stage="stage_4_references",
+            stage="stage_5_references",
             metadata={"item_count": len(rows), "batch_count": len({int(row["batch_index"]) for row in rows})},
         )
         connection.commit()
@@ -6613,7 +6778,7 @@ def _handle_persist_reference_metadata_enrichment(args: argparse.Namespace) -> i
         reference_items = fetch_reference_items(connection)
 
         def fail(message: str) -> int:
-            set_runtime_error(connection, "references_stage_failed", message, "stage_4_references")
+            set_runtime_error(connection, "references_stage_failed", message, "stage_5_references")
             connection.commit()
             print(json.dumps({"error": {"code": "references_stage_failed", "message": message}}, ensure_ascii=False))
             return 2
@@ -6686,7 +6851,7 @@ def _handle_persist_reference_metadata_enrichment(args: argparse.Namespace) -> i
         update_reference_metadata_enrichment_statuses(connection, status_updates)
         _set_success_state(
             connection,
-            stage="stage_5_citation",
+            stage="stage_6_citation",
             substep="prepare_citation_workset",
             next_action="prepare_citation_workset",
             status="reference metadata evidence review persisted",
@@ -6694,7 +6859,7 @@ def _handle_persist_reference_metadata_enrichment(args: argparse.Namespace) -> i
         _record_action_receipt(
             connection,
             action_name="persist_reference_metadata_enrichment",
-            stage="stage_4_references",
+            stage="stage_5_references",
             metadata={
                 "item_count": len(items),
                 "enriched_count": enriched_count,
@@ -6734,20 +6899,20 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
         if not reference_free_mode and not has_action_receipt(connection, "persist_reference_metadata_enrichment"):
             if not reference_items:
                 message = "reference metadata evidence review missing; run persist_references core submit and Reference Metadata Evidence Review before citation workset"
-                set_runtime_error(connection, "citation_scope_failed", message, "stage_5_citation")
+                set_runtime_error(connection, "citation_scope_failed", message, "stage_6_citation")
                 connection.commit()
                 print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": message}}, ensure_ascii=False))
                 return 2
             add_runtime_warning_once(connection, WARNING_CITATION_METADATA_EVIDENCE_MISSING)
             connection.commit()
         if source_doc is None:
-            set_runtime_error(connection, "citation_scope_failed", "normalized source missing", "stage_5_citation")
+            set_runtime_error(connection, "citation_scope_failed", "normalized source missing", "stage_6_citation")
             connection.commit()
             print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": "normalized source missing"}}, ensure_ascii=False))
             return 2
         if "scope" in payload:
             message = "prepare_citation_workset no longer accepts scope override payload; use section_scopes.citation_scope from DB"
-            set_runtime_error(connection, "citation_scope_failed", message, "stage_5_citation")
+            set_runtime_error(connection, "citation_scope_failed", message, "stage_6_citation")
             connection.commit()
             print(json.dumps({"workset_path": "", "error": {"code": "citation_scope_failed", "message": message}}, ensure_ascii=False))
             return 2
@@ -6843,7 +7008,7 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
     with connect_db(db_path) as connection:
         if workset_payload["error"] is not None:
             error = dict(workset_payload["error"])
-            set_runtime_error(connection, str(error["code"]), str(error["message"]), "stage_5_citation")
+            set_runtime_error(connection, str(error["code"]), str(error["message"]), "stage_6_citation")
             connection.commit()
             print(
                 json.dumps(
@@ -6906,11 +7071,11 @@ def _handle_prepare_citation_workset(args: argparse.Namespace) -> int:
             add_runtime_warning_once(connection, WARNING_SCOPE_FALLBACK_USED)
         for warning in workset_payload.get("warnings", []):
             add_runtime_warning_once(connection, str(warning))
-        _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_semantics", next_action="persist_citation_semantics", status="citation workset prepared")
+        _set_success_state(connection, stage="stage_6_citation", substep="persist_citation_semantics", next_action="persist_citation_semantics", status="citation workset prepared")
         _record_action_receipt(
             connection,
             action_name="prepare_citation_workset",
-            stage="stage_5_citation",
+            stage="stage_6_citation",
             metadata={
                 "total_mentions": workset_payload["stats"]["total_mentions"],
                 "resolved_items": workset_payload["stats"]["resolved_items"],
@@ -7001,13 +7166,13 @@ def _handle_persist_citation_semantics(args: argparse.Namespace) -> int:
         workset_items = fetch_citation_workset_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
         if not has_action_receipt(connection, "prepare_citation_workset") and not reference_free_mode:
-            set_runtime_error(connection, "citation_semantics_failed", "citation workset missing; prepare_citation_workset must run first", "stage_5_citation")
+            set_runtime_error(connection, "citation_semantics_failed", "citation workset missing; prepare_citation_workset must run first", "stage_6_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation workset missing; prepare_citation_workset must run first"}}, ensure_ascii=False))
             return 2
         normalized_items, error = _validate_citation_semantics_payload(payload, workset_items, reference_free_mode=reference_free_mode)
         if error is not None or normalized_items is None:
-            set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation semantics payload", "stage_5_citation")
+            set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation semantics payload", "stage_6_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": error or "invalid citation semantics payload"}}, ensure_ascii=False))
             return 2
@@ -7023,11 +7188,11 @@ def _handle_persist_citation_semantics(args: argparse.Namespace) -> int:
             item_obj["metadata"] = metadata
             final_items.append(item_obj)
         store_citation_items(connection, final_items)
-        _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_timeline", next_action="persist_citation_timeline", status="citation semantics persisted")
+        _set_success_state(connection, stage="stage_6_citation", substep="persist_citation_timeline", next_action="persist_citation_timeline", status="citation semantics persisted")
         _record_action_receipt(
             connection,
             action_name="persist_citation_semantics",
-            stage="stage_5_citation",
+            stage="stage_6_citation",
             metadata={"stored_citation_items": len(final_items)},
         )
         connection.commit()
@@ -7043,22 +7208,22 @@ def _handle_persist_citation_timeline(args: argparse.Namespace) -> int:
         citation_items = fetch_citation_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
         if not has_action_receipt(connection, "persist_citation_semantics") and not reference_free_mode:
-            set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_5_citation")
+            set_runtime_error(connection, "citation_semantics_failed", "citation semantics missing; persist_citation_semantics must run first", "stage_6_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "citation semantics missing; persist_citation_semantics must run first"}}, ensure_ascii=False))
             return 2
         workset_items = fetch_citation_workset_items(connection)
         normalized_timeline, warnings, error = _validate_citation_timeline_payload(payload, workset_items, citation_items)
         if error is not None or normalized_timeline is None:
-            set_runtime_error(connection, "citation_timeline_failed", error or "invalid citation timeline payload", "stage_5_citation")
+            set_runtime_error(connection, "citation_timeline_failed", error or "invalid citation timeline payload", "stage_6_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_timeline_failed", "message": error or "invalid citation timeline payload"}}, ensure_ascii=False))
             return 2
         store_citation_timeline(connection, normalized_timeline)
         for warning in warnings:
             add_runtime_warning_once(connection, warning)
-        _set_success_state(connection, stage="stage_5_citation", substep="persist_citation_summary", next_action="persist_citation_summary", status="citation timeline persisted")
-        _record_action_receipt(connection, action_name="persist_citation_timeline", stage="stage_5_citation")
+        _set_success_state(connection, stage="stage_6_citation", substep="persist_citation_summary", next_action="persist_citation_summary", status="citation timeline persisted")
+        _record_action_receipt(connection, action_name="persist_citation_timeline", stage="stage_6_citation")
         connection.commit()
     print(json.dumps({"stored_citation_timeline": True, "warnings": warnings, "error": None}, ensure_ascii=False))
     return 0
@@ -7074,38 +7239,40 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
         citation_items = fetch_citation_items(connection)
         reference_free_mode = is_reference_extraction_abandoned(connection)
         if not has_action_receipt(connection, "persist_citation_timeline") and not reference_free_mode:
-            set_runtime_error(connection, "citation_timeline_failed", "citation timeline missing; persist_citation_timeline must run first", "stage_5_citation")
+            set_runtime_error(connection, "citation_timeline_failed", "citation timeline missing; persist_citation_timeline must run first", "stage_6_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_timeline_failed", "message": "citation timeline missing; persist_citation_timeline must run first"}}, ensure_ascii=False))
             return 2
         citation_timeline = fetch_citation_timeline(connection)
         if citation_timeline is None:
-            set_runtime_error(connection, "citation_timeline_failed", "citation timeline missing; persist_citation_timeline must run first", "stage_5_citation")
+            set_runtime_error(connection, "citation_timeline_failed", "citation timeline missing; persist_citation_timeline must run first", "stage_6_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_timeline_failed", "message": "citation timeline missing; persist_citation_timeline must run first"}}, ensure_ascii=False))
             return 2
         if summary is None:
             summary = ""
         if not isinstance(summary, str):
-            set_runtime_error(connection, "citation_semantics_failed", "summary must be string", "stage_5_citation")
+            set_runtime_error(connection, "citation_semantics_failed", "summary must be string", "stage_6_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": "summary must be string"}}, ensure_ascii=False))
             return 2
         normalized_basis, error = _validate_citation_summary_basis(basis, citation_items, reference_free_mode=reference_free_mode)
         if error is not None or normalized_basis is None:
-            set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation summary basis", "stage_5_citation")
+            set_runtime_error(connection, "citation_semantics_failed", error or "invalid citation summary basis", "stage_6_citation")
             connection.commit()
             print(json.dumps({"error": {"code": "citation_semantics_failed", "message": error or "invalid citation summary basis"}}, ensure_ascii=False))
             return 2
         store_citation_summary(connection, summary.strip(), normalized_basis)
-        _set_success_state(connection, stage="stage_6_render_and_validate", substep="render_and_validate", next_action="render_and_validate", status="citation summary persisted")
-        _record_action_receipt(connection, action_name="persist_citation_summary", stage="stage_5_citation")
+        _set_success_state(connection, stage="stage_7_render_and_validate", substep="render_and_validate", next_action="render_and_validate", status="citation summary persisted")
+        _record_action_receipt(connection, action_name="persist_citation_summary", stage="stage_6_citation")
         connection.commit()
     print(json.dumps({"stored_citation_summary": True, "error": None}, ensure_ascii=False))
     return 0
 
 
 def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no-untyped-def]
+    if not has_action_receipt(connection, "persist_literature_score"):
+        return "persist_literature_score receipt missing before render"
     missing_receipts = _missing_required_receipts(connection, REQUIRED_STAGE5_RECEIPTS)
     if missing_receipts:
         return f"missing action receipts before render: {missing_receipts}"
@@ -7117,7 +7284,7 @@ def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no
     if require_runtime_templates:
         missing_template_keys = [
             key
-            for key in ("digest_template_path", "citation_analysis_template_path")
+            for key in ("digest_template_path", "citation_analysis_template_path", "literature_score_template_path", "scoring_rubric_path")
             if not inputs.get(key)
         ]
         if missing_template_keys:
@@ -7131,6 +7298,10 @@ def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no
         for template_path in (template_paths.digest_template_path, template_paths.citation_analysis_template_path):
             if not template_path.exists():
                 return f"runtime template missing before render: {template_path}"
+        for key in ("literature_score_template_path", "scoring_rubric_path"):
+            path = Path(inputs[key]).expanduser().resolve()
+            if not path.exists():
+                return f"runtime scoring asset missing before render: {path}"
     if fetch_citation_timeline(connection) is None:
         return "citation_timeline missing before render"
     if fetch_citation_summary(connection) is None:
@@ -7207,6 +7378,9 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
             media_type="application/json",
             source_table="literature_matching_metadata",
         )
+        from .scoring import render_with_connection
+
+        render_with_connection(connection)
         if report_md.strip():
             _write_text(citation_report_path, report_md)
             register_artifact(connection, artifact_key="citation_analysis_report_path", path=citation_report_path, is_required=False, media_type="text/markdown", source_table="citation_summary")
@@ -7226,6 +7400,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
                 "references_path": "",
                 "citation_analysis_path": "",
                 "literature_matching_metadata_path": "",
+                "literature_score_path": "",
                 "provenance": {"generated_at": "", "input_hash": "", "model": ""},
                 "warnings": [],
                 "error": {
@@ -7244,6 +7419,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
                 "references_path": "",
                 "citation_analysis_path": "",
                 "literature_matching_metadata_path": "",
+                "literature_score_path": "",
                 "provenance": {"generated_at": "", "input_hash": "", "model": ""},
                 "warnings": [],
                 "error": {
@@ -7263,6 +7439,7 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
             "references_path": "",
             "citation_analysis_path": "",
             "literature_matching_metadata_path": "",
+            "literature_score_path": "",
             "provenance": {"generated_at": "", "input_hash": "", "model": ""},
             "warnings": [],
                 "error": {
@@ -7275,13 +7452,13 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
             return 2
         with connect_db(db_path) as connection:
             if errors:
-                set_runtime_error(connection, "citation_merge_failed", "; ".join(errors), "stage_6_render_and_validate")
+                set_runtime_error(connection, "citation_merge_failed", "; ".join(errors), "stage_7_render_and_validate")
                 connection.commit()
                 _write_render_result_json(payload, result_json_path=result_json_path)
                 print(json.dumps(payload, ensure_ascii=False))
                 return 2
-            _set_success_state(connection, stage="stage_7_completed", substep="render_and_validate", next_action="render_and_validate", status="artifacts rendered and validated")
-            _record_action_receipt(connection, action_name="render_and_validate", stage="stage_6_render_and_validate")
+            _set_success_state(connection, stage="stage_8_completed", substep="render_and_validate", next_action="render_and_validate", status="artifacts rendered and validated")
+            _record_action_receipt(connection, action_name="render_and_validate", stage="stage_7_render_and_validate")
             connection.commit()
             payload = build_public_output_payload(connection)
         _write_render_result_json(payload, result_json_path=result_json_path)

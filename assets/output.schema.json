@@ -5,25 +5,31 @@
             "type": "string",
             "x-type": "artifact",
             "x-role": "digest",
-            "description": "Absolute path to the rendered digest Markdown file (digest.md). On success, must be a non-empty absolute path. On failure, set to empty string."
+            "description": "Absolute path to digest.md on full-analysis success. Empty in score-only mode or when unavailable after failure."
         },
         "references_path": {
             "type": "string",
             "x-type": "artifact",
             "x-role": "references",
-            "description": "Absolute path to the rendered structured references JSON file (references.json). On success, must be a non-empty absolute path. On failure, set to empty string."
+            "description": "Absolute path to references.json on full-analysis success. Empty in score-only mode or when unavailable after failure."
         },
         "citation_analysis_path": {
             "type": "string",
             "x-type": "artifact",
             "x-role": "citation-analysis",
-            "description": "Absolute path to the rendered citation analysis JSON file (citation_analysis.json). On success, must be a non-empty absolute path. On failure, set to empty string."
+            "description": "Absolute path to citation_analysis.json on full-analysis success. Empty in score-only mode or when unavailable after failure."
         },
         "literature_matching_metadata_path": {
             "type": "string",
             "x-type": "artifact",
             "x-role": "literature-matching-metadata",
-            "description": "Absolute path to the rendered literature matching metadata JSON file (literature_matching_metadata.json). On success, must be a non-empty absolute path. On failure, set to empty string."
+            "description": "Absolute path to literature_matching_metadata.json on full-analysis success. Empty in score-only mode or when unavailable after failure."
+        },
+        "literature_score_path": {
+            "type": "string",
+            "x-type": "artifact",
+            "x-role": "literature-score",
+            "description": "Absolute path to the rendered paper score JSON file (literature_score.json). On success, must be a non-empty absolute path."
         },
         "citation_analysis_report_path": {
             "type": "string",
@@ -212,6 +218,7 @@
         "references_path",
         "citation_analysis_path",
         "literature_matching_metadata_path",
+        "literature_score_path",
         "provenance",
         "warnings",
         "error"

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
 
-from .algorithm_adapter import call_algorithm_handler
+from .algorithm_adapter import call_algorithm_handler, reference_hard_quality_reason_codes
 from . import agent_work
 from . import runtime_db
+from . import reference_api
 from .payload_normalization import CANONICAL_METADATA_FIELDS, merge_warnings, normalize_reference_metadata
 
 
@@ -185,6 +187,51 @@ def _load_reference_workset_from_db(db_path: Path) -> dict[str, Any]:
     return {"entries": workset_entries}
 
 
+def _unresolved_reference_workset(db_path: Path, workset: dict[str, Any] | None = None) -> dict[str, Any]:
+    current = workset or _load_reference_workset_from_db(db_path)
+    accepted = _accepted_reference_entry_indexes(db_path)
+    return {
+        **current,
+        "entries": [
+            entry
+            for entry in current.get("entries", [])
+            if int(entry["entry_index"]) not in accepted
+        ],
+    }
+
+
+def _accepted_reference_entry_indexes(db_path: Path) -> set[int]:
+    with runtime_db.connect_db(db_path) as connection:
+        return {
+            int(item["entry_index"])
+            for item in runtime_db.fetch_reference_api_resolutions(connection)
+            if item.get("status") == "accepted"
+        }
+
+
+def _runtime_warnings(db_path: Path) -> list[str]:
+    with runtime_db.connect_db(db_path) as connection:
+        return runtime_db.fetch_runtime_warnings(connection)
+
+
+def _split_block_coverage(
+    block: dict[str, Any],
+    accepted_entry_indexes: set[int],
+) -> tuple[list[int], list[str], list[str]]:
+    entry_indexes = sorted({int(item) for item in block.get("entry_indexes", [])})
+    accepted_keys = [
+        _reference_key(entry_index)
+        for entry_index in entry_indexes
+        if entry_index in accepted_entry_indexes
+    ]
+    unresolved_keys = [
+        _reference_key(entry_index)
+        for entry_index in entry_indexes
+        if entry_index not in accepted_entry_indexes
+    ]
+    return entry_indexes, accepted_keys, unresolved_keys
+
+
 def _reference_packages(workset: dict[str, Any]) -> list[dict[str, Any]]:
     packages: list[dict[str, Any]] = []
     for entry in workset.get("entries", []):
@@ -316,16 +363,27 @@ def _batch_packages(workset: dict[str, Any], packages: list[dict[str, Any]]) -> 
     return batches
 
 
-def _split_review_packages(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _split_review_packages(
+    payload: dict[str, Any],
+    *,
+    accepted_entry_indexes: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    accepted_indexes = accepted_entry_indexes or set()
     packages: list[dict[str, Any]] = []
     for block in payload.get("suspect_blocks", []):
         block_index = int(block.get("block_index", len(packages)))
+        entry_indexes, accepted_keys, unresolved_keys = _split_block_coverage(block, accepted_indexes)
+        if entry_indexes and not unresolved_keys:
+            continue
         packages.append(
             {
                 "block_key": f"block-{block_index}",
                 "block_index": block_index,
                 "source_text": str(block.get("source_text", "")),
                 "current_fragments": list(block.get("proposed_entries", [])),
+                "entry_indexes": entry_indexes,
+                "accepted_reference_keys": accepted_keys,
+                "unresolved_reference_keys": unresolved_keys,
                 "allowed_actions": ["keep", "replace_with_corrected_reference_texts"],
             }
         )
@@ -441,8 +499,328 @@ def _metadata_agent_work(
     )
 
 
+def _effective_identifier(connection) -> tuple[reference_api.Identifier | None, str]:  # type: ignore[no-untyped-def]
+    inputs = runtime_db.fetch_runtime_inputs(connection)
+    parameter_identifier = reference_api.normalize_identifier(inputs.get("identifier_canonical", ""))
+    if parameter_identifier is not None:
+        return parameter_identifier, "parameter"
+    plan_identity = runtime_db.fetch_source_identity(connection)
+    if plan_identity is None:
+        return None, "none"
+    identifier = reference_api.normalize_identifier(plan_identity.get("canonical_identifier", ""))
+    return identifier, "analysis_plan" if identifier is not None else "none"
+
+
+def _candidates_from_cached_fetch(provider: str, response: object) -> list[dict[str, Any]]:
+    if provider == "crossref":
+        return reference_api.crossref_candidates(response)
+    rows: list[dict[str, Any]] = []
+    pages = response if isinstance(response, list) else [response]
+    for page in pages:
+        if isinstance(page, dict) and isinstance(page.get("data"), list):
+            rows.extend(item for item in page["data"] if isinstance(item, dict))
+    return reference_api.semantic_scholar_candidates(rows)
+
+
+def _provider_fetch(
+    connection,  # type: ignore[no-untyped-def]
+    identifier: reference_api.Identifier,
+    provider: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    cached = runtime_db.fetch_reference_api_fetch(
+        connection,
+        canonical_identifier=identifier.canonical,
+        provider=provider,
+    )
+    if cached is not None:
+        candidates = _candidates_from_cached_fetch(provider, cached.get("response"))
+        return candidates, {
+            "provider": provider,
+            "status": cached["status"],
+            "http_status": cached["http_status"],
+            "candidate_count": len(candidates),
+            "cached": True,
+            "response_sha256": cached["response_sha256"],
+            "error": cached["error"],
+        }
+    fetched = (
+        reference_api.fetch_crossref(identifier)
+        if provider == "crossref"
+        else reference_api.fetch_semantic_scholar(identifier)
+    )
+    response_text = json.dumps(fetched.response, ensure_ascii=False, sort_keys=True)
+    response_sha256 = hashlib.sha256(response_text.encode("utf-8")).hexdigest()
+    runtime_db.store_reference_api_fetch(
+        connection,
+        canonical_identifier=identifier.canonical,
+        provider=provider,
+        status=fetched.status,
+        http_status=fetched.http_status,
+        response=fetched.response,
+        response_sha256=response_sha256,
+        error=fetched.error,
+    )
+    return list(fetched.candidates), {
+        "provider": provider,
+        "status": fetched.status,
+        "http_status": fetched.http_status,
+        "candidate_count": len(fetched.candidates),
+        "cached": False,
+        "response_sha256": response_sha256,
+        "error": fetched.error or {},
+    }
+
+
+def _write_reference_api_audit(
+    db_path: Path,
+    *,
+    identifier: reference_api.Identifier | None,
+    identifier_source: str,
+    provider_summaries: list[dict[str, Any]],
+    resolutions: list[dict[str, Any]],
+) -> str:
+    with runtime_db.connect_db(db_path) as connection:
+        inputs = runtime_db.fetch_runtime_inputs(connection)
+    tmp_dir = Path(inputs.get("tmp_dir", db_path.parent)).expanduser().resolve()
+    audit_path = tmp_dir / "reference_api_audit.json"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(
+        json.dumps(
+            {
+                "kind": "reference_api_audit",
+                "identifier": identifier.canonical if identifier is not None else "",
+                "identifier_source": identifier_source,
+                "providers": provider_summaries,
+                "resolutions": [
+                    {
+                        key: value
+                        for key, value in resolution.items()
+                        if key != "item"
+                    }
+                    for resolution in resolutions
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return str(audit_path)
+
+
+def _algorithm_items_from_api_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        metadata = dict(item.get("metadata", {}))
+        for key, value in item.items():
+            if key not in {"ref_index", "author", "title", "year", "raw", "confidence", "metadata"}:
+                metadata[key] = value
+        normalized.append(
+            {
+                "entry_index": int(item["ref_index"]),
+                "selected_pattern": str(metadata.get("selected_pattern", "")),
+                "author": list(item.get("author", [])),
+                "title": str(item.get("title", "")),
+                "year": item.get("year"),
+                "raw": str(item.get("raw", "")),
+                "confidence": float(item.get("confidence", 0.9)),
+                "metadata": metadata,
+            }
+        )
+    return normalized
+
+
+def _resolve_reference_api(db_path: Path) -> dict[str, Any]:
+    with runtime_db.connect_db(db_path) as connection:
+        entries = runtime_db.fetch_reference_entries(connection)
+        parse_candidates = runtime_db.fetch_reference_parse_candidates(connection)
+        identifier, identifier_source = _effective_identifier(connection)
+        provider_summaries: list[dict[str, Any]] = []
+        provider_candidates: list[dict[str, Any]] = []
+        if identifier is None:
+            resolutions = [
+                {"entry_index": int(entry["entry_index"]), "status": "unresolved", "reason": "no_effective_identifier"}
+                for entry in entries
+            ]
+        else:
+            providers = ["semantic_scholar"] if identifier.kind == "arxiv" else ["crossref", "semantic_scholar"]
+            resolutions = []
+            for provider in providers:
+                candidates, summary = _provider_fetch(connection, identifier, provider)
+                provider_candidates.extend(candidates)
+                provider_summaries.append(summary)
+                if summary["status"] == "failed":
+                    runtime_db.add_runtime_warning_once(
+                        connection,
+                        f"reference_api_provider_failed: provider={provider} status={summary.get('http_status')}",
+                    )
+                resolutions = reference_api.resolve_candidates(entries, parse_candidates, provider_candidates)
+                if resolutions and all(item.get("status") == "accepted" for item in resolutions):
+                    break
+        if not resolutions:
+            resolutions = reference_api.resolve_candidates(entries, parse_candidates, provider_candidates)
+        for resolution in resolutions:
+            if resolution.get("status") != "accepted" or not isinstance(resolution.get("item"), dict):
+                continue
+            quality_reasons = reference_hard_quality_reason_codes(resolution["item"])
+            if quality_reasons:
+                resolution["status"] = "unresolved"
+                resolution["reason"] = f"api_quality_hard_block:{','.join(quality_reasons)}"
+                resolution["quality_reason_codes"] = quality_reasons
+                resolution.pop("item", None)
+        runtime_db.store_reference_api_resolutions(connection, resolutions)
+        accepted_items = [dict(item["item"]) for item in resolutions if item.get("status") == "accepted"]
+        runtime_db.store_reference_items(connection, accepted_items)
+        accepted_count = len(accepted_items)
+        unresolved_count = len(entries) - accepted_count
+        runtime_db.store_action_receipt(
+            connection,
+            action_name="resolve_reference_api",
+            stage="stage_5_references",
+            status="skipped" if identifier is None else ("succeeded" if unresolved_count == 0 else "partial"),
+            metadata={
+                "identifier": identifier.canonical if identifier is not None else "",
+                "identifier_source": identifier_source,
+                "accepted_count": accepted_count,
+                "unresolved_count": unresolved_count,
+                "providers": provider_summaries,
+            },
+        )
+        connection.commit()
+    audit_path = _write_reference_api_audit(
+        db_path,
+        identifier=identifier,
+        identifier_source=identifier_source,
+        provider_summaries=provider_summaries,
+        resolutions=resolutions,
+    )
+    return {
+        "identifier": identifier.canonical if identifier is not None else "",
+        "identifier_source": identifier_source,
+        "provider_summaries": provider_summaries,
+        "accepted_count": accepted_count,
+        "unresolved_count": unresolved_count,
+        "audit_path": audit_path,
+        "complete": bool(entries) and unresolved_count == 0,
+    }
+
+
+def _persist_complete_api_resolution(
+    db_path: Path,
+    api_summary: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    if not api_summary.get("complete"):
+        return None, []
+    with runtime_db.connect_db(db_path) as connection:
+        api_items = runtime_db.fetch_reference_items(connection)
+    persisted, persist_code = call_algorithm_handler(
+        "_handle_persist_references",
+        db_path,
+        payload={"items": _algorithm_items_from_api_items(api_items)},
+    )
+    if persist_code != 0:
+        api_summary["complete"] = False
+        api_summary["unresolved_count"] = len(api_items)
+        with runtime_db.connect_db(db_path) as connection:
+            runtime_db.store_reference_items(connection, [])
+            runtime_db.clear_reference_api_resolutions(connection)
+            connection.commit()
+        return None, ["reference_api_quality_gate_failed: API items returned to local review"]
+
+    metadata_result, metadata_code = prepare_reference_metadata_enrichment(db_path)
+    if metadata_code != 0 or not metadata_result.get("skipped"):
+        return None, list(metadata_result.get("warnings", []))
+    return {
+        "stored_reference_items": persisted.get("stored_reference_items", len(api_items)),
+        "next_action": "persist_citation_analysis",
+        "metadata_evidence_review": metadata_result,
+    }, []
+
+
+def _sync_api_aware_split_state(db_path: Path, prepared: dict[str, Any]) -> None:
+    workset = _read_workset_from_prepare_payload(prepared)
+    accepted_entry_indexes = _accepted_reference_entry_indexes(db_path)
+    active_suspect_blocks: list[dict[str, Any]] = []
+    skipped_block_count = 0
+    for block in workset.get("suspect_blocks", []):
+        entry_indexes, accepted_keys, unresolved_keys = _split_block_coverage(block, accepted_entry_indexes)
+        if entry_indexes and not unresolved_keys:
+            skipped_block_count += 1
+            continue
+        active_suspect_blocks.append(
+            {
+                **block,
+                "entry_indexes": entry_indexes,
+                "accepted_reference_keys": accepted_keys,
+                "unresolved_reference_keys": unresolved_keys,
+            }
+        )
+
+    requires_split_review = bool(active_suspect_blocks)
+    prepared.update(
+        {
+            "suspect_blocks": active_suspect_blocks,
+            "requires_split_review": requires_split_review,
+            "grouping_suspect_count": len(active_suspect_blocks),
+            "split_review_package_count": len(active_suspect_blocks),
+            "skipped_split_review_block_count": skipped_block_count,
+            "next_action": "persist_references",
+        }
+    )
+
+    raw_next_action = "persist_reference_entry_splits" if requires_split_review else "persist_references"
+    status_summary = (
+        "reference entry split review required for API-unresolved blocks"
+        if requires_split_review
+        else "reference API resolution completed before semantic review"
+    )
+    with runtime_db.connect_db(db_path) as connection:
+        receipts = runtime_db.fetch_action_receipts(connection)
+        receipt_metadata = dict(receipts.get("prepare_references_workset", {}).get("metadata", {}))
+        receipt_metadata.update(
+            {
+                "requires_split_review": requires_split_review,
+                "grouping_suspect_count": len(active_suspect_blocks),
+                "split_review_package_count": len(active_suspect_blocks),
+                "skipped_split_review_block_count": skipped_block_count,
+                "api_accepted_entry_count": len(accepted_entry_indexes),
+            }
+        )
+        runtime_db.store_action_receipt(
+            connection,
+            action_name="prepare_references_workset",
+            stage="stage_5_references",
+            metadata=receipt_metadata,
+        )
+        runtime_db.set_workflow_state(
+            connection,
+            current_stage="stage_5_references",
+            current_substep=raw_next_action,
+            stage_gate="ready",
+            next_action=raw_next_action,
+            status_summary=status_summary,
+        )
+        connection.commit()
+
+
 def prepare_reference_workset(db_path: Path) -> tuple[dict[str, Any], int]:
-    return call_algorithm_handler("_handle_prepare_references_workset", db_path)
+    prepared, code = call_algorithm_handler("_handle_prepare_references_workset", db_path)
+    if code != 0 or prepared.get("file_quality_low"):
+        return prepared, code
+    api_summary = _resolve_reference_api(db_path)
+    prepared["reference_api"] = api_summary
+    prepared["reference_api_audit_path"] = api_summary["audit_path"]
+    prepared["warnings"] = merge_warnings(
+        list(prepared.get("warnings", [])),
+        _runtime_warnings(db_path),
+    )
+    _sync_api_aware_split_state(db_path, prepared)
+    completion, completion_warnings = _persist_complete_api_resolution(db_path, api_summary)
+    if completion is not None:
+        prepared.update(completion)
+    if completion_warnings:
+        prepared["warnings"] = merge_warnings(list(prepared.get("warnings", [])), completion_warnings)
+    return prepared, code
 
 
 def _read_workset_from_prepare_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -451,12 +829,14 @@ def _read_workset_from_prepare_payload(payload: dict[str, Any]) -> dict[str, Any
 
 
 def enrich_reference_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    workset_path = str(payload.get("workset_path", ""))
     if not payload.get("error"):
         db_path = Path(str(payload.get("db_path", ""))).expanduser().resolve()
         workset = _read_workset_from_prepare_payload(payload)
-        packages = _reference_packages(workset)
-        split_packages = _split_review_packages(workset)
+        packages = _reference_packages(_unresolved_reference_workset(db_path, workset))
+        split_packages = _split_review_packages(
+            workset,
+            accepted_entry_indexes=_accepted_reference_entry_indexes(db_path),
+        )
         core_agent_work = _reference_core_agent_work(db_path, packages)
         split_review_packages_path = agent_work.write_package_file(
             db_path,
@@ -567,7 +947,11 @@ def _run_split_reviews(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str
     if code != 0:
         return prepared, code, False
     workset = _read_workset_from_prepare_payload(prepared)
-    split_packages = _split_review_packages(workset)
+    accepted_entry_indexes = _accepted_reference_entry_indexes(db_path)
+    split_packages = _split_review_packages(
+        workset,
+        accepted_entry_indexes=accepted_entry_indexes,
+    )
     errors, blocks, boundary_changed = _split_review_payload_errors(payload.get("split_reviews"), split_packages)
     if errors:
         return (
@@ -582,14 +966,53 @@ def _run_split_reviews(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str
             2,
             False,
         )
+    active_block_indexes = {int(package["block_index"]) for package in split_packages}
+    entries_by_index = {
+        int(entry["entry_index"]): entry
+        for entry in workset.get("entries", [])
+    }
+    for block in workset.get("suspect_blocks", []):
+        block_index = int(block.get("block_index", -1))
+        if block_index in active_block_indexes:
+            continue
+        entry_indexes, _accepted_keys, unresolved_keys = _split_block_coverage(block, accepted_entry_indexes)
+        if not entry_indexes or unresolved_keys:
+            continue
+        retained_entries = [
+            str(entries_by_index[entry_index].get("raw", "")).strip()
+            for entry_index in entry_indexes
+            if entry_index in entries_by_index and str(entries_by_index[entry_index].get("raw", "")).strip()
+        ]
+        blocks.append(
+            {
+                "block_index": block_index,
+                "resolution": "keep",
+                "entries": retained_entries or list(block.get("proposed_entries", [])) or [str(block.get("source_text", ""))],
+            }
+        )
+    blocks.sort(key=lambda block: int(block["block_index"]))
     result, code = call_algorithm_handler(
         "_handle_persist_reference_entry_splits",
         db_path,
         payload={"blocks": blocks},
     )
     if code == 0:
-        result.update({"db_path": str(db_path), "next_action": "persist_references"})
-        result = enrich_reference_workset_payload(result)
+        api_summary = _resolve_reference_api(db_path)
+        result["reference_api"] = api_summary
+        result["reference_api_audit_path"] = api_summary["audit_path"]
+        result["db_path"] = str(db_path)
+        result["warnings"] = merge_warnings(
+            list(result.get("warnings", [])),
+            _runtime_warnings(db_path),
+        )
+        completion, completion_warnings = _persist_complete_api_resolution(db_path, api_summary)
+        if completion is not None:
+            result.update(completion)
+        else:
+            result["next_action"] = "persist_references"
+            result = enrich_reference_workset_payload(result)
+        if completion_warnings:
+            result["warnings"] = merge_warnings(list(result.get("warnings", [])), completion_warnings)
     return result, code, boundary_changed
 
 
@@ -605,7 +1028,10 @@ def _ensure_split_review_not_required(db_path: Path) -> tuple[dict[str, Any] | N
     if code != 0:
         return prepared, code
     workset = _read_workset_from_prepare_payload(prepared)
-    split_packages = _split_review_packages(workset)
+    split_packages = _split_review_packages(
+        workset,
+        accepted_entry_indexes=_accepted_reference_entry_indexes(db_path),
+    )
     if split_packages:
         return (
             {
@@ -701,8 +1127,14 @@ def enrich_metadata_workset_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def prepare_reference_metadata_enrichment(db_path: Path) -> tuple[dict[str, Any], int]:
     prepared, code = call_algorithm_handler("_handle_prepare_reference_metadata_enrichment", db_path)
     if code == 0:
-        prepared.update({"db_path": str(db_path), "next_action": "persist_references"})
-        prepared = enrich_metadata_workset_payload(prepared)
+        prepared.update(
+            {
+                "db_path": str(db_path),
+                "next_action": "persist_citation_analysis" if prepared.get("skipped") else "persist_references",
+            }
+        )
+        if not prepared.get("skipped"):
+            prepared = enrich_metadata_workset_payload(prepared)
     return prepared, code
 
 
@@ -968,7 +1400,7 @@ def persist_references(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str
         if split_code != 0:
             return split_result, split_code
         if boundary_changed or "reference_reviews" not in payload:
-            split_result["next_action"] = "persist_references"
+            split_result.setdefault("next_action", "persist_references")
             split_result["reference_reviews_ignored"] = bool(boundary_changed and payload.get("reference_reviews"))
             return split_result, split_code
     else:
@@ -976,7 +1408,7 @@ def persist_references(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str
         if split_required is not None:
             return split_required, split_code
 
-    workset = _load_reference_workset_from_db(db_path)
+    workset = _unresolved_reference_workset(db_path)
     errors, normalized_items, normalization_warnings = _reference_payload_errors(payload, workset)
     if errors:
         return {
@@ -991,7 +1423,18 @@ def persist_references(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str
             },
             "warnings": normalization_warnings,
         }, 2
-    reference_payload = {"items": normalized_items}
+    with runtime_db.connect_db(db_path) as connection:
+        api_items = [
+            dict(item["item"])
+            for item in runtime_db.fetch_reference_api_resolutions(connection)
+            if item.get("status") == "accepted" and isinstance(item.get("item"), dict)
+        ]
+    reference_payload = {
+        "items": sorted(
+            [*_algorithm_items_from_api_items(api_items), *normalized_items],
+            key=lambda item: int(item["entry_index"]),
+        )
+    }
     result, code = call_algorithm_handler("_handle_persist_references", db_path, payload=reference_payload)
     if code != 0:
         return result, code

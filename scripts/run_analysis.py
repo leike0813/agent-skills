@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from analysis_runtime import citations
 from analysis_runtime import gate_contract
 from analysis_runtime import references
 from analysis_runtime import runtime
+from analysis_runtime import runtime_db
 from analysis_runtime import stages
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -85,6 +87,31 @@ def _read_json_payload(path_value: str, stage: str) -> tuple[dict[str, Any] | No
         )
 
 
+def _reject_score_only(db_path: Path, requested_action: str) -> tuple[dict[str, Any] | None, int]:
+    if not db_path.exists():
+        return None, 0
+    try:
+        with runtime_db.connect_db(db_path) as connection:
+            if not runtime_db.is_score_only(connection):
+                return None, 0
+            next_action = (
+                "completed"
+                if runtime_db.has_action_receipt(connection, "render_score_only")
+                else "persist_literature_score"
+            )
+    except sqlite3.Error:
+        return None, 0
+    return (
+        _json_error(
+            "score_only_action_forbidden",
+            f"{requested_action} is unavailable when score_only=true",
+            db_path=str(db_path),
+            next_action=next_action,
+        ),
+        2,
+    )
+
+
 def handle_init_runtime(args: argparse.Namespace) -> int:
     working_dir = Path(args.working_dir).expanduser().resolve() if args.working_dir else Path.cwd().resolve()
     db_path = Path(args.db_path).expanduser().resolve() if args.db_path else runtime.default_db_path(working_dir)
@@ -97,6 +124,8 @@ def handle_init_runtime(args: argparse.Namespace) -> int:
         source_path=source_path,
         language=args.language or "zh-CN",
         model=args.model or "",
+        score_only=bool(args.score_only),
+        identifier=args.identifier or "",
     )
     runtime.persist_default_templates(db_path=db_path, runtime_paths=runtime_paths, language=args.language or "zh-CN")
     normalize_payload, code = stages.normalize_source(
@@ -117,6 +146,18 @@ def handle_init_runtime(args: argparse.Namespace) -> int:
         )
         return code
 
+    next_action = "persist_literature_score" if args.score_only else "persist_analysis_plan"
+    if args.score_only:
+        with runtime_db.connect_db(db_path) as connection:
+            runtime_db.set_workflow_state(
+                connection,
+                current_stage="stage_4_scoring",
+                current_substep="persist_literature_score",
+                stage_gate="ready",
+                next_action="persist_literature_score",
+                status_summary="normalized source ready for score-only analysis",
+            )
+            connection.commit()
     _print(
         {
             "db_path": str(db_path),
@@ -124,7 +165,7 @@ def handle_init_runtime(args: argparse.Namespace) -> int:
             "output_dir": str(output_dir),
             "source_profile": runtime.source_profile(db_path),
             "runtime_backend": "analysis_runtime.stages",
-            "next_action": "persist_analysis_plan",
+            "next_action": next_action,
             "error": None,
         }
     )
@@ -133,6 +174,10 @@ def handle_init_runtime(args: argparse.Namespace) -> int:
 
 def handle_persist_analysis_plan(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path).expanduser().resolve()
+    rejection, code = _reject_score_only(db_path, "persist_analysis_plan")
+    if rejection is not None:
+        _print(rejection)
+        return code
     payload, error = _read_json_payload(args.payload_file, "persist_analysis_plan")
     if error is not None:
         _print(error)
@@ -145,6 +190,10 @@ def handle_persist_analysis_plan(args: argparse.Namespace) -> int:
 
 def handle_persist_digest(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path).expanduser().resolve()
+    rejection, code = _reject_score_only(db_path, "persist_digest")
+    if rejection is not None:
+        _print(rejection)
+        return code
     payload, error = _read_json_payload(args.payload_file, "persist_digest")
     if error is not None:
         _print(error)
@@ -155,13 +204,34 @@ def handle_persist_digest(args: argparse.Namespace) -> int:
     return code
 
 
+def handle_persist_literature_score(args: argparse.Namespace) -> int:
+    db_path = Path(args.db_path).expanduser().resolve()
+    if not args.payload_file:
+        result, code = stages.prepare_literature_score(db_path)
+    else:
+        payload, error = _read_json_payload(args.payload_file, "persist_literature_score")
+        if error is not None:
+            _print(error)
+            return 2
+        assert payload is not None
+        result, code = stages.persist_literature_score(db_path, payload)
+    _print(result)
+    return code
+
+
 def handle_persist_references(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path).expanduser().resolve()
+    rejection, code = _reject_score_only(db_path, "persist_references")
+    if rejection is not None:
+        _print(rejection)
+        return code
     if not args.payload_file:
         result, code = references.prepare_reference_workset(db_path)
         if code == 0:
-            result.update({"db_path": str(db_path), "next_action": "persist_references"})
-            result = references.enrich_reference_workset_payload(result)
+            result["db_path"] = str(db_path)
+            result.setdefault("next_action", "persist_references")
+            if result.get("next_action") == "persist_references":
+                result = references.enrich_reference_workset_payload(result)
         _print(result)
         return code
 
@@ -177,6 +247,10 @@ def handle_persist_references(args: argparse.Namespace) -> int:
 
 def handle_persist_citation_analysis(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path).expanduser().resolve()
+    rejection, code = _reject_score_only(db_path, "persist_citation_analysis")
+    if rejection is not None:
+        _print(rejection)
+        return code
     if not args.payload_file:
         result, code = citations.prepare_citation_workset(db_path)
         if code == 0:
@@ -218,6 +292,8 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--output-dir", default="")
     init.add_argument("--db-path", default="")
     init.add_argument("--model", default="")
+    init.add_argument("--score-only", action="store_true")
+    init.add_argument("--identifier", default="")
     init.set_defaults(handler=handle_init_runtime)
 
     plan = subparsers.add_parser("persist_analysis_plan")
@@ -229,6 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
     digest.add_argument("--db-path", required=True)
     digest.add_argument("--payload-file", required=True)
     digest.set_defaults(handler=handle_persist_digest)
+
+    score = subparsers.add_parser("persist_literature_score")
+    score.add_argument("--db-path", required=True)
+    score.add_argument("--payload-file", default="")
+    score.set_defaults(handler=handle_persist_literature_score)
 
     references = subparsers.add_parser("persist_references")
     references.add_argument("--db-path", required=True)
