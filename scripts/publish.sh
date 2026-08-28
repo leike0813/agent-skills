@@ -22,7 +22,6 @@ DRY_RUN=0
 # -----------------------------
 AGG_URL_DEFAULT="https://github.com/leike0813/agent-skills.git"
 AGG_WT_DEFAULT="/home/joshua/Workspace/Code/Skill/agent-skills/"
-VENDOR_ROOT_DEFAULT="vendor"
 
 DEV_ROOT=""
 PKG_DIR=""
@@ -31,7 +30,6 @@ EXCLUDES="${EXCLUDES:-}" # comma-separated prefix excludes relative to package r
 VENDOR_URL=""
 VENDOR_BRANCH=""
 VENDOR_SUBPATH=""
-VENDOR_ROOT="${VENDOR_ROOT:-}"        # set after config load
 VENDOR_MODE=0
 AGG_WT="${AGG_WT:-${AGG_WT_DEFAULT}}"
 AGG_URL="${AGG_URL:-${AGG_URL_DEFAULT}}"
@@ -80,21 +78,17 @@ Vendor mode:
   --vendor-url <url>       GitHub URL of the third-party skill, e.g.
                            https://github.com/<owner>/<repo>/tree/<branch>/<path/to/skill>
                            or https://github.com/<owner>/<repo> (skill at repo root)
-  --vendor-root <dir>      Submodule install path under AGG_WT (default: vendor)
-
   The URL is parsed to derive the upstream repo, branch, and skill subpath
   (or defaults to branch=main and subpath="" when no /tree/ segment is
-  present). The third-party repo is added as a submodule under
-  AGG_WT/<vendor-root>/<repo> and the skill is read from
-  <vendor-root>/<repo>[/<subpath>]. /blob/<branch>/<file> URLs are rejected
-  because they point to a single file, not a skill directory. Vendor mode
-  must not be combined with --pkg-dir.
+  present). The third-party repo is shallow-cloned into a temp directory,
+  the skill is read from there, and the temp directory is removed on exit.
+  Nothing is registered as a submodule in AGG_WT. /blob/<branch>/<file>
+  URLs are rejected because they point to a single file, not a skill
+  directory. Vendor mode must not be combined with --pkg-dir.
 
   Examples:
     publish.sh --vendor-url https://github.com/hugohe3/ppt-master/tree/main/skills/ppt-master \
                --skill ppt-master
-    publish.sh --vendor-url https://github.com/hugohe3/ppt-master --skill ppt-master \
-               --vendor-root libs
 EOF
 }
 load_kv_config() {
@@ -164,45 +158,6 @@ parse_github_url() {
   # Trim any trailing slash from the subpath.
   subpath="${subpath%/}"
   printf '%s\t%s\t%s\t%s\n' "$owner" "$repo" "$branch" "$subpath"
-}
-# ensure_vendor_submodule <owner> <repo> <branch>
-# Requires VENDOR_ROOT and AGG_WT set. Adds <VENDOR_ROOT>/<repo> as a git
-# submodule under AGG_WT pointing at https://github.com/<owner>/<repo>.git,
-# commits the addition, and ensures the submodule is checked out in the
-# working tree. The branch argument is recorded into .gitmodules so future
-# `git submodule update --remote` will follow it. Sets VENDOR_REL (the path
-# inside AGG_WT, e.g. vendor/ppt-master) and VENDOR_PATH (absolute on-disk).
-ensure_vendor_submodule() {
-  local owner="$1"
-  local repo="$2"
-  local branch="$3"
-
-  local vendor_rel="${VENDOR_ROOT}/${repo}"
-  local vendor_abs="${AGG_WT}/${vendor_rel}"
-
-  if [[ -e "${vendor_abs}" ]]; then
-    log "Vendor submodule already present: ${vendor_rel}"
-    # Make sure .gitmodules records the desired branch even if the submodule
-    # was added previously without one.
-    git -C "${AGG_WT}" config -f .gitmodules "submodule.${vendor_rel}.branch" "${branch}" >/dev/null
-    if ! git -C "${AGG_WT}" diff --cached --quiet -- .gitmodules; then
-      git -C "${AGG_WT}" add .gitmodules
-      git -C "${AGG_WT}" commit -m "chore(vendor): record branch ${branch} for ${vendor_rel}" -- .gitmodules || true
-    fi
-  else
-    log "Adding vendor submodule: ${vendor_rel} -> https://github.com/${owner}/${repo}.git (branch=${branch})"
-    git -C "${AGG_WT}" submodule add --force --branch "${branch}" "https://github.com/${owner}/${repo}.git" "${vendor_rel}"
-    if ! git -C "${AGG_WT}" diff --cached --quiet; then
-      git -C "${AGG_WT}" commit -m "chore(vendor): add ${owner}/${repo} as ${vendor_rel}"
-    fi
-  fi
-
-  git -C "${AGG_WT}" submodule update --init --recursive "${vendor_rel}" >/dev/null
-  git -C "${AGG_WT}" submodule update --remote "${vendor_rel}" 2>/dev/null || true
-
-  VENDOR_REL="${vendor_rel}"
-  VENDOR_PATH="${vendor_abs}"
-  export VENDOR_REL VENDOR_PATH
 }
 
 clear_dir_contents() {
@@ -321,27 +276,38 @@ extract_skill_info() {
   printf '%s\t%s\n' "$name" "$desc"
 }
 
-# record_vendor_source <agg_wt> <skill> <url>
-# Upserts the skill -> vendor URL mapping into <agg_wt>/.vendor-sources.
-# File format is "<skill>\t<url>" one per line, sorted by skill. Existing
-# entries for the same skill are replaced; other entries are preserved.
-# Used by sync_readme_skills_table to render a Vendor Sources section in
+# record_vendor_audit <agg_wt> <skill> <url> <owner> <repo> <branch> <subpath> <commit> [fetched_at]
+# Upserts the audit entry for <skill> in <agg_wt>/.vendor-audit.jsonl.
+# File format: one JSON object per line; existing entries for the same skill
+# are removed before appending so the file contains exactly one line per skill.
+# Used by sync_readme_skills_table to render the Vendor Sources section in
 # the aggregator README.
-record_vendor_source() {
-  local agg_wt="$1"
-  local skill="$2"
-  local url="$3"
-  local file="${agg_wt}/.vendor-sources"
+record_vendor_audit() {
+  local agg_wt="$1" skill="$2" url="$3" owner="$4" repo="$5" branch="$6" subpath="$7" commit="$8"
+  local fetched_at="${9:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   [[ -n "${skill}" && -n "${url}" ]] || return 0
+  local file="${agg_wt}/.vendor-audit.jsonl"
   local tmp="${file}.new"
-  # Drop any existing entry for this skill, then append the new one, then
- # sort the whole file by skill name for stable diffs.
   if [[ -f "${file}" ]]; then
-    grep -v -E "^${skill//./\\.}"$'\t' "${file}" > "${tmp}" 2>/dev/null || true
+    awk -v s="${skill}" 'BEGIN{p = "\"skill\":\"" s "\""} index($0, p) == 0 {print}' "${file}" > "${tmp}" || true
   else
     : > "${tmp}"
   fi
-  printf '%s\t%s\n' "${skill}" "${url}" >> "${tmp}"
+  # build JSON safely: escape backslash and double-quote in url/subpath; jq is
+  # not required, but if present we delegate to it for clean escaping.
+  local entry
+  if command -v jq >/dev/null 2>&1; then
+    entry="$(jq -nc --arg skill "${skill}" --arg url "${url}" \
+      --arg owner "${owner}" --arg repo "${repo}" --arg branch "${branch}" \
+      --arg subpath "${subpath}" --arg commit "${commit}" --arg fetched_at "${fetched_at}" \
+      '{skill:$skill,url:$url,owner:$owner,repo:$repo,branch:$branch,subpath:$subpath,commit:$commit,fetched_at:$fetched_at}')"
+  else
+    local esc_url esc_sub
+    esc_url="${url//\\/\\\\}"; esc_url="${esc_url//\"/\\\"}"
+    esc_sub="${subpath//\\/\\\\}"; esc_sub="${esc_sub//\"/\\\"}"
+    entry="{\"skill\":\"${skill}\",\"url\":\"${esc_url}\",\"owner\":\"${owner}\",\"repo\":\"${repo}\",\"branch\":\"${branch}\",\"subpath\":\"${esc_sub}\",\"commit\":\"${commit}\",\"fetched_at\":\"${fetched_at}\"}"
+  fi
+  printf '%s\n' "${entry}" >> "${tmp}"
   LC_ALL=C sort -u "${tmp}" > "${file}"
   rm -f "${tmp}"
 }
@@ -356,7 +322,7 @@ sync_readme_skills_table() {
   [[ -d "${agg_wt}/${skills_dir}" ]] || return 0
 
   local tmpfile="${TMPDIR}/skills_table.md"
-  local sources_file="${agg_wt}/.vendor-sources"
+  local audit_file="${agg_wt}/.vendor-audit.jsonl"
 
   {
     echo "# agent-skills"
@@ -389,26 +355,46 @@ sync_readme_skills_table() {
       fi
     done
 
-    # Render the Vendor Sources section if .vendor-sources has entries.
-    # Source lines are "<skill>\t<url>"; only those skills still present in
-    # the table are rendered, so removing a skill drops its line on the
-    # next sync.
-    if [[ -s "${sources_file}" ]]; then
+    # Render the Vendor Sources section if .vendor-audit.jsonl has entries.
+    # Audit lines are JSON objects with at least {skill,url}; only those
+    # skills still present in the table are rendered, so removing a skill
+    # drops its line on the next sync.
+    if [[ -s "${audit_file}" ]]; then
       echo ""
       echo "## Vendor Sources"
       echo ""
       echo "以下 skill 通过第三方仓库发布,内容由对应仓库同步而来。"
       echo ""
       # Render only entries whose skill is still in the current table.
-      while IFS=$'\t' read -r src_skill src_url; do
-        [[ -z "${src_skill}" || -z "${src_url}" ]] && continue
-        local match=0
-        for s in "${sorted[@]}"; do
-          [[ "${s}" == "${src_skill}" ]] && match=1 && break
-        done
-        [[ "${match}" == "1" ]] || continue
-        echo "- \`${src_skill}\` — <${src_url}>"
-      done < "${sources_file}"
+      # Prefer jq; fall back to awk when jq is unavailable.
+      if command -v jq >/dev/null 2>&1; then
+        while IFS=$'\t' read -r src_skill src_url; do
+          [[ -z "${src_skill}" || -z "${src_url}" ]] && continue
+          local match=0
+          for s in "${sorted[@]}"; do
+            [[ "${s}" == "${src_skill}" ]] && match=1 && break
+          done
+          [[ "${match}" == "1" ]] || continue
+          echo "- \`${src_skill}\` — <${src_url}>"
+        done < <(jq -r '"\(.skill)\t\(.url)"' "${audit_file}")
+      else
+        while IFS=$'\t' read -r src_skill src_url; do
+          [[ -z "${src_skill}" || -z "${src_url}" ]] && continue
+          local match=0
+          for s in "${sorted[@]}"; do
+            [[ "${s}" == "${src_skill}" ]] && match=1 && break
+          done
+          [[ "${match}" == "1" ]] || continue
+          echo "- \`${src_skill}\` — <${src_url}>"
+        done < <(awk -F'"' '
+          /^\{/ {
+            for (i=1;i<=NF;i++) {
+              if ($i=="skill" || $i=="url") { key=$i; val=$(i+2); gsub(/,$/, "", val); map[key]=val }
+            }
+            if ("skill" in map && "url" in map) { print map["skill"] "\t" map["url"]; delete map["skill"]; delete map["url"] }
+          }
+        ' "${audit_file}")
+      fi
     fi
   } > "$tmpfile"
 
@@ -418,10 +404,10 @@ sync_readme_skills_table() {
   cp "$tmpfile" "$readme"
 
   git -C "${agg_wt}" add "README.md"
-  # .vendor-sources may be newly created by record_vendor_source above; stage
-  # it explicitly so the next sync reflects the latest mapping.
-  if [[ -f "${sources_file}" ]]; then
-    git -C "${agg_wt}" add "${sources_file}"
+  # .vendor-audit.jsonl may be newly created by record_vendor_audit above;
+  # stage it explicitly so the next sync reflects the latest mapping.
+  if [[ -f "${audit_file}" ]]; then
+    git -C "${agg_wt}" add "${audit_file}"
   fi
   if ! git -C "${agg_wt}" diff --cached --quiet; then
     git -C "${agg_wt}" commit -m "docs: sync skills table in README.md"
@@ -487,10 +473,6 @@ while [[ $# -gt 0 ]]; do
     VENDOR_URL="${2:-}"
     shift 2
     ;;
-  --vendor-root)
-    VENDOR_ROOT="${2:-}"
-    shift 2
-    ;;
   --config)
     CFG_FILE="${2:-}"
     shift 2
@@ -542,11 +524,9 @@ AGG_SKILLS_DIR="${AGG_SKILLS_DIR:-skills}"
 SKILL_BRANCH_PREFIX="${SKILL_BRANCH_PREFIX:-skill/}"
 AGG_WT="${AGG_WT:-${AGG_WT_DEFAULT}}"
 AGG_URL="${AGG_URL:-${AGG_URL_DEFAULT}}"
-VENDOR_ROOT="${VENDOR_ROOT:-${VENDOR_ROOT_DEFAULT}}"
 
 LOCAL_ORIGIN="$(git -C "${AGG_WT}" remote get-url origin 2>/dev/null || true)"
 [[ -n "${LOCAL_ORIGIN}" ]] || die "Aggregator has no origin remote: ${AGG_WT}"
-
 if [[ "$(normalize_git_url "${AGG_URL}")" != "$(normalize_git_url "${LOCAL_ORIGIN}")" ]]; then
   die "AGG_URL does not match local origin after normalization.
   AGG_URL:      ${AGG_URL} -> $(normalize_git_url "${AGG_URL}")
@@ -554,26 +534,34 @@ if [[ "$(normalize_git_url "${AGG_URL}")" != "$(normalize_git_url "${LOCAL_ORIGI
 fi
 
 # ==============================================================================
-# Vendor submodule setup (vendor mode only)
+# Vendor temp-clone setup (vendor mode only)
 # ==============================================================================
 if [[ "${VENDOR_MODE}" == "1" ]]; then
   # parse URL -> owner / repo / branch / subpath
   IFS=$'\t' read -r VENDOR_OWNER VENDOR_REPO VENDOR_BRANCH VENDOR_SUBPATH < <(parse_github_url "${VENDOR_URL}")
   export VENDOR_OWNER VENDOR_REPO VENDOR_BRANCH VENDOR_SUBPATH
 
-  # refuse .skills file in vendor mode (explicit)
-  if [[ -f "${DEV_ROOT:-/nonexistent}/.skills" ]]; then
+  # refuse .skills file in vendor mode (explicit). The script may be invoked
+  # without a DEV_ROOT (vendor mode is decoupled from the dev worktree), so
+  # only check the current directory.
+  if [[ -f "./.skills" ]]; then
     die "(vendor mode) .skills file is not supported together with --vendor-url."
   fi
 
-  # add / refresh vendor submodule, tracking the parsed branch.
-  ensure_vendor_submodule "${VENDOR_OWNER}" "${VENDOR_REPO}" "${VENDOR_BRANCH}"
+  WORK_TMP="$(mktemp -d)"
+  trap 'rm -rf "${WORK_TMP}"' EXIT
 
-  # redirect package path: empty subpath means the skill lives at the repo root.
+  log "Cloning vendor: https://github.com/${VENDOR_OWNER}/${VENDOR_REPO}.git @ ${VENDOR_BRANCH} into temp"
+  if ! git clone --depth 1 --branch "${VENDOR_BRANCH}" "https://github.com/${VENDOR_OWNER}/${VENDOR_REPO}.git" "${WORK_TMP}/repo" >/dev/null 2>&1; then
+    die "git clone failed for vendor: https://github.com/${VENDOR_OWNER}/${VENDOR_REPO}.git @ ${VENDOR_BRANCH}"
+  fi
+
+  VENDOR_COMMIT="$(git -C "${WORK_TMP}/repo" rev-parse HEAD)"
+
   if [[ -z "${VENDOR_SUBPATH}" ]]; then
-    PKG_PATH="${VENDOR_PATH}"
+    PKG_PATH="${WORK_TMP}/repo"
   else
-    PKG_PATH="${VENDOR_PATH}/${VENDOR_SUBPATH}"
+    PKG_PATH="${WORK_TMP}/repo/${VENDOR_SUBPATH}"
   fi
   [[ -d "${PKG_PATH}" ]] || die "Vendor subpath not found: ${PKG_PATH}"
   [[ -f "${PKG_PATH}/SKILL.md" ]] || die "SKILL.md not found under vendor path: ${PKG_PATH}"
@@ -583,10 +571,7 @@ if [[ "${VENDOR_MODE}" == "1" ]]; then
   PKG_DIR="${VENDOR_SUBPATH:-}"
   export PKG_DIRS PKG_DIR PKG_PATH
 
-  # Note: aggregator worktree dirty / fetch / submodule-gitlink checks below
-  # still apply; they protect against corrupting AGG_WT state. VENDOR_PATH
-  # itself is a separate submodule, so the gitlink check on
-  # AGG_SKILL_DIR_REL (skills/<skill>) is unaffected.
+  export WORK_TMP VENDOR_COMMIT
 fi
 
 # ==============================================================================
@@ -711,10 +696,9 @@ if git -C "${AGG_WT}" show-ref --verify --quiet "refs/heads/${SKILL_BRANCH}"; th
   fi
 fi
 # refuse if target path is a submodule.
-# Note: in vendor mode, AGG_SKILL_DIR_REL is skills/<skill>, which is a
-# plain directory we control; the vendor submodule lives under
-# VENDOR_ROOT/<repo> and never overlaps this path. The check therefore
-# remains correct in both modes.
+# Note: in vendor mode, AGG_SKILL_DIR_REL is skills/<skill>, a plain
+# directory we control. Vendor content is not tracked by AGG_WT's git at
+# all (it is read from a temp clone), so this gitlink check is unaffected.
 if git -C "${AGG_WT}" ls-files --stage -- "${AGG_SKILL_DIR_REL}" | awk '{print $1}' | grep -q "^160000$"; then
   die "${AGG_SKILL_DIR_REL} is a submodule (gitlink). Convert it to a normal directory first."
 fi
@@ -732,9 +716,10 @@ LIST_FINAL="${TMPDIR}/files_final.txt"
 TARFILE="${TMPDIR}/pkg.tar"
 
 if [[ "${VENDOR_MODE}" == "1" ]]; then
-  # Vendor mode: enumerate files directly. Vendor content is not tracked by
-  # AGG_WT's git (it's a submodule), so `git ls-files` won't see it. We must
-  # also exclude any nested .git directory (the vendor submodule's own meta).
+  # Vendor mode: enumerate files directly. Vendor content is not tracked
+  # by AGG_WT's git (it lives in a temp clone), so `git ls-files` won't
+  # see it. We must also exclude any nested .git directory (the cloned
+  # repo's own meta).
   find "${PKG_PATH}" -mindepth 1 -maxdepth 5 -type f -not -path '*/.git/*' \
     | sed "s#^${PKG_PATH}/##" \
     > "${LIST_REL}"
@@ -770,7 +755,7 @@ fi
 if [[ "${DRY_RUN}" == "1" ]]; then
   log "DRY RUN plan:"
   if [[ "${VENDOR_MODE}" == "1" ]]; then
-    echo "  - Vendor mode: would ensure submodule ${VENDOR_REL} (https://github.com/${VENDOR_OWNER}/${VENDOR_REPO}.git)" >&2
+    echo "  - Vendor mode: would clone https://github.com/${VENDOR_OWNER}/${VENDOR_REPO}.git (branch ${VENDOR_BRANCH}) into temp and record audit entry" >&2
     echo "  - Would read files from ${PKG_PATH}" >&2
     echo "  - Files to publish: $(wc -l <"${LIST_FINAL}")" >&2
     if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
@@ -818,7 +803,7 @@ if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
       {
         printf '# %s\n\n' "${SKILL}"
         printf '来源: %s\n\n' "${vendor_source_url}"
-        printf '本目录内容通过 git submodule %s 同步。\n' "${VENDOR_REL}"
+        printf 'Upstream commit: %s\n' "${VENDOR_COMMIT}"
       } > "${readme_target}"
     fi
   fi
@@ -829,7 +814,9 @@ if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
     git -C "${AGG_WT}" push origin "${AGG_MAIN}"
     # Vendor mode: track the source URL so the aggregator README can list it.
     if [[ "${VENDOR_MODE}" == "1" ]]; then
-      record_vendor_source "${AGG_WT}" "${SKILL}" "${VENDOR_URL}"
+      record_vendor_audit "${AGG_WT}" "${SKILL}" "${VENDOR_URL}" \
+        "${VENDOR_OWNER}" "${VENDOR_REPO}" "${VENDOR_BRANCH}" "${VENDOR_SUBPATH}" \
+        "${VENDOR_COMMIT}"
     fi
   else
     log "No changes detected for ${AGG_MAIN}:${AGG_SKILL_DIR_REL}"
