@@ -1,3 +1,4 @@
 [submodule "vendor/ppt-master"]
 	path = vendor/ppt-master
 	url = https://github.com/hugohe3/ppt-master.git
+	branch = main
