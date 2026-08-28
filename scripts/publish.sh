@@ -22,11 +22,18 @@ DRY_RUN=0
 # -----------------------------
 AGG_URL_DEFAULT="https://github.com/leike0813/agent-skills.git"
 AGG_WT_DEFAULT="/home/joshua/Workspace/Code/Skill/agent-skills/"
+VENDOR_ROOT_DEFAULT="vendor"
 
 DEV_ROOT=""
 PKG_DIR=""
 SKILL=""
 EXCLUDES="${EXCLUDES:-}" # comma-separated prefix excludes relative to package root (optional)
+
+VENDOR_URL=""
+VENDOR_SUBPATH=""
+VENDOR_ROOT="${VENDOR_ROOT:-}"        # set after config load
+VENDOR_BRANCH=""
+VENDOR_MODE=0
 
 AGG_WT="${AGG_WT:-${AGG_WT_DEFAULT}}"
 AGG_URL="${AGG_URL:-${AGG_URL_DEFAULT}}"
@@ -61,8 +68,6 @@ Options:
 Auto-discovery:
   If --pkg-dir is not provided, the script auto-discovers packages to publish:
     1. If a .skills file exists in DEV_ROOT, read package dirs from it (one per line)
-    2. Otherwise, auto-detect a single SKILL.md; fail if multiple found
-
 .skills file format (one package dir per line, relative to DEV_ROOT):
   skill-a
   skill-b
@@ -72,9 +77,25 @@ Config file format (KEY=VALUE):
   AGG_WT=...
   AGG_MAIN=main
   EXCLUDES=node_modules,dist
+
+Vendor mode:
+  --vendor-url <url>          Third-party GitHub repo URL (https://github.com/<owner>/<repo>)
+  --vendor-subpath <path>     Path inside the vendor repo where the skill lives, e.g. skills/ppt-master
+  --vendor-root <dir>         Submodule install path under AGG_WT (default: vendor)
+  --vendor-branch <branch>    Branch of vendor repo to track (default: main)
+
+  In vendor mode, the third-party repo is added as a submodule under
+  AGG_WT/<vendor-root>/<repo> and the skill content is read from
+  <vendor-root>/<repo>/<vendor-subpath>. --vendor-url and --vendor-subpath
+  must be provided together and are mutually exclusive with --pkg-dir and
+  the .skills auto-discovery path.
+
+  Example:
+    publish.sh --vendor-url https://github.com/hugohe3/ppt-master \
+               --vendor-subpath skills/ppt-master \
+               --skill ppt-master
 EOF
 }
-
 load_kv_config() {
   local f="$1"
   [[ -f "$f" ]] || return 0
@@ -109,6 +130,56 @@ normalize_git_url() {
   printf '%s' "$u"
 }
 
+# parse_github_url <url>
+# Only accepts https://github.com/<owner>/<repo>[.git] form. Anything else -> die.
+# Prints "<owner>\t<repo>".
+parse_github_url() {
+  local input="$1"
+  local owner="" repo=""
+  if [[ "$input" =~ ^https://github\.com/([^/]+)/([^/]+)\.git$ ]]; then
+    owner="${BASH_REMATCH[1]}"
+    repo="${BASH_REMATCH[2]}"
+  elif [[ "$input" =~ ^https://github\.com/([^/]+)/([^/]+)/?$ ]]; then
+    owner="${BASH_REMATCH[1]}"
+    repo="${BASH_REMATCH[2]}"
+  elif [[ "$input" =~ ^https://github\.com/([^/]+)/([^/]+)/tree/ ]]; then
+    die "URL with /tree/<branch>/... is not accepted as --vendor-url. Use --vendor-url=https://github.com/<owner>/<repo> and pass the subpath via --vendor-subpath. Got: $input"
+  else
+    die "Only https://github.com/<owner>/<repo> URLs are supported for --vendor-url: $input"
+  fi
+  printf '%s\t%s\n' "$owner" "$repo"
+}
+
+# ensure_vendor_submodule <owner> <repo>
+# Requires VENDOR_ROOT and AGG_WT set. Adds <VENDOR_ROOT>/<repo> as a git
+# submodule under AGG_WT pointing at https://github.com/<owner>/<repo>.git,
+# commits the addition, and ensures the submodule is checked out in the
+# working tree. Sets the global VENDOR_REL variable to the relative path
+# of the vendor submodule inside AGG_WT (e.g. vendor/ppt-master) and
+# VENDOR_PATH to the absolute on-disk path.
+ensure_vendor_submodule() {
+  local owner="$1"
+  local repo="$2"
+
+  local vendor_rel="${VENDOR_ROOT}/${repo}"
+  local vendor_abs="${AGG_WT}/${vendor_rel}"
+
+  if [[ -e "${vendor_abs}" ]]; then
+    log "Vendor submodule already present: ${vendor_rel}"
+  else
+    log "Adding vendor submodule: ${vendor_rel} -> https://github.com/${owner}/${repo}.git"
+    git -C "${AGG_WT}" submodule add --force "https://github.com/${owner}/${repo}.git" "${vendor_rel}"
+    if ! git -C "${AGG_WT}" diff --cached --quiet; then
+      git -C "${AGG_WT}" commit -m "chore(vendor): add ${owner}/${repo} as ${vendor_rel}"
+    fi
+  fi
+
+  git -C "${AGG_WT}" submodule update --init --recursive "${vendor_rel}" >/dev/null
+
+  VENDOR_REL="${vendor_rel}"
+  VENDOR_PATH="${vendor_abs}"
+  export VENDOR_REL VENDOR_PATH
+}
 clear_dir_contents() {
   local d="$1"
   [[ -d "$d" ]] || mkdir -p "$d"
@@ -269,6 +340,22 @@ while [[ $# -gt 0 ]]; do
     CFG_FILE="${2:-}"
     shift 2
     ;;
+  --vendor-url)
+    VENDOR_URL="${2:-}"
+    shift 2
+    ;;
+  --vendor-subpath)
+    VENDOR_SUBPATH="${2:-}"
+    shift 2
+    ;;
+  --vendor-root)
+    VENDOR_ROOT="${2:-}"
+    shift 2
+    ;;
+  --vendor-branch)
+    VENDOR_BRANCH="${2:-}"
+    shift 2
+    ;;
   --dry-run)
     DRY_RUN=1
     shift
@@ -281,10 +368,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# infer DEV_ROOT from current dir
-if [[ -z "${DEV_ROOT}" ]]; then
-  git rev-parse --show-toplevel >/dev/null 2>&1 || die "Run this from inside a skill dev git repo."
-  DEV_ROOT="$(git rev-parse --show-toplevel)"
+# ==============================================================================
+# Vendor mode validation
+# ==============================================================================
+# --vendor-url and --vendor-subpath must be provided together, and must NOT
+# be combined with --pkg-dir or the .skills auto-discovery path.
+if [[ -n "${VENDOR_URL}" || -n "${VENDOR_SUBPATH}" ]]; then
+  if [[ -z "${VENDOR_URL}" || -z "${VENDOR_SUBPATH}" ]]; then
+    die "--vendor-url and --vendor-subpath must be provided together."
+  fi
+  if [[ -n "${PKG_DIR}" ]]; then
+    die "--vendor-url cannot be combined with --pkg-dir."
+  fi
+  VENDOR_MODE=1
+fi
+
+# infer DEV_ROOT from current dir (only required in local mode)
+if [[ "${VENDOR_MODE}" != "1" ]]; then
+  if [[ -z "${DEV_ROOT}" ]]; then
+    git rev-parse --show-toplevel >/dev/null 2>&1 || die "Run this from inside a skill dev git repo."
+    DEV_ROOT="$(git rev-parse --show-toplevel)"
+  fi
 fi
 
 # load config default
@@ -300,9 +404,8 @@ AGG_SKILLS_DIR="${AGG_SKILLS_DIR:-skills}"
 SKILL_BRANCH_PREFIX="${SKILL_BRANCH_PREFIX:-skill/}"
 AGG_WT="${AGG_WT:-${AGG_WT_DEFAULT}}"
 AGG_URL="${AGG_URL:-${AGG_URL_DEFAULT}}"
-
-# verify aggregator repo
-git -C "${AGG_WT}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "AGG_WT is not a git repo: ${AGG_WT}"
+VENDOR_ROOT="${VENDOR_ROOT:-${VENDOR_ROOT_DEFAULT}}"
+VENDOR_BRANCH="${VENDOR_BRANCH:-main}"
 
 LOCAL_ORIGIN="$(git -C "${AGG_WT}" remote get-url origin 2>/dev/null || true)"
 [[ -n "${LOCAL_ORIGIN}" ]] || die "Aggregator has no origin remote: ${AGG_WT}"
@@ -314,11 +417,48 @@ if [[ "$(normalize_git_url "${AGG_URL}")" != "$(normalize_git_url "${LOCAL_ORIGI
 fi
 
 # ==============================================================================
-# Package discovery
+# Vendor submodule setup (vendor mode only)
+# ==============================================================================
+if [[ "${VENDOR_MODE}" == "1" ]]; then
+  # parse URL -> owner / repo
+  IFS=$'\t' read -r VENDOR_OWNER VENDOR_REPO < <(parse_github_url "${VENDOR_URL}")
+  export VENDOR_OWNER VENDOR_REPO
+
+  # refuse .skills file in vendor mode (explicit)
+  if [[ -f "${DEV_ROOT:-/nonexistent}/.skills" ]]; then
+    die "(vendor mode) .skills file is not supported together with --vendor-url."
+  fi
+
+  # add / refresh vendor submodule
+  ensure_vendor_submodule "${VENDOR_OWNER}" "${VENDOR_REPO}"
+
+  # redirect package path to vendor subdir
+  PKG_PATH="${VENDOR_PATH}/${VENDOR_SUBPATH}"
+  [[ -d "${PKG_PATH}" ]] || die "Vendor subpath not found: ${PKG_PATH}"
+  [[ -f "${PKG_PATH}/SKILL.md" ]] || die "SKILL.md not found under vendor subpath: ${PKG_PATH}"
+
+  # single-package mode: PKG_DIRS only contains the subpath, but PKG_PATH is
+  # already an absolute path under AGG_WT. The local-mode DEV_ROOT-based
+  # validation step below must be skipped.
+  PKG_DIRS=("${VENDOR_SUBPATH}")
+  PKG_DIR="${VENDOR_SUBPATH}"
+  export PKG_DIRS PKG_DIR PKG_PATH
+
+  # Note: aggregator worktree dirty / fetch / submodule-gitlink checks below
+  # still apply; they protect against corrupting AGG_WT state. VENDOR_PATH
+  # itself is a separate submodule, so the gitlink check on
+  # AGG_SKILL_DIR_REL (skills/<skill>) is unaffected.
+fi
+
+# ==============================================================================
+# Package discovery (local mode only)
 # ==============================================================================
 PKG_DIRS=()
 
-if [[ -n "${PKG_DIR}" ]]; then
+if [[ "${VENDOR_MODE}" == "1" ]]; then
+  # PKG_DIRS / PKG_DIR / PKG_PATH already set in the vendor setup block above.
+  PKG_DIRS=("${VENDOR_SUBPATH}")
+elif [[ -n "${PKG_DIR}" ]]; then
   # --pkg-dir explicitly provided, single package mode
   PKG_DIRS=("${PKG_DIR}")
 else
@@ -353,20 +493,24 @@ else
   fi
 fi
 
-# Validate all discovered package dirs
-for pkg in "${PKG_DIRS[@]}"; do
-  [[ -d "${DEV_ROOT}/${pkg}" ]] || die "Package dir not found: ${DEV_ROOT}/${pkg}"
-  [[ -f "${DEV_ROOT}/${pkg}/SKILL.md" ]] || die "SKILL.md not found in: ${DEV_ROOT}/${pkg}"
-done
+# Validate all discovered package dirs (local mode only)
+if [[ "${VENDOR_MODE}" != "1" ]]; then
+  for pkg in "${PKG_DIRS[@]}"; do
+    [[ -d "${DEV_ROOT}/${pkg}" ]] || die "Package dir not found: ${DEV_ROOT}/${pkg}"
+    [[ -f "${DEV_ROOT}/${pkg}/SKILL.md" ]] || die "SKILL.md not found in: ${DEV_ROOT}/${pkg}"
+  done
+fi
 
 # ==============================================================================
 # Publish each package
 # ==============================================================================
 for PKG_DIR in "${PKG_DIRS[@]}"; do
 
-PKG_PATH="${DEV_ROOT}/${PKG_DIR}"
-
-# infer SKILL from frontmatter name: (supports " and ', uses \047 for ')
+# In vendor mode PKG_PATH was set in the vendor setup block above; in
+# local mode it's derived from DEV_ROOT + PKG_DIR here.
+if [[ "${VENDOR_MODE}" != "1" ]]; then
+  PKG_PATH="${DEV_ROOT}/${PKG_DIR}"
+fi
 if [[ "${SKILL_EXPLICIT}" != "1" ]]; then
   SKILL="$(awk '
     BEGIN{in_fm=0}
@@ -427,8 +571,11 @@ if git -C "${AGG_WT}" show-ref --verify --quiet "refs/heads/${SKILL_BRANCH}"; th
     die "Local ${SKILL_BRANCH} exists but origin/${SKILL_BRANCH} does not. Push/delete it first, then retry."
   fi
 fi
-
-# refuse if target path is submodule
+# refuse if target path is a submodule.
+# Note: in vendor mode, AGG_SKILL_DIR_REL is skills/<skill>, which is a
+# plain directory we control; the vendor submodule lives under
+# VENDOR_ROOT/<repo> and never overlaps this path. The check therefore
+# remains correct in both modes.
 if git -C "${AGG_WT}" ls-files --stage -- "${AGG_SKILL_DIR_REL}" | awk '{print $1}' | grep -q "^160000$"; then
   die "${AGG_SKILL_DIR_REL} is a submodule (gitlink). Convert it to a normal directory first."
 fi
@@ -445,11 +592,19 @@ LIST_REL="${TMPDIR}/files_rel.txt"
 LIST_FINAL="${TMPDIR}/files_final.txt"
 TARFILE="${TMPDIR}/pkg.tar"
 
-git -C "${DEV_ROOT}" ls-files -c -o --exclude-standard -- "${PKG_DIR}" >"${LIST_RAW}"
-[[ -s "${LIST_RAW}" ]] || die "No publishable files found under ${PKG_DIR}."
-
-sed "s#^${PKG_DIR}/##" "${LIST_RAW}" >"${LIST_REL}"
-
+if [[ "${VENDOR_MODE}" == "1" ]]; then
+  # Vendor mode: enumerate files directly. Vendor content is not tracked by
+  # AGG_WT's git (it's a submodule), so `git ls-files` won't see it. We must
+  # also exclude any nested .git directory (the vendor submodule's own meta).
+  find "${PKG_PATH}" -mindepth 1 -maxdepth 5 -type f -not -path '*/.git/*' \
+    | sed "s#^${PKG_PATH}/##" \
+    > "${LIST_REL}"
+else
+  git -C "${DEV_ROOT}" ls-files -c -o --exclude-standard -- "${PKG_DIR}" >"${LIST_RAW}"
+  [[ -s "${LIST_RAW}" ]] || die "No publishable files found under ${PKG_DIR}."
+  sed "s#^${PKG_DIR}/##" "${LIST_RAW}" >"${LIST_REL}"
+fi
+[[ -s "${LIST_REL}" ]] || die "No publishable files found under ${PKG_PATH}."
 if [[ -n "${EXCLUDES}" ]]; then
   awk -v ex="${EXCLUDES}" '
     BEGIN{
@@ -473,11 +628,18 @@ fi
 [[ -s "${LIST_FINAL}" ]] || die "After EXCLUDES filtering, nothing left to publish."
 
 # ==============================================================================
-# DRY-RUN: no side effects
-# ==============================================================================
 if [[ "${DRY_RUN}" == "1" ]]; then
   log "DRY RUN plan:"
-  echo "  - Files to publish: $(wc -l <"${LIST_FINAL}")" >&2
+  if [[ "${VENDOR_MODE}" == "1" ]]; then
+    echo "  - Vendor mode: would ensure submodule ${VENDOR_REL} (https://github.com/${VENDOR_OWNER}/${VENDOR_REPO}.git)" >&2
+    echo "  - Would read files from ${PKG_PATH}" >&2
+    echo "  - Files to publish: $(wc -l <"${LIST_FINAL}")" >&2
+    if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
+      echo "  - Would write/annotate ${AGG_SKILL_DIR_REL}/README.md with source URL" >&2
+    fi
+  else
+    echo "  - Files to publish: $(wc -l <"${LIST_FINAL}")" >&2
+  fi
   if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
     echo "  - Would update ${AGG_MAIN}:${AGG_SKILL_DIR_REL} in-place in AGG_WT and push origin/${AGG_MAIN}" >&2
   fi
@@ -486,7 +648,6 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   fi
   exit 0
 fi
-
 # create tarball
 (cd "${PKG_PATH}" && tar -cf "${TARFILE}" -T "${LIST_FINAL}")
 
@@ -497,6 +658,31 @@ if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
   mkdir -p "${AGG_WT}/${AGG_SKILL_DIR_REL}"
   clear_dir_contents "${AGG_WT}/${AGG_SKILL_DIR_REL}"
   tar -xf "${TARFILE}" -C "${AGG_WT}/${AGG_SKILL_DIR_REL}"
+  if [[ "${VENDOR_MODE}" == "1" ]]; then
+    # Compose provenance README for the published skill on AGG main.
+    # Source URL: <vendor_url>/tree/<vendor_branch>/<vendor_subpath>
+    vendor_branch_eff="${VENDOR_BRANCH}"
+    vendor_source_url="${VENDOR_URL}/tree/${vendor_branch_eff}/${VENDOR_SUBPATH}"
+    readme_target="${AGG_WT}/${AGG_SKILL_DIR_REL}/README.md"
+    prefix_line="> 来源: ${vendor_source_url}"
+    if [[ -f "${readme_target}" ]]; then
+      # Prepend blockquote line in-place (idempotent: avoid stacking on re-run).
+      if ! head -n 1 "${readme_target}" | grep -qF "$(printf '%s' "${prefix_line}" | sed 's/^> //')"; then
+        tmp_pre="${readme_target}.prepend"
+        {
+          printf '%s\n\n' "${prefix_line}"
+          cat "${readme_target}"
+        } > "${tmp_pre}"
+        mv "${tmp_pre}" "${readme_target}"
+      fi
+    else
+      {
+        printf '# %s\n\n' "${SKILL}"
+        printf '来源: %s\n\n' "${vendor_source_url}"
+        printf '本目录内容通过 git submodule %s 同步。\n' "${VENDOR_REL}"
+      } > "${readme_target}"
+    fi
+  fi
 
   git -C "${AGG_WT}" add "${AGG_SKILL_DIR_REL}"
   if ! git -C "${AGG_WT}" diff --cached --quiet; then
