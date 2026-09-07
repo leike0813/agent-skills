@@ -531,7 +531,7 @@ Runtime tables and sidecars used by this stage:
 - `reference_items`: persisted normalized references.
 - `reference_metadata_evidence_workset`: local metadata evidence review aid.
 
-Public `references.json` is rendered from `reference_items`. It contains bibliographic fields and renderer-owned `ref_index`, but not parse/debug fields. The agent never edits it directly. Parse candidate audit lives in `.literature_analysis_tmp/reference_parse_audit.json`.
+Public `references.json` is rendered from `reference_items` as a `source_reference_artifact.v1` object. Each row carries an opaque `sourceReferenceId`, extraction `{raw, confidence}`, bibliography fields, and matching fields; parse/debug fields stay out of the artifact. The agent never edits it directly. Parse candidate audit lives in `.literature_analysis_tmp/reference_parse_audit.json`.
 
 ## Examples
 

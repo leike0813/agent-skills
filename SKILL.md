@@ -119,7 +119,7 @@ Allowed reasons to skip a delegation point are limited to: no subagent capabilit
 输出路径规则：
 
 - stdout JSON 中公开产物路径必须是绝对路径。
-- `citation_analysis.md` 内容必须与 `citation_analysis.json.report_md` 完全一致。
+- `citation_analysis.md` 是从 Citation DB 内容派生的报告；`citation_analysis.json` 只保存 canonical Citation artifact，不嵌入 `report_md`。
 - 最终结果 JSON 同步镜像写入 runtime DB 固化的 result JSON path。
 - 失败时仍返回 schema-compatible JSON；路径字段为空字符串，`error` 填入 `{code, message}`。
 
@@ -812,7 +812,7 @@ Do not write DB, run runtime commands, or submit payloads.
   - LaTeX `\cite{...}`、`\citep{...}`、`\citet{...}` 多 key 映射由 preprocess 完成。
   - BibTeX/alpha 风格 bracket labels（如 `[RNSS18]`、`[DGV+18]`、`[YDY+19]`、`[Fou]`）由 runtime 从正文和 references 自动映射；agent 不在 semantic payload 中填写 label 字段。
   - 图片链接、URL、资源路径、日期型字符串等假阳性应由 preprocess 过滤并计入 `citation_false_positive_filtered`。
-  - 模糊 mention 进入 `unmapped_mentions`，不得硬猜。
+  - 模糊 mention 进入 canonical Citation 的 `unresolved`，不得硬猜。
   - Web/resource 型 reference 可以缺 authors/year；这会产生 warning 但不阻断。`publication_year=null` 的引用不会进入 runtime 自动时间线分桶，可能产生 `citation_timeline_missing_year` warning。
 - 完整 payload 示例：
 ```json
@@ -871,7 +871,7 @@ python scripts/run_analysis.py finalize_outputs --db-path "<db_path>"
   - 缺 `literature_score`：回到 `persist_literature_score`。
   - 缺 `reference_items`：回到 `persist_references` 或确认 reference-free mode。
   - 缺 `citation_timeline` / `citation_summary`：回到 `persist_citation_analysis`。
-  - `citation_analysis_report_path` 内容与 `citation_analysis.json.report_md` 不一致：不要手改产物，重新 finalize。
+  - `citation_analysis_report_path` 缺失或为空：不要手改产物，重新 finalize 生成派生报告。
 
 ## 阶段性最低输出约束
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1409,6 +1410,12 @@ def store_reference_items(connection: sqlite3.Connection, items: list[dict[str, 
         for key, value in item.items():
             if key not in {"ref_index", "author", "title", "year", "raw", "confidence", "metadata"}:
                 metadata[key] = value
+        explicit_id = item.get("sourceReferenceId")
+        if not isinstance(explicit_id, str) or not explicit_id.strip():
+            explicit_id = metadata.get("sourceReferenceId")
+        if not isinstance(explicit_id, str) or not explicit_id.strip():
+            explicit_id = str(uuid.uuid4())
+        metadata["sourceReferenceId"] = explicit_id
         connection.execute(
             """
             INSERT INTO reference_items (
@@ -1447,6 +1454,35 @@ def fetch_reference_items(connection: sqlite3.Connection) -> list[dict[str, Any]
             }
         )
         items.append(item)
+    return items
+
+
+def _ensure_reference_source_ids(
+    connection: sqlite3.Connection,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Materialize opaque IDs for rows written before the canonical contract."""
+    changed = False
+    now = utc_now_iso()
+    for item in items:
+        source_id = item.get("sourceReferenceId")
+        if isinstance(source_id, str) and source_id.strip():
+            continue
+        source_id = str(uuid.uuid4())
+        item["sourceReferenceId"] = source_id
+        metadata = {
+            key: value
+            for key, value in item.items()
+            if key not in {"ref_index", "author", "title", "year", "raw", "confidence"}
+        }
+        metadata["sourceReferenceId"] = source_id
+        connection.execute(
+            "UPDATE reference_items SET metadata_json = ?, updated_at = ? WHERE ref_index = ?",
+            (_json_dump(metadata), now, int(item["ref_index"])),
+        )
+        changed = True
+    if changed:
+        touch_runtime(connection)
     return items
 
 
@@ -2132,8 +2168,98 @@ def _public_reference_item(item: dict[str, Any]) -> dict[str, Any]:
     return public_item
 
 
+_CANONICAL_CITATION_FUNCTIONS = {
+    "background",
+    "baseline",
+    "contrast",
+    "component",
+    "dataset",
+    "tooling",
+    "historical",
+    "uncategorized",
+}
+
+
+def _reference_value(item: dict[str, Any], field: str, default: Any = None) -> Any:
+    if field in item:
+        return item[field]
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict) and field in metadata:
+        return metadata[field]
+    return default
+
+
+def _canonical_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _canonical_optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _canonical_source_reference(item: dict[str, Any]) -> dict[str, Any]:
+    raw = item.get("raw")
+    confidence = item.get("confidence")
+    extraction = None
+    if raw is not None or confidence is not None:
+        extraction = {
+            "raw": "" if raw is None else str(raw),
+            "confidence": float(confidence) if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) else None,
+        }
+    bibliography: dict[str, Any] = {
+        "title": "" if item.get("title") is None else str(item.get("title", "")),
+        "authors": [str(author) for author in item.get("author", [])] if isinstance(item.get("author"), list) else [],
+        "year": _canonical_optional_int(item.get("year")),
+    }
+    for field in (
+        "publicationTitle",
+        "conferenceName",
+        "university",
+        "archiveID",
+        "volume",
+        "issue",
+        "pages",
+        "place",
+        "publisher",
+        "itemType",
+        "date",
+    ):
+        value = _reference_value(item, field)
+        if value is not None and value != "":
+            bibliography[field] = str(value)
+    num_pages = _canonical_optional_int(_reference_value(item, "numPages"))
+    if num_pages is not None and num_pages >= 0:
+        bibliography["numPages"] = num_pages
+
+    matching: dict[str, Any] = {}
+    for field in ("DOI", "url", "ISBN", "ISSN", "citekey"):
+        value = _reference_value(item, field)
+        if value is not None and value != "":
+            matching[field] = str(value)
+    return {
+        "sourceReferenceId": str(item["sourceReferenceId"]),
+        "extraction": extraction,
+        "bibliography": bibliography,
+        "matching": matching,
+    }
+
+
 def build_references_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
-    return {"items": [_public_reference_item(item) for item in fetch_reference_items(connection)]}
+    items = _ensure_reference_source_ids(connection, fetch_reference_items(connection))
+    return {
+        "source_reference_artifact": {
+            "schema": "source_reference_artifact.v1",
+            "references": [_canonical_source_reference(item) for item in items],
+        }
+    }
 
 
 def build_reference_parse_audit_context(connection: sqlite3.Connection) -> dict[str, Any]:
@@ -2288,7 +2414,109 @@ def build_citation_report_render_context(connection: sqlite3.Connection) -> dict
 
 
 def build_citation_render_context(connection: sqlite3.Connection, report_md: str) -> dict[str, Any]:
-    return {"citation_analysis": fetch_citation_payload(connection, report_md=report_md)}
+    del report_md
+    payload = fetch_citation_payload(connection, report_md="")
+    reference_items = _ensure_reference_source_ids(connection, fetch_reference_items(connection))
+    source_ids_by_index = {
+        int(item["ref_index"]): str(item["sourceReferenceId"])
+        for item in reference_items
+        if isinstance(item.get("sourceReferenceId"), str) and item["sourceReferenceId"]
+    }
+
+    def canonical_mention(mention: Any, *, unresolved: bool = False) -> dict[str, Any]:
+        value = dict(mention) if isinstance(mention, dict) else {}
+
+        def optional_string(key: str) -> str | None:
+            return _canonical_optional_string(value.get(key))
+
+        def optional_int(key: str) -> int | None:
+            return _canonical_optional_int(value.get(key))
+
+        result: dict[str, Any] = {
+            "mention_id": str(value.get("mention_id", "")),
+            "marker": optional_string("marker"),
+            "style": optional_string("style"),
+            "line_start": optional_int("line_start"),
+            "line_end": optional_int("line_end"),
+            "snippet": optional_string("snippet"),
+            "ref_number_hint": optional_int("ref_number_hint"),
+            "year_hint": optional_int("year_hint"),
+            "surname_hint": optional_string("surname_hint"),
+            "citation_label_hint": optional_string("citation_label_hint"),
+            "citekey_hint": optional_string("citekey_hint"),
+        }
+        if unresolved:
+            result["reason"] = optional_string("reason")
+        return result
+
+    def source_ids_for_timeline(bucket: Any) -> list[str]:
+        bucket_obj = dict(bucket) if isinstance(bucket, dict) else {}
+        indexes = bucket_obj.get("ref_indexes", [])
+        if not isinstance(indexes, list):
+            return []
+        return [source_ids_by_index[int(index)] for index in indexes if isinstance(index, int) and int(index) in source_ids_by_index]
+
+    timeline: dict[str, Any] = {}
+    source_timeline = payload.get("timeline", {})
+    for bucket_name in ("early", "mid", "recent"):
+        bucket = source_timeline.get(bucket_name, {}) if isinstance(source_timeline, dict) else {}
+        bucket_obj = dict(bucket) if isinstance(bucket, dict) else {}
+        timeline[bucket_name] = {
+            "summary": str(bucket_obj.get("summary", "")),
+            "sourceReferenceIds": source_ids_for_timeline(bucket),
+        }
+
+    citation_items: list[dict[str, Any]] = []
+    for item in payload.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        ref_index = item.get("ref_index")
+        if not isinstance(ref_index, int) or ref_index not in source_ids_by_index:
+            continue
+        function = str(item.get("function", "")).strip().lower()
+        if function not in _CANONICAL_CITATION_FUNCTIONS:
+            function = "uncategorized"
+        citation_items.append(
+            {
+                "sourceReferenceId": source_ids_by_index[ref_index],
+                "function": function,
+                "role_in_context": _canonical_optional_string(item.get("role_in_context")),
+                "topic": _canonical_optional_string(item.get("topic")),
+                "usage": _canonical_optional_string(item.get("usage")),
+                "keywords": [str(keyword) for keyword in item.get("keywords", [])] if isinstance(item.get("keywords"), list) else [],
+                "summary": _canonical_optional_string(item.get("summary")),
+                "key_reference_reason": _canonical_optional_string(item.get("key_reference_reason")),
+                "confidence": float(item["confidence"]) if isinstance(item.get("confidence"), (int, float)) and not isinstance(item.get("confidence"), bool) else None,
+                "mentions": [canonical_mention(mention) for mention in item.get("mentions", []) if isinstance(mention, dict)],
+            }
+        )
+
+    scope_decision = dict(payload.get("meta", {}).get("scope_decision", {})) if isinstance(payload.get("meta"), dict) else {}
+    fallback_from = scope_decision.get("fallback_from")
+    if not isinstance(fallback_from, dict):
+        fallback_from = None
+    citation_meta = dict(payload.get("meta", {}))
+    citation_meta["scope_decision"] = {
+        "selection_reason": _canonical_optional_string(scope_decision.get("selection_reason")),
+        "covered_sections": [str(section) for section in scope_decision.get("covered_sections", [])] if isinstance(scope_decision.get("covered_sections"), list) else [],
+        "fallback_from": fallback_from,
+        "fallback_reason": _canonical_optional_string(scope_decision.get("fallback_reason")),
+    }
+    citation_meta.pop("report_md", None)
+
+    artifact = {
+        "schema": "citation_analysis_artifact.v1",
+        "meta": citation_meta,
+        "summary": str(payload.get("summary", "")),
+        "timeline": timeline,
+        "items": citation_items,
+        "unresolved": [
+            canonical_mention(mention, unresolved=True)
+            for mention in payload.get("unmapped_mentions", [])
+            if isinstance(mention, dict)
+        ],
+    }
+    return {"citation_analysis": artifact}
 
 
 def build_literature_matching_metadata_render_context(connection: sqlite3.Connection) -> dict[str, Any]:

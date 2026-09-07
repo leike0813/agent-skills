@@ -51,8 +51,8 @@ Formal render truth:
 - `citation_analysis.json.summary` derives from `citation_summary`.
 - `citation_analysis.json.timeline` derives from `citation_timeline`.
 - `citation_analysis.json.items` derives from `citation_workset_items + citation_items`.
-- `citation_analysis.json.report_md` derives from citation summary/timeline/items/unmapped/scope.
-- `citation_analysis.md` must exactly equal `citation_analysis.json.report_md`.
+- `citation_analysis.json.unresolved` derives from citation unmapped mention evidence.
+- `citation_analysis.md` derives from citation summary/timeline/items/unresolved/scope and is kept as a separate report artifact.
 - `literature_matching_metadata.json` derives from DB `literature_matching_metadata`.
 - `literature_score.json` derives from DB `literature_score` and the persisted scoring rubric/template snapshot.
 - `representative_image` is optional stdout metadata from digest stage; it is not a public artifact.
@@ -225,11 +225,11 @@ Before considering the run successful:
 - stdout is exactly one JSON object.
 - All public artifact paths are absolute.
 - Fixed filenames are used.
-- `citation_analysis.md` equals `citation_analysis.json.report_md`.
+- `citation_analysis.md` is a non-empty derived report when `citation_analysis_report_path` is present.
 - `literature_matching_metadata.json.schema` is `literature_matching_metadata.v1`.
 - `literature_score.json` contains all six dimensions plus `overall_score`, `confidence`, and `confidence_adjusted_score`.
-- `references.json` is a JSON array with required fields.
-- `citation_analysis.json` has `meta`, `summary`, `timeline`, `items`, `unmapped_mentions`, and `report_md`.
+- `references.json` is a `source_reference_artifact.v1` object with `references` rows.
+- `citation_analysis.json` is a `citation_analysis_artifact.v1` object with `meta`, `summary`, `timeline`, `items`, and `unresolved`.
 - result mirror at `result_json_path` matches stdout.
 - warnings are non-fatal and auditable.
 - `error` is `null` on success and structured on failure.
