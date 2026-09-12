@@ -4,11 +4,12 @@ Only this module knows the on-disk rollout format. The CLIs (search.py,
 parse.py) must not duplicate any of it.
 
 Every claim about the format below was verified against the real corpus
-(2095 files, cli 0.71.0 -> 0.153.4); see references/rollout-schema.md.
+(2103 files, cli 0.71.0 -> 0.153.4); see references/rollout-schema.md.
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import mmap
 import os
@@ -198,6 +199,7 @@ def meta_summary(meta: Dict[str, Any]) -> Dict[str, Any]:
         "cwd": meta.get("cwd"),
         "originator": meta.get("originator"),
         "cli_version": meta.get("cli_version"),
+        "timestamp": meta.get("timestamp"),
         "git": {"branch": git.get("branch"), "commit_hash": git.get("commit_hash")},
         "forked_from_id": meta.get("forked_from_id"),
     }
@@ -644,7 +646,9 @@ def extract_turn_events(path: str, opts: Optional[Dict[str, Any]] = None) -> Tup
         "git": meta.get("git") or {"branch": None, "commit_hash": None},
         "model": None,
         "effort": None,
-        "start": None,
+        # Creation time, not the first record: a session's own rollout can open
+        # with injected context minutes before the first turn is written.
+        "start": meta.get("timestamp"),
         "end": None,
         "turns": 0,
         "human_messages": 0,
@@ -933,6 +937,174 @@ DEFAULT_LIMITS = {
 
 ACTION_CAP = 40
 COMMAND_DISPLAY_CAP = 300
+
+# Brief layout: one compact digest per session, used when harvesting a whole
+# workspace. The ladder is tried in order and the first tier that fits the
+# budget wins (verified: all 846 user sessions in the corpus fit <= 12000).
+BRIEF_LIMITS = {"max_total_chars": 12000}
+
+# (user_cap, final_cap, file_lines, plan_lines, fail_lines)
+BRIEF_LADDER = [
+    (400, 700, 40, 6, 12),
+    (300, 500, 30, 5, 10),
+    (200, 350, 20, 4, 8),
+    (140, 240, 14, 3, 6),
+    (90, 160, 10, 2, 4),
+    (60, 100, 6, 1, 3),
+]
+
+BRIEF_PLAN_CAP = 300
+BRIEF_FAIL_COMMAND_CAP = 120
+
+
+def format_duration_secs(sec: Optional[int]) -> Optional[str]:
+    """Compact duration text; None for non-positive/unknown input."""
+    if sec is None or sec <= 0:
+        return None
+    if sec >= 86400:
+        d, h = divmod(sec // 3600, 24)
+        return ("%dd%dh" % (d, h)) if h else ("%dd" % d)
+    if sec >= 3600:
+        h, m = divmod(sec // 60, 60)
+        return ("%dh%02dm" % (h, m)) if m else ("%dh" % h)
+    if sec >= 60:
+        m, s = divmod(sec, 60)
+        return ("%dm%02ds" % (m, s)) if s else ("%dm" % m)
+    return "%ds" % sec
+
+
+def format_duration(start: Optional[str], end: Optional[str]) -> Optional[str]:
+    """Duration between two rollout ISO8601 timestamps."""
+    if not start or not end:
+        return None
+    try:
+        begin = datetime.datetime.fromisoformat(start.replace("Z", "+00:00"))
+        finish = datetime.datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return format_duration_secs(int((finish - begin).total_seconds()))
+
+
+def _brief_text(text: Any, cap: int) -> str:
+    """Collapse to a single line, then clip. Brief keeps lines terse."""
+    flat = " ".join((text or "").split())
+    if len(flat) > cap:
+        return flat[:cap] + "\u2026"
+    return flat
+
+
+def _brief_body(turns: List[Dict[str, Any]], stats: Dict[str, Any], user_cap: int,
+                final_cap: int, file_lines: int, plan_lines: int, fail_lines: int,
+                omitted: int) -> str:
+    lines: List[str] = []
+    lines.append("# Rollout %s" % (str(stats.get("thread_id") or "?")[:8]))
+    lines.append("")
+    if omitted > 0:
+        lines.append("- omitted: %d middle turns for budget" % omitted)
+    lines.append("- cwd: %s" % (stats.get("cwd") or "?"))
+    lines.append("- model: %s | cli: %s | originator: %s" % (
+        stats.get("model") or "?", stats.get("cli_version") or "?", stats.get("originator") or "?"))
+    lines.append("- span: %s -> %s | duration: %s" % (
+        stats.get("start") or "?", stats.get("end") or "?",
+        format_duration(stats.get("start"), stats.get("end")) or "?"))
+    lines.append("- turns: %d | human: %d | commands: %d | failed: %d | files: %d" % (
+        stats.get("turns") or 0, stats.get("human_messages") or 0, stats.get("commands") or 0,
+        stats.get("commands_failed") or 0, stats.get("files_changed") or 0))
+    lines.append("")
+
+    lines.append("## User requests")
+    for turn in turns:
+        for text in turn["user_blocks"]:
+            lines.append("- [%d] %s" % (turn["index"], _brief_text(text, user_cap)))
+
+    lines.append("")
+    lines.append("## Final answers")
+    for turn in turns:
+        for block in turn["assistant_blocks"]:
+            if block["kind"] == "final":
+                lines.append("- [%d] %s" % (turn["index"], _brief_text(block["text"], final_cap)))
+
+    plans = [(turn["index"], plan) for turn in turns for plan in turn["plans"]]
+    if plans:
+        lines.append("")
+        lines.append("## Plans")
+        for index, plan in plans[:plan_lines]:
+            lines.append("- [%d] %s" % (index, _brief_text(plan, BRIEF_PLAN_CAP)))
+        if len(plans) > plan_lines:
+            lines.append("- \u2026(+%d more)" % (len(plans) - plan_lines))
+
+    changes = []
+    seen = set()
+    for turn in turns:
+        for change in turn["file_changes"]:
+            key = (change.get("action"), change.get("path"))
+            if key in seen:
+                continue
+            seen.add(key)
+            changes.append(change)
+    if changes:
+        lines.append("")
+        lines.append("## Files changed")
+        for change in changes[:file_lines]:
+            lines.append("- %s %s" % (change.get("action", "M"), change.get("path", "?")))
+        if len(changes) > file_lines:
+            lines.append("- \u2026(+%d more)" % (len(changes) - file_lines))
+
+    failures = [c for turn in turns for c in turn["commands"]
+                if isinstance(c.get("exit_code"), int) and c["exit_code"] != 0]
+    if failures:
+        lines.append("")
+        lines.append("## Failed commands")
+        for command in failures[:fail_lines]:
+            lines.append("- `%s` -> exit %s" % (
+                _brief_text(command.get("command") or "?", BRIEF_FAIL_COMMAND_CAP), command["exit_code"]))
+        if len(failures) > fail_lines:
+            lines.append("- \u2026(+%d more)" % (len(failures) - fail_lines))
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_brief(turns: List[Dict[str, Any]], stats: Dict[str, Any],
+                 opts: Optional[Dict[str, Any]] = None) -> str:
+    """Compact single-session digest for workspace-wide harvesting.
+
+    Tries BRIEF_LADDER top-down; if no tier fits, keeps the newest turns and
+    records how many middle turns were dropped.
+    """
+    opts = dict(opts or {})
+    budget = int(opts.get("max_total_chars", BRIEF_LIMITS["max_total_chars"]))
+    truncated = False
+    tier = 0
+    text = ""
+    for tier, (user_cap, final_cap, file_lines, plan_lines, fail_lines) in enumerate(BRIEF_LADDER):
+        text = _brief_body(turns, stats, user_cap, final_cap, file_lines, plan_lines, fail_lines, 0)
+        if len(text) <= budget:
+            break
+    else:
+        tier = len(BRIEF_LADDER)
+        user_cap, final_cap, file_lines, plan_lines, fail_lines = BRIEF_LADDER[-1]
+        keep = len(turns)
+        omitted = 0
+        for _ in range(14):
+            keep = max(1, min(keep, len(turns) - 1))
+            subset = [turns[0]] + turns[len(turns) - keep:] if len(turns) > 1 else turns
+            omitted = len(turns) - len(subset)
+            text = _brief_body(subset, stats, user_cap, final_cap, file_lines, plan_lines,
+                               fail_lines, omitted)
+            if len(text) <= budget:
+                break
+            if keep == 1:
+                break
+            keep = max(1, int(keep * budget / max(len(text), 1) * 0.9))
+        truncated = True
+
+    stats["layout"] = "brief"
+    stats["emitted_chars"] = len(text)
+    stats["budget_chars"] = budget
+    stats["brief_tier"] = tier
+    stats["truncated"] = bool(stats.get("truncated")) or truncated
+    stats["omitted_turns"] = stats.get("omitted_turns", 0) or (omitted if tier == len(BRIEF_LADDER) else 0)
+    return text
 
 
 def _clip(text: str, cap: Optional[int]) -> Tuple[str, bool]:

@@ -1,6 +1,6 @@
 # Codex rollout 文件结构
 
-排障用参考。文中所有 schema 断言均来自对本机 `~/.codex/sessions` 全库（2095 个文件、7.69 GB、cli 0.71.0 → 0.153.4）的实际扫描。
+排障用参考。文中所有 schema 断言均来自对本机 `~/.codex/sessions` 全库（2103 个文件、7.3 GB、cli 0.71.0 → 0.153.4）的实际扫描。
 
 ## 1. 文件布局与命名
 
@@ -45,8 +45,45 @@ $CODEX_HOME/session_index.jsonl                                        # thread_
 
 两个专有名词：
 
-- **双 meta 文件**（195/2095）：ordinal 0 是自身，ordinal 1 是父线程快照（`meta2.id == meta1.parent_thread_id`）。**身份只取 ordinal 0。**
-- **`thread_source` 可能缺失**：实测 84 个用户线程文件该字段为 null，因此子代理判定必须同时看 `source.subagent` 与 `parent_thread_id`。
+- **双 meta 文件**（195 个）：ordinal 0 是自身，ordinal 1 是父线程快照（`meta2.id == meta1.parent_thread_id`）。**身份只取 ordinal 0。**
+- **`thread_source` 可能缺失**：86 个文件的 ordinal 0 meta 该字段为 null，其中 84 个是真正的用户线程，另 2 个是子代理线程——**只看该字段会漏判这 2 个**。子代理判定必须同时看 `source.subagent` 与 `parent_thread_id`。
+
+### 会话对应哪个工作区
+
+**唯一权威字段是 `session_meta.cwd`**（取 `ordinal == 0` 那条），另有四类冗余信号可交叉印证：
+
+| 信号 | 路径 | 覆盖（全库 2103 文件） | 与 `cwd` 的关系 |
+|---|---|---|---|
+| 工作目录 | `session_meta.cwd` | 2103 / 2103 文件 | 权威值 |
+| 每轮环境快照 | `turn_context.cwd` | 2093 / 2093 文件 | 完全一致，单文件内不随轮次变化 |
+| 沙箱工作区 | `turn_context.workspace_roots[]` | 9749 条记录（9730 单元素 + 19 双元素） | 首元素恒等于 `cwd` |
+| 注入态回显 | `world_state.state.environments.environments.local.cwd` | 1976 / 1976 文件 | 完全一致 |
+| 沙箱根（同处） | `world_state.state.environments.filesystem` 内 `<workspace_roots><root>` | 1976 / 1976 文件 | 完全一致 |
+| AGENTS.md 定位 | `world_state.state.agents_md.directory` | 1882 文件 | 0 处与 `cwd` 不同 |
+| 仓库身份 | `session_meta.git.repository_url` / `branch` / `commit_hash` | 1756 / 1929 / 1930 文件 | 与 `cwd` 一一对应，0 处一对多 |
+
+注意 `world_state.state.environments` 是**嵌套结构**：其值是含 `environments` / `current_date` / `timezone` / `filesystem` 四个键的 dict，`cwd` 在内层 `environments.local.cwd`，不是 `state.environments.local.cwd`。
+
+```json
+"cwd": "/home/joshua/Workspace/Code/JavaScript/.orca/worktrees/zotero-agents/dev-workflows",
+"git": {"repository_url":"https://github.com/leike0813/zotero-agents",
+        "branch":"dev-workflows","commit_hash":"8a001bdce…"}
+```
+
+性质：
+
+- **`cwd` 必填且会话内唯一**：2103 / 2103 有值；852 个 `session_id` 全部只对应 1 个不重复 `cwd`（跨 27 个文件的长会话亦然）。
+- **子代理继承父线程 `cwd`**：1255 对父子文件，0 处不一致。
+- **`cwd` 是工作树路径，不是仓库根**：全库有两种 Orca 布局——`…/.orca/worktrees/<repo>/<branch>`（646 个文件）与 `…/.orca/<repo>/<变更名>`（154 个文件，如 `…/.orca/RiskFlow/c08-agent-runtime-fix`）。两种情况下 `git.branch` 都与路径尾段对应。要回答「哪个仓库」必须用 `git.repository_url`；`cwd` 回答的是「哪个工作树」。
+- **同一仓库可有多个工作树，`cwd` 是唯一区分依据**：实测 57 个带仓库信息的 `cwd` 全部只映射到 1 个 `repository_url`（0 处冲突），但反过来一个仓库对应多个 `cwd`：RiskFlow 有 34 个、zotero-agents 有 7 个（16 个仓库中仅 12 个只有单一工作树）。按项目聚合时 `git.repository_url` 是组键，`cwd` 是组内成员。
+- **`workspace_roots` 通常不提供额外信息**：双元素情形（19 条）的第二项是 Codex 自身目录 `~/.codex/visualizations/<日期>/<thread_id>`，不是用户工作区。
+
+四个陷阱：
+
+1. **`CommandExecution.cwd` 不是工作区**：它记录单条命令的执行目录。全库 824 个文件含该字段、925 个不同取值，其中 821 个等于会话 `cwd`，51 个嵌套在其下（子目录），53 个落在会话 `cwd` 之外（`/tmp`、`/home/joshua`、`.cc-switch/skills/…`，以及中文路径的 URL 百分号编码形态）。
+2. **12 个文件的 `cwd` 含未展开的字面 `~/`**：全部是 Orca + `vscode` originator 组合下的同一路径拼接错误，值恒为 `<仓库根>/~/Workspace/Code/JavaScript/.orca/zotero-agents/dev-agent-harness`。它不是合法路径（`os.path.isdir` 为 False），也不能靠截断 `~/` 之后的部分还原——`~/` 之后缺少 `worktrees/` 段。可靠还原方式：取 `(git.repository_url, git.branch)` 与同仓库同分支的非 `~` 文件比对，实测 12 个文件全部唯一还原为 `…/.orca/worktrees/zotero-agents/dev-agent-harness`（该仓库另有 6 个正常 cwd，故不能简单按仓库取唯一值）。
+3. **`git` 块不是必有，且三个字段不同步**：156 个文件完全无 `git` 块（`cwd` 落在非 git 目录，如 `/home/joshua`、`~/OneDrive/…`、`~/Documents`）；347 个无 `repository_url`、174 个无 `branch`、173 个无 `commit_hash`。缺失 `repository_url` **不代表没有远端**：`ResearchSpec`（161 个文件）与 `paper_humanizer`（9 个）本地都有 `origin` 远端，但其 rollout 只记了 `branch`。18 个有 `repository_url` 却无 `branch`（如 `RiskFlow` 17 个，detached 或无本地分支）。因此「属于哪个仓库」在缺字段时必须回落到 `cwd` 现场解析（`git -C <cwd> remote get-url origin`），不能从 rollout 推断。
+4. **别用 `CommandExecution` 或 `FileChange` 路径反推工作区**：前者是逐命令目录，后者是任意写入路径。
 
 ### response_item.message
 
@@ -110,7 +147,17 @@ $CODEX_HOME/session_index.jsonl                                        # thread_
 | 0.149+ | 出现 `SubAgentActivity` / `CollabAgentToolCall` item 与 `collaboration.*` 工具 |
 | 0.153+ | 出现 `token_usage_record`、`agent_message`、`inter_agent_communication_metadata` |
 
-按文件数分代：旧代（<0.144，130 个）／中代（0.144–0.151，1678 个）／新代（0.153+，287 个）。
+工作区信号同样随版本出现，取 `cwd` 的兜底顺序应据此选择：
+
+| cli | `session_meta.cwd` | `turn_context.workspace_roots` | `world_state.*` |
+|---|---|---|---|
+| ≤0.140.0-alpha.2 之前 | 有 | 无 | 无 |
+| 0.140.0-alpha.2 – 0.142.5 | 有 | 有 | 无 |
+| 0.144+ | 有 | 有 | 有（`environments` / `filesystem` / `agents_md`） |
+
+即：0.144 之前的 130 个文件只有 `session_meta.cwd` 与 `turn_context.cwd` 可用，无法交叉印证，但实测这两者从未冲突。
+
+按文件数分代：旧代（<0.144，130 个）／中代（0.144–0.151，1678 个）／新代（≥0.153，295 个，含 0.154.0 8 个）。
 
 ## 5. 已知陷阱
 
@@ -122,5 +169,5 @@ $CODEX_HOME/session_index.jsonl                                        # thread_
 6. **`compacted.replacement_history` 是回放**，不应计入本文件的新增事件。
 7. **字段随版本漂移**：`message.id` 时有时无、`turn_id` 格式变化、`item_completed` 里 `item` 偶缺、`thread_source` 可能为 null。解析必须容错，未知 type 跳过而非报错。
 8. **体量集中且价值低**：`aggregated_output` / `output` / `FileChange.changes[].content` 占文件主体积；`FileChange.changes` 才是真实产出。
-9. **性能**：单文件最大 157 MB，须流式逐行读；全库 7.69 GB，`mmap` + `bytes.find` 串行扫描约 3.8 s。
+9. **性能**：单文件最大 157 MB，须流式逐行读；全库 7.3 GB，`mmap` + `bytes.find` 串行扫描约 3–4 s。
 10. **文本匹配须按 JSON 转义形态**：多行查询在 JSONL 中存为转义形态，需同时用原始形态与 `json.dumps(...)[1:-1]` 形态搜索。

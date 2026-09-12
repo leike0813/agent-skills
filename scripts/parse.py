@@ -25,6 +25,8 @@ def _result(timeline_path: str = "", stats_path: str = "") -> dict:
     return {
         "timeline_path": timeline_path,
         "stats_path": stats_path,
+        "layout": "full",
+        "brief_tier": None,
         "thread_id": None,
         "turns": 0,
         "chars": 0,
@@ -97,18 +99,26 @@ def run_full(args: argparse.Namespace) -> dict:
         result["error"] = {"code": "empty_timeline", "message": "no renderable conversation events found"}
         return result
 
-    render_opts = {
-        "max_total_chars": args.max_total_chars,
-        "max_block_chars": args.max_block_chars,
-        "user_chars": args.user_chars,
-        "include_commentary": args.include_commentary,
-    }
-    timeline = rollout.render_timeline(turns, stats, render_opts)
+    budget = args.max_total_chars
+    if budget is None:
+        budget = (rollout.BRIEF_LIMITS if args.layout == "brief"
+                  else rollout.DEFAULT_LIMITS)["max_total_chars"]
+    if args.layout == "brief":
+        timeline = rollout.render_brief(turns, stats, {"max_total_chars": budget})
+        filename = "brief.md"
+    else:
+        timeline = rollout.render_timeline(turns, stats, {
+            "max_total_chars": budget,
+            "max_block_chars": args.max_block_chars,
+            "user_chars": args.user_chars,
+            "include_commentary": args.include_commentary,
+        })
+        filename = "timeline.md"
 
     out_dir = args.out or os.path.join(
         os.environ.get("TMPDIR", "/tmp"), "codex-salvage", str(stats.get("thread_id") or "unknown"))
     os.makedirs(out_dir, exist_ok=True)
-    timeline_path = os.path.join(out_dir, "timeline.md")
+    timeline_path = os.path.join(out_dir, filename)
     stats_path = os.path.join(out_dir, "stats.json")
     with open(timeline_path, "w", encoding="utf-8") as fh:
         fh.write(timeline)
@@ -118,6 +128,8 @@ def run_full(args: argparse.Namespace) -> dict:
     result.update({
         "timeline_path": timeline_path,
         "stats_path": stats_path,
+        "layout": args.layout,
+        "brief_tier": stats.get("brief_tier"),
         "thread_id": stats.get("thread_id"),
         "turns": stats.get("turns", 0),
         "chars": stats.get("emitted_chars", 0),
@@ -138,8 +150,11 @@ def main(argv=None) -> int:
     parser.add_argument("--preview", action="store_true", help="return one snippet instead of parsing")
     parser.add_argument("--query", default=None, help="required with --preview")
     parser.add_argument("--out", default=None, help="output directory for full mode")
+    parser.add_argument("--layout", choices=("full", "brief"), default="full",
+                        help="full: turn-by-turn timeline; brief: one compact digest")
     parser.add_argument("--preview-chars", type=int, default=600)
-    parser.add_argument("--max-total-chars", type=int, default=rollout.DEFAULT_LIMITS["max_total_chars"])
+    parser.add_argument("--max-total-chars", type=int, default=None,
+                        help="defaults to 150000 for full, 12000 for brief")
     parser.add_argument("--max-block-chars", type=int, default=rollout.DEFAULT_LIMITS["max_block_chars"])
     parser.add_argument("--user-chars", type=int, default=rollout.DEFAULT_LIMITS["user_chars"])
     parser.add_argument("--include-commentary", dest="include_commentary", action="store_true",
