@@ -1,0 +1,17 @@
+topic: "<一句话主题>"
+session: "<harness> · <开始时间>"
+source: "<transcript 绝对路径>"
+events: 0
+goal: "<下一次会话要达成什么>"
+progress:
+  done:
+    - "<已完成>"
+  doing:
+    - "<进行中>"
+  blocked: []
+decisions:
+  - "<必须做的选择：选项 A / 选项 B，当前倾向与理由>"
+skills:
+  - "<skill 名>：<为什么>"
+references:
+  - "<路径 / 命令 / commit / PR>"
