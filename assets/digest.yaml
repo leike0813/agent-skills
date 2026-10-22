@@ -1,0 +1,11 @@
+topic: "<一句话主题>"
+session: "<harness> · <开始时间>"
+source: "<transcript 绝对路径>"
+events: 0
+goals: "<1–3 句：这段会话要解决什么>"
+process:
+  - "<做了什么 / 关键发现 / 走过的弯路，每条一句，3–8 条>"
+results:
+  - "<结论、改动的文件、命令产物、验证结果，2–6 条>"
+open_questions:
+  - "<0–4 条；没有就保留空列表 []>"
