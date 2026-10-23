@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+import json
 from typing import Any, Dict, List
 
 # 只有这些标识符形状才用裸标量；路径、时间戳、含空格的串一律加双引号，
 # 避免被 YAML 解析成数字、时间或其它类型。
 _PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
 _RESERVED = {"true", "false", "null", "yes", "no", "on", "off", "y", "n", "~"}
+_UNSAFE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def to_yaml(value: Dict[str, Any]) -> str:
@@ -63,16 +65,14 @@ def _scalar(value: Any) -> str:
 
 
 def _quoted(text: str) -> str:
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    escaped = escaped.replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")
-    return f'"{escaped}"'
+    return _UNSAFE.sub(lambda match: f"\\u{ord(match[0]):04x}", json.dumps(text, ensure_ascii=False))
 
 
 def _block_scalar(prefix: str, text: str, indent: int) -> List[str]:
     """多行文本用字面块；首行带空格、以两个以上换行结尾或只有换行时退回双引号。"""
     body = text[:-1] if text.endswith("\n") else text
     header = "|" if text.endswith("\n") else "|-"
-    if not body or text.endswith("\n\n") or body[0] in " \t":
+    if not body or text.endswith("\n\n") or body[0] in " \t\n" or _UNSAFE.search(text):
         return [prefix + _quoted(text)]
     pad = " " * (indent + 2)
     return [prefix + header] + [pad + line if line else "" for line in body.split("\n")]

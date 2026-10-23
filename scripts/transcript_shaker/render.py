@@ -25,6 +25,8 @@ SHELL_TOOLS = {
     "run_terminal_command",
     "terminal",
     "sh",
+    "developer__shell",
+    "execute_command",
 }
 
 KIND_ORDER = ("user", "assistant", "system", "tool")

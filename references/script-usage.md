@@ -9,7 +9,7 @@
 ```bash
 python3 <skill_dir>/scripts/transcript_shaker/__main__.py --list [--harness NAME] [--match TEXT] [--since YYYY-MM-DD] [--limit N]
 python3 <skill_dir>/scripts/transcript_shaker/__main__.py --search "<内容关键词>" --harness NAME [--since YYYY-MM-DD] [--match TEXT] [--limit N]
-python3 <skill_dir>/scripts/transcript_shaker/__main__.py <transcript> [--profile default|full|compact] [--format markdown|yaml] [--max-chars N] [--out PATH]
+python3 <skill_dir>/scripts/transcript_shaker/__main__.py <transcript> [--harness NAME] [--profile default|full|compact] [--format markdown|yaml] [--max-chars N] [--out PATH]
 ```
 
 `<skill_dir>` 是 skill 包根目录；脚本可在任意 cwd 运行，不依赖工作目录。
@@ -19,9 +19,9 @@ python3 <skill_dir>/scripts/transcript_shaker/__main__.py <transcript> [--profil
 | 参数 | 含义 | 约束 |
 |---|---|---|
 | `transcript` | 要转写的文件路径（绝对、相对或 `~` 开头） | 与 `--list` / `--search` 互斥 |
-| `--list` | 按各 harness 固定目录列出候选，不解析内容 | 不能与 `transcript` / `--search` / `--max-chars` / `--out` / `--format` / `--profile` 同用（退出码 2） |
-| `--search` | 按内容定位 transcript：查询按空白切词、小写去重后匹配文件原始字节（`.zst` / `.zstd` 为解压后字节） | 必须配 `--harness`（内容检索不跨 harness）；不能与 `transcript` / `--list` / `--max-chars` / `--out` / `--format` / `--profile` 同用；`kilo-code` 不支持；去空白后为空退出码 2 |
-| `--harness` | 只列 / 只搜某个 harness 的候选 | 配 `--list` 或 `--search`；取值见 `SKILL.md` 的「支持范围」 |
+| `--list` | 按固定目录与 Crush 路径索引列候选，不解析会话正文 | 不能与 `transcript` / `--search` / `--max-chars` / `--out` / `--format` / `--profile` 同用（退出码 2） |
+| `--search` | 按内容定位 transcript：查询按空白切词、小写去重后匹配文件原始字节（`.zst` / `.zstd` 为解压后字节） | 必须配 `--harness`（内容检索不跨 harness）；不能与 `transcript` / `--list` / `--max-chars` / `--out` / `--format` / `--profile` 同用；kilo-code、opencode、goose、crush 不支持；去空白后为空退出码 2 |
+| `--harness` | 验证并选择转写格式，或过滤列表与检索 | 取值见 `SKILL.md` 的「支持范围」；指定格式仍验证内容，不能用于强行解析不匹配文件 |
 | `--match` | 只看路径包含该子串的候选，不区分大小写 | 配 `--list` 或 `--search` |
 | `--since` | 只看修改时间不早于该本地日期的候选 | 配 `--list` 或 `--search`；格式 `YYYY-MM-DD`，非法日期退出码 2 |
 | `--limit` | 最多输出条数 | 配 `--list` 或 `--search`；正整数；`--list` 缺省 20，`--search` 缺省 10 |
@@ -35,7 +35,7 @@ python3 <skill_dir>/scripts/transcript_shaker/__main__.py <transcript> [--profil
 | 码 | 含义 |
 |---|---|
 | `0` | 成功 |
-| `1` | 文件不存在 / 不是文件 / 不可读 / 格式无法识别 / 解压失败 / 写文件失败 |
+| `1` | 文件不存在 / 不是文件 / 不可读 / 格式无法识别或身份有歧义 / 解压失败 / 写文件失败 |
 | `2` | 参数错误：上表全部约束冲突、非法日期、未知 harness / 档位 / 格式、缺少输入 |
 
 ## 输出契约
@@ -65,7 +65,7 @@ python3 <skill_dir>/scripts/transcript_shaker/__main__.py <transcript> [--profil
 
 顶层键固定为 `harness`、`profile`、`session`、`source`、`cwd`、`started`、`origin`、`history`、`events`；空值字段整键省略，`profile` 三档都写。
 
-事件键固定为 `kind`、`role`、`tool`、`ts`、`status`、`text`、`call`、`result`；空值字段整键省略。多行文本用 `|` / `|-` 字面块；时间戳、路径与含 `: ` 或空格的字符串加双引号，解析后仍是字符串。
+事件键固定为 `kind`、`role`、`tool`、`ts`、`status`、`text`、`call`、`result`；空值字段整键省略。多行文本通常用 `|` / `|-` 字面块；开头带空白、特殊结尾或控制字符等无法无损使用字面块的文本用转义双引号。时间戳、路径与含 `: ` 或空格的字符串加双引号，解析后仍是字符串。
 
 `compact` 档位省略 `result` 与非 shell 工具的 `call`，并省略状态为 `completed` 的 `status`。
 
@@ -104,7 +104,7 @@ python3 <skill_dir>/scripts/transcript_shaker/__main__.py <transcript> [--profil
 仅标准库，Python ≥3.9。
 
 - `.jsonl.zst` / `.jsonl.zstd` 解压三选一：Python 3.14 `compression.zstd`、`zstandard` 包、`zstd` 命令行；都不可用时退出码 1。
-- `kilo.db` 用标准库 `sqlite3` 只读打开。
+- Kilo、OpenCode、Goose、Crush 的数据库用标准库 `sqlite3` 只读事务打开，读取 WAL 中已提交的可见数据。
 
 ## 示例
 
@@ -138,15 +138,22 @@ python3 transcript-shaker/scripts/transcript_shaker/__main__.py ~/.codex/session
 python3 transcript-shaker/scripts/transcript_shaker/__main__.py ~/.claude/projects/p/s.jsonl --profile compact --out session.compact.md
 ```
 
+```bash
+# 重命名的同构数据库须显式指定身份
+python3 transcript-shaker/scripts/transcript_shaker/__main__.py /tmp/session-copy.db --harness opencode --format yaml
+```
+
 ## 边界情况
 
 - 空事件流：Markdown 输出 `- events: 0`，YAML 输出 `events: []`，退出码 0。
-- `--list` 跳过 0 字节文件与 command-code 的 `*.checkpoints.jsonl`；直接把这些路径传给转写会报格式错误。
+- `--list` 跳过 0 字节文件、command-code 的 `*.checkpoints.jsonl` 与 Continue 的 `sessions.json`；直接把这些路径传给转写会报格式错误。
 - 含孤立代理项（如 `\ud83e`）的字段在输出时替换为 U+FFFD，源文件不动。
 - 单次只解析传入的那一个文件；子代理 / 子会话 transcript 是独立会话，需分别传入。
-- kilo-code 传整个 `kilo.db`，只转写库中最新的会话。
+- kilo-code、opencode、goose、crush 传整个库，只转写创建时间最新的会话；最新会话无消息时输出空事件流，库无会话时退出码 1。不合并父子会话，不读取 shell 输出的外部 spill 文件。
+- OpenCode/Kilo 的同构库需要规范文件名 `opencode.db` / `kilo.db` 或显式 `--harness`。Roo 通用消息数组需要 `api_conversation_history.json`、带 id/workspace 的配套 `history_item.json` 或显式提示；内容仍须符合对应格式。
+- Continue 无逐条时间戳时留空；Roo 从 API history 和 `history_item.json` 取元数据，缺少配套文件仍可转写，UI 记录不合并。
 - gemini-cli 同一会话可能有两份副本，按内容里的 `sessionId` 取一份。
-- `--search` 不支持 `kilo-code`（整个 `kilo.db` 含多个会话，定位语义不成立），传入即退出码 2。
+- `--search` 不支持 kilo-code、opencode、goose、crush（一个库含多个会话，定位语义不成立），传入即退出码 2。
 - `--search` 中单文件读失败（权限、解压不可用）被跳过，不中断检索；该文件不出现在输出里。
 - `--search` 的 `.zst` / `.zstd` 走三选一解压（`compression.zstd` / `zstandard` / `zstd` 命令）；三者都不可用时该候选被跳过。
 
@@ -158,7 +165,8 @@ python3 transcript-shaker/scripts/transcript_shaker/__main__.py ~/.claude/projec
 | `unsupported transcript format` | 内容不属于任何已注册 harness | 报告支持范围，不要手写解析 |
 | `--max-chars 只能用于 --profile default` | 档位与截断上限冲突 | 去掉 `--max-chars` |
 | `--search 必须指定 --harness（内容检索暂不跨 harness）` | 内容检索不跨 harness | 先确定 harness 再检索 |
-| `--search 不支持 kilo-code：kilo.db 含多个会话` | 该 harness 一个库文件含多个会话 | 改用别的 harness，或直接用 `--list` 定位 |
+| `ambiguous SQLite transcript` | 同构库副本无法确定产品身份 | 根据来源指定 `--harness opencode` 或 `--harness kilo-code` |
+| `数据库含多个会话` | 该 harness 不支持文件级内容检索 | 用 `--list` 定位数据库后转写最新会话 |
 
 ## 支持范围
 

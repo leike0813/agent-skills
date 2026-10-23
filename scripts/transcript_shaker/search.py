@@ -12,7 +12,7 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 from .locate import Candidate, find_candidates
 
 CHUNK = 1 << 22  # 4 MiB
-UNSUPPORTED = ("kilo-code",)  # 一个库文件含多个会话，定位语义不成立
+UNSUPPORTED = ("kilo-code", "opencode", "goose", "crush")  # 一个库文件含多个会话
 ZSTD_SUFFIXES = (".zst", ".zstd")
 
 

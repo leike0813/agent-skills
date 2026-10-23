@@ -87,7 +87,7 @@ description: Turn a local agent-session transcript into a readable log (markdown
 ## 脚本调用
 
 ```bash
-python3 <skill_dir>/scripts/transcript_shaker/__main__.py <transcript> --profile default|full|compact --format markdown|yaml [--max-chars N] [--out PATH]
+python3 <skill_dir>/scripts/transcript_shaker/__main__.py <transcript> [--harness NAME] --profile default|full|compact --format markdown|yaml [--max-chars N] [--out PATH]
 python3 <skill_dir>/scripts/transcript_shaker/__main__.py --list [--harness NAME] [--match TEXT] [--since YYYY-MM-DD] [--limit N]
 python3 <skill_dir>/scripts/transcript_shaker/__main__.py --search "<内容关键词>" --harness NAME [--since YYYY-MM-DD] [--match TEXT] [--limit N]
 ```
@@ -95,9 +95,9 @@ python3 <skill_dir>/scripts/transcript_shaker/__main__.py --search "<内容关�
 | 参数 | 含义 |
 |---|---|
 | `transcript` | 要转写的文件路径（绝对、相对或 `~` 开头） |
-| `--list` | 不解析内容，按各 harness 固定目录列出候选 |
-| `--search` | 内容检索：按空白切词后匹配原始字节；必须配 `--harness`；`kilo-code` 不支持 |
-| `--harness` | 配合 `--list` / `--search` 过滤；检索时用户没给 harness 必须先问用户，给了会话目录即视为已给 |
+| `--list` | 按固定目录及 Crush 路径索引列候选，不解析会话正文 |
+| `--search` | 内容检索：按空白切词后匹配原始字节；必须配 `--harness`；kilo-code、opencode、goose、crush 不支持 |
+| `--harness` | 转写时验证并指定格式，或配合 `--list` / `--search` 过滤；检索时用户没给 harness 必须先问用户，给了会话目录即视为已给 |
 | `--match` / `--since` / `--limit` | 配合 `--list` / `--search` 过滤；不能用于转写 |
 | `--profile` | 压缩档位，取值见轴一 |
 | `--format` | `markdown`（缺省）或 `yaml` |
@@ -106,11 +106,13 @@ python3 <skill_dir>/scripts/transcript_shaker/__main__.py --search "<内容关�
 
 完整参数约束、退出码、输出契约、依赖与边界情况见 `references/script-usage.md`。
 
+用户已明确 harness 时，转写带上 `--harness <name>`。OpenCode/Kilo 数据库内容同构，自动识别以规范文件名消歧；重命名副本必须显式指定。Roo 的通用消息数组同样需要规范文件名、同目录 `history_item.json` 或显式提示。提示与内容格式不符时停止，不改写输入。
+
 ## 内容检索
 
 用户只记得会话里说过什么、不知道是哪个文件时用它。
 
-1. **先定 harness**。用户说了 harness、给了会话文件路径或会话目录 → 直接用；只给内容 → **先问用户是哪个 harness**（列出「支持范围」里的 harness 名，去掉不支持检索的 kilo-code），不要跨 harness 逐个试，也不要猜。
+1. **先定 harness**。用户说了 harness、给了会话文件路径或会话目录 → 直接用；只给内容 → **先问用户是哪个 harness**（列出「支持范围」里的 harness 名，去掉不支持检索的 kilo-code、opencode、goose、crush），不要跨 harness 逐个试，也不要猜。数据库格式用 `--list` 定位后直接转写最新会话。
 2. **跑检索**：`--search "<词>" --harness <name>`，可加 `--since` / `--match`（项目目录片段）缩小范围。词用有区分度的 2–3 个关键词，全词命中优于单个常见词；中文查询没有空格时先自己拆成 2–3 个词项（整句会被当成一个词项）。
 3. **看歧义标记**：
    - `# ambiguous: no` → 首行就是目标，直接转写它。
@@ -151,6 +153,11 @@ python3 <skill_dir>/scripts/transcript_shaker/__main__.py --search "<内容关�
 | omp | `~/.omp/agent/sessions/*/*.jsonl` | `<会话>/<Agent>.jsonl` 是子代理会话，需单独传入 |
 | minimax-code | `~/.minimax/v2/sessions/*/*/*/*/messages.jsonl` | 会话 id 与开始时间取自同目录 `manifest.json` |
 | kilo-code | `~/.local/share/kilo/kilo.db` | 整个库，只取最新的一个会话 |
+| opencode | `~/.local/share/opencode/opencode.db` | 整个库，只取最新会话；数据根尊重 `XDG_DATA_HOME` |
+| goose | `~/.local/share/goose/sessions/sessions.db` | 整个库，只取最新会话；数据根尊重 `XDG_DATA_HOME` |
+| crush | `<项目数据目录>/crush.db` | `--list` 查看当前项目最近的 `.crush`（到 Git 根为止）与全局 `projects.json` 中的绝对数据目录；全局索引尊重 `CRUSH_GLOBAL_DATA` / `XDG_DATA_HOME`；只取最新会话 |
+| continue | `~/.continue/sessions/<id>.json` | Continue CLI（cn）；尊重 `CONTINUE_GLOBAL_DIR`，跳过 `sessions.json`；无逐条时间戳 |
+| roo-code | `<扩展存储>/tasks/<id>/api_conversation_history.json` | `--list` 扫描 Linux Code 与 vscode-server 默认扩展目录；自定义存储直接传文件；`history_item.json` 补元数据，UI 副本不合并 |
 | cline | `~/.cline/data/sessions/*/*.messages.json` | 同目录 `<id>.json` 提供 cwd 与真实开始时间 |
 | multicoder | `~/.multicoder/content/ses_*.json` | 无逐条时间戳 |
 | grok | `~/.grok/sessions/*/*/chat_history.jsonl` | 只读这一份；同目录 `updates.jsonl`、`events.jsonl` 是重复流；模型未回复的会话也识别，输出 `events: 0` |
@@ -159,17 +166,17 @@ python3 <skill_dir>/scripts/transcript_shaker/__main__.py --search "<内容关�
 
 ## 易错点
 
-- `--list` 只看路径与修改时间，不读内容：0 字节文件与 command-code 的 `*.checkpoints.jsonl` 已被跳过，其余文件仍可能解析失败，以实际运行结果为准；空会话输出 `- events: 0` 或 `events: []`。
+- `--list` 只读路径元数据及 Crush 路径索引，不解析正文：0 字节文件、command-code 的 `*.checkpoints.jsonl` 与 Continue 的 `sessions.json` 已被跳过，其余文件仍可能解析失败，以实际运行结果为准；空会话输出 `- events: 0` 或 `events: []`。
 - `compact` 丢弃工具结果与非 shell 工具的调用内容；要原文用 `default` / `full`。
 - 非 compact 压缩 + 附加输出要跑两次脚本，不要把 `default` / `full` 的输出读进上下文。
 - codex 超过 7 天的会话被压成 `.jsonl.zst`，修改时间是压缩时间；按会话发生时间挑选时看文件名里的时间戳（本地时间）。
 - gemini-cli 同一会话可能有两份副本，任选其一；要按 `sessionId` 判断时读文件内容，不要靠文件名。
-- kilo-code 传整个 `kilo.db`，只转写库中最新的会话。
+- kilo-code、opencode、goose、crush 传整个数据库，只转写创建时间最新的一个会话；最新会话为空时仍输出空事件流，不改选旧会话。数据库只读打开，不迁移或执行 checkpoint。
 - claude-code、omp、kimi-code 的子代理文件是独立会话，需要逐个运行、分别交付。
 - 部分会话含孤立代理项（如 `\ud83e`），脚本已替换，不要为此改动原文件。
 - 附加文档默认写到当前工作目录，命名 `<transcript 主名>-digest.<ext>`；用户给了路径则以其为准。
 - `--search` 匹配原始字节，不解析事件：system 提示、工具 schema 与思考文本都会参与匹配，命中数不等于命中质量；用有区分度的多词项，别用单个常见词。
-- `--search` 只在指定 harness 内检索，且不支持 kilo-code（一个库含多个会话）。
+- `--search` 只在指定 harness 内检索，且不支持 kilo-code、opencode、goose、crush（一个库含多个会话）。
 - codex 全库含 4000+ 个 `.zst` 压缩会话，检索要解压，耗时可达几十秒；先用 `--since` / `--match` 缩小。
 
 ## 成功标准
