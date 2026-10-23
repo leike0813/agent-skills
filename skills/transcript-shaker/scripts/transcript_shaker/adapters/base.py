@@ -9,7 +9,7 @@ from ..model import Event, Session
 
 
 class Adapter:
-    """按内容识别 transcript，并把原文解析为统一事件流。"""
+    """验证 transcript 格式，并把原文解析为统一事件流；同构产品的身份由注册表消歧。"""
 
     name: str = ""
 

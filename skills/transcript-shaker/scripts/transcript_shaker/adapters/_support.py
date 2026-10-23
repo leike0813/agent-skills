@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import shlex
 import shutil
+import sqlite3
 import subprocess
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence
@@ -160,15 +162,55 @@ def head_records(path: Path, limit: int = DETECT_RECORD_LIMIT) -> List[Dict[str,
     return records
 
 
-def load_json_doc(path: Path) -> Optional[Dict[str, Any]]:
-    """整个文件是一个 JSON 对象的格式（gemini/cline/multicoder）；失败返回 None。"""
+def load_json_value(path: Path) -> Any:
+    """读取 JSON 对象或数组；二进制、不可读及损坏的文件返回 None。"""
     if _is_binary(path):
         return None
     try:
-        document = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def load_json_doc(path: Path) -> Optional[Dict[str, Any]]:
+    """读取 JSON 对象；其它形状及读取失败返回 None。"""
+    document = load_json_value(path)
     return document if isinstance(document, dict) else None
+
+
+def json_value(value: Any) -> Any:
+    """解码数据库 JSON 列，损坏值返回 None。"""
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@contextmanager
+def read_sqlite(path: Path) -> Iterator[sqlite3.Connection]:
+    """只读事务提供同一 WAL 快照；SQLite 错误交由 CLI 报告。"""
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+            conn.execute("BEGIN")
+            yield conn
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"cannot read SQLite transcript {path}: {exc}") from exc
+
+
+def sqlite_matches(path: Path, required: Dict[str, Sequence[str]]) -> bool:
+    """用 SQLite 文件头和解析所需表列验证格式，不读取消息。"""
+    try:
+        with path.open("rb") as handle:
+            if handle.read(16) != b"SQLite format 3\x00":
+                return False
+        with read_sqlite(path) as conn:
+            for table, columns in required.items():
+                found = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+                if not set(columns) <= found:
+                    return False
+    except (OSError, RuntimeError):
+        return False
+    return True
 
 
 class ResultBinder:

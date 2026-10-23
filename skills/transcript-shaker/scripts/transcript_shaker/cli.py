@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--list",
         action="store_true",
-        help="列出本机候选 transcript（只看路径与修改时间，不解析内容）",
+        help="列出本机候选 transcript（只读路径元数据，不解析正文）",
     )
     parser.add_argument(
         "--search",
@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--harness",
         choices=sorted(HARNESS_SOURCES),
-        help="配合 --list / --search：只看某个 harness 的候选",
+        help="指定转写格式，或配合 --list / --search 过滤 harness",
     )
     parser.add_argument(
         "--limit",
@@ -142,7 +142,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not args.harness:
             parser.error("--search 必须指定 --harness（内容检索暂不跨 harness）")
         if args.harness in UNSUPPORTED:
-            parser.error("--search 不支持 kilo-code：kilo.db 含多个会话")
+            parser.error(f"--search 不支持 {args.harness}：数据库含多个会话")
         terms = tokenize(args.search)
         if not terms:
             parser.error("--search 需要至少一个词项")
@@ -157,8 +157,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if args.transcript is None:
         parser.error("缺少 transcript 参数（或使用 --list 列出候选）")
-    if args.harness or args.since or args.limit is not None or args.match:
-        parser.error("--harness / --since / --limit / --match 仅用于 --list")
+    if args.since or args.limit is not None or args.match:
+        parser.error("--since / --limit / --match 仅用于 --list / --search")
     fmt = args.format or "markdown"
     profile = args.profile or "default"
     if args.max_chars is not None and profile != "default":
@@ -175,10 +175,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     try:
-        adapter = detect_adapter(path)
-    except UnsupportedTranscript:
+        adapter = detect_adapter(path, args.harness)
+    except UnsupportedTranscript as exc:
         print(
-            f"transcript_shaker: unsupported transcript format: {path}（已支持：{supported_harnesses()}）",
+            f"transcript_shaker: {exc}（已支持：{supported_harnesses()}）",
             file=sys.stderr,
         )
         return 1
