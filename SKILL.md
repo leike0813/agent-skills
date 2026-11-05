@@ -1,317 +1,183 @@
 ---
 name: literature-digest
-description: Generate a paper digest (Markdown) from a source literature(.md/.pdf/latex). Use this skill when you only need to extract the core content of the literature.
-compatibility: Requires local filesystem read access to source_path; no network required.
+description: 从 Markdown、PDF、LaTeX 或纯文本文献生成结构化 Markdown 摘要；仅在需要核心内容与分章覆盖时使用。
 ---
 
 # literature-digest
 
-本 skill 运行于后台自动化场景：不得向用户提问做决策。stdout 只能输出一个 JSON 对象。
+本 skill 在后台自动运行，全程不得向用户提问。stdout 只能输出一个 JSON 对象。
 
-## 核心执行指令
+## 目标与非目标
 
-1. 先读 `SKILL.md`。
-2. 从 prompt payload 读取 `source_path` 和 `language`。
-3. 调用 `scripts/run_digest.py --mode normalize` 进行输入标准化。
-4. 生成结构化 `digest_slots + section_summaries`（**必须由 LLM 完成**）。
-5. 准备运行时模板：`en-*` / `zh-*` 直接复制仓库模板；其他语言由 **agent 直接翻译**。
-6. 调用 `scripts/run_digest.py --mode render` 渲染最终 digest.md 并输出 JSON。
+目标是从单一文献源生成结构化 `digest.md`：先标准化输入，由 LLM 判断文献类型并生成内容槽位，再由脚本读取包内 profile registry、固定标题并以 Jinja 模板渲染。
 
-## LLM 与脚本职责边界
+非目标包括论文质量评分、引文分析、参考文献提取、论文元数据生成，以及输出分类报告或其它公开产物。脚本不得生成摘要、判断文献类型、用关键词替代分类或调用 LLM API。
 
-**必须由 LLM 完成**：
-- digest 槽位内容生成（`digest_slots + section_summaries`）
-- 模板翻译（非 en/zh 语言时，翻译固定标题文本）
+## 输入与输出
 
-**必须由脚本完成**：
-- 输入协议探测与标准化
-- 模板渲染（基于结构化数据生成 Markdown）
-- 输出 JSON 合法性检查
+从 prompt payload 读取：
 
-**绝对禁止**：
-- 用脚本替代 LLM 做摘要、大纲、语义分类
-- 脚本调用外部 LLM API
+- `source_path`：唯一内容来源。支持 Markdown、PDF、单文件 `.tex`、LaTeX 工程目录和无扩展名 UTF-8 文本。
+- `language`：输出语言。显式给出时直接使用；否则根据 prompt 主语言推断，仍无法判断时回退 `zh-CN`。
 
-## 输入输出硬契约
-
-- 输入只读取 prompt payload 中的 `source_path` 与 `language`
-- `source_path` 是唯一内容来源；输入可为 Markdown、PDF、单文件 `.tex`、LaTeX 工程目录或无扩展名文件
-- `language` 控制 digest 语言；若用户显式指定则直接使用，否则先从 prompt 主要语言推断，仅在无法稳定判断时回退 `zh-CN`
-- stdout 必须包含：
-  - `digest_path`
-  - `provenance.generated_at`
-  - `provenance.input_hash`
-  - `warnings`
-  - `error`
-- 最终公开产物固定为：
-  - `digest.md`
-
-## 参数词表
-
-- `source_path`：源文件路径，用户传入的唯一内容来源。
-- `language`：输出语言；可以是任意字符，推荐采用 BCP 47 语言标签；缺省回退 `zh-CN`。
-- `digest_slots`：最终 digest 的结构化内容槽位集合。
-  - 固定槽位：`tldr`、`research_question_and_contributions`、`method_highlights`、`key_results`、`limitations_and_reproducibility`
-- `section_summaries`：按大纲顺序组织的章节级摘要列表。
-
-## Digest 生成细则
-
-### Digest 输出结构（Markdown）
-
-**language=zh-CN 时**：
-- 必须严格使用如下标题（顺序与标题文本均固定）：
-  - `## TL;DR`
-  - `## 研究问题与贡献`
-  - `## 方法要点`
-  - `## 关键结果`
-  - `## 局限与可复现性线索`
-  - `## 分章节总结`
-- 不要输出额外的顶层标题（例如 `# 文献摘要`）或"论文信息/元数据"区块
-
-**language=en-US 时**：
-- Must use the exact headings below (fixed order and text):
-  - `## TL;DR`
-  - `## Research Question & Contributions`
-  - `## Method Highlights`
-  - `## Key Results`
-  - `## Limitations & Reproducibility`
-  - `## Section-by-Section Summary`
-- Do not add an extra top-level title or a "Paper Info/Metadata" section
-
-### 篇幅与内容密度（适用于所有语言）
-
-- 根据标准化正文的实质篇幅与信息密度决定 digest 深度。可扩写的信号包括更多彼此独立的方法、实验、结果、局限、章节和子主题。
-- 不按页数、字符数或行数设置机械档位。篇幅主要来自排版、附录或重复内容时，不要因此强行扩写。
-- 一般论文可参考以下常见区间：
-  - `tldr.paragraphs`：约 8-20 个信息充分的行或段落
-  - `research_question_and_contributions.contributions`：2-8 项
-  - `method_highlights.items`：3-12 项
-  - `key_results.items`：2-10 项
-  - `limitations_and_reproducibility.items`：1-6 项
-- 这些数字是写作提示，不是 payload 上限或校验条件。长且内容密集的来源有更多独立、可追溯信息时可以超过；短或稀疏的来源也不要为达到区间而凑数。
-- `section_summaries` 按可靠的原文大纲顺序覆盖主要非参考文献章节。一般论文可用约 8 个或更多章节/小节块；长且内容密集的来源应随实质章节和子主题显著增加，不设上限。
-- 某一章节较长或包含多个主题时，继续拆成有意义的子节或子主题；无法可靠识别大纲时，使用 `片段 1/2/3...` / `Segment 1/2/3...`，片段数量以充分覆盖实质内容为准。
-- 禁止用同义条目、重复结论或原文没有依据的细节填充篇幅。
-
-### 结构化 payload 契约
-
-LLM 必须提供结构化 payload：
+成功时公开产物只有源文件所在目录的 `digest.md`。render 模式 stdout 固定为：
 
 ```json
 {
-  "digest_slots": {
-    "tldr": { "paragraphs": ["...", "..."] },
-    "research_question_and_contributions": {
-      "research_question": "...",
-      "contributions": ["...", "..."]
-    },
-    "method_highlights": { "items": ["...", "..."] },
-    "key_results": { "items": ["...", "..."] },
-    "limitations_and_reproducibility": { "items": ["...", "..."] }
-  },
-  "section_summaries": [
-    { "source_heading": "Introduction", "items": ["...", "..."] }
-  ]
-}
-```
-
-**约束**：
-- `digest_slots` 必须完整覆盖 5 个固定槽位
-- `section_summaries` 必须按大纲顺序提供
-- 最终 digest 直接由 `digest_slots + section_summaries` 渲染
-- LLM 只负责槽位内容，不负责最终标题文本与排版
-
-**各槽位内容要求**：
-- `tldr.paragraphs`：全局摘要，覆盖问题、方法、结果、局限与可复现性线索
-- `research_question_and_contributions.research_question`：研究问题，1 句清晰表述
-- `research_question_and_contributions.contributions`：有原文依据的核心贡献
-- `method_highlights.items`：具体且彼此有区分的方法要点
-- `key_results.items`：关键定量或定性结果
-- `limitations_and_reproducibility.items`：诚实的局限与可复现性线索
-- `section_summaries[*].source_heading`：对应原文章节标题
-- `section_summaries[*].items`：该章节的要点列表，细粒度覆盖
-
-### LLM 提交内容与最终 Markdown 的映射关系
-
-- `tldr.paragraphs` → 对应最终 `## TL;DR`
-- `research_question_and_contributions.research_question` → 对应最终 `## 研究问题与贡献` / `## Research Question & Contributions` 中的研究问题句
-- `research_question_and_contributions.contributions` → 对应最终贡献要点列表
-- `method_highlights.items` → 对应最终 `## 方法要点` / `## Method Highlights`
-- `key_results.items` → 对应最终 `## 关键结果` / `## Key Results`
-- `limitations_and_reproducibility.items` → 对应最终 `## 局限与可复现性线索` / `## Limitations & Reproducibility`
-- `section_summaries[*]` → 对应最终 `## 分章节总结` / `## Section-by-Section Summary` 下按大纲顺序展开的章节块
-
-### 失败语义
-
-- 缺少任一固定 slot、slot 形状不合法、或 `section_summaries` 结构错误时，属于 digest 生成失败
-- 固定 slot 为空、或 `section_summaries` 对主要章节覆盖不足时，也属于 digest 生成失败或 warning
-- 失败后不得猜测性生成最终 digest 文本
-
-### 合法 payload 示例
-
-```json
-{
-  "digest_slots": {
-    "tldr": { "paragraphs": ["本文提出...", "实验表明..."] },
-    "research_question_and_contributions": {
-      "research_question": "如何在保持精度的同时降低推理成本？",
-      "contributions": ["提出新架构", "给出新的训练策略"]
-    },
-    "method_highlights": { "items": ["使用分层模块", "引入蒸馏损失"] },
-    "key_results": { "items": ["在数据集 A 上提升 2%", "推理延迟下降 15%"] },
-    "limitations_and_reproducibility": { "items": ["未开源训练代码"] }
-  },
-  "section_summaries": [
-    { "source_heading": "Introduction", "items": ["定义问题背景", "总结主要挑战"] }
-  ]
-}
-```
-
-### 非法 payload 示例
-
-```json
-{
-  "sections": [
-    { "section_key": "tldr", "heading": "## TL;DR", "body_md": "..." }
-  ]
-}
-```
-
-### 最终排版来源
-
-- 最终 digest 排版由 renderer 和模板文件决定：
-  - `assets/templates/digest.zh-CN.md.j2`
-  - `assets/templates/digest.en-US.md.j2`
-- 模板只负责固定标题、顺序和排版
-- 真正进入最终成品的内容必须先落入 `digest_slots` 与 `section_summaries`
-
-## 执行主路径
-
-### 1. 输入标准化
-
-调用命令：
-```bash
-python scripts/run_digest.py --mode normalize --source-path "/abs/path/paper.md"
-```
-
-脚本完成：
-- 读取 `source_path`
-- 协议探测与标准化：
-  - PDF: 优先 `pymupdf4llm`，失败则兜底解析
-  - LaTeX (`.tex` 或目录): 展平 `\input` / `\include`，包进 ` ```tex ` fence
-  - Markdown/文本：直接读取
-- 计算 `input_hash` (sha256)
-
-### 2. 生成 digest 内容（LLM 职责）
-
-agent 调用 LLM，传入标准化后的文本和 `language`，生成结构化 payload：
-
-```json
-{
-  "digest_slots": {
-    "tldr": { "paragraphs": ["...", "..."] },
-    "research_question_and_contributions": {
-      "research_question": "...",
-      "contributions": ["...", "..."]
-    },
-    "method_highlights": { "items": ["...", "..."] },
-    "key_results": { "items": ["...", "..."] },
-    "limitations_and_reproducibility": { "items": ["...", "..."] }
-  },
-  "section_summaries": [
-    { "source_heading": "Introduction", "items": ["...", "..."] }
-  ]
-}
-```
-
-### 3. 准备运行时模板（agent 职责）
-
-**模板翻译规则**：
-- 若 `language.lower().startswith("en")`：复制 `digest.en-US.md.j2`
-- 若 `language.lower().startswith("zh")`：复制 `digest.zh-CN.md.j2`
-- 其他语言：**agent 直接翻译**仓库模板的固定标题文本（保留 Jinja2 语法）
-
-**翻译原则**：
-- 仅翻译固定标题文本（如 `## TL;DR`、`## 研究问题与贡献`）
-- 保留 Jinja2 模板语法：`{% ... %}`、`{{ ... }}`、`{# ... #}`
-- 保留变量名和循环结构
-- 保留注释
-
-### 4. 渲染并输出
-
-调用命令：
-```bash
-python scripts/run_digest.py --mode render \
-  --source-path "/abs/path/paper.md" \
-  --language "zh-CN" \
-  --payload-file /tmp/digest_payload.json \
-  --template-file /tmp/digest.runtime.md.j2
-```
-
-脚本完成：
-- 读取 payload（`digest_slots + section_summaries`）
-- 读取运行时模板
-- 渲染最终 `digest.md`
-- 输出 stdout JSON
-
-成功态 stdout JSON 示例：
-```json
-{
-  "digest_path": "/abs/path/digest.md",
+  "digest_path": "/abs/source/digest.md",
   "provenance": {
-    "generated_at": "2026-04-02T10:00:00Z",
-    "input_hash": "sha256:0123456789abcdef"
+    "generated_at": "2026-11-04T10:00:00Z",
+    "input_hash": "sha256:..."
   },
   "warnings": [],
-  "error": {}
+  "error": null
 }
 ```
 
-失败态 stdout JSON 示例：
+`input_hash` 对标准化后的正文计算。不要增加分类结果文件，也不要改变公开文件名和输出目录。
+
+## LLM 与脚本边界
+
+LLM 负责：
+
+- 按论证方式和证据结构选择 8 个 profile 之一；
+- 生成 `digest_slots`、按原文顺序生成 `section_summaries`；
+- 非 `zh` / `en` 语言时提交六个标题翻译。
+
+脚本负责：
+
+- 输入探测、PDF/LaTeX 标准化和正文 hash；
+- 校验 payload 与分类字段；
+- 从包内 `assets/literature_profiles.json` 读取 effective profile；
+- 选择标题、构建渲染上下文、执行模板并写出 Markdown。
+
+LLM 只提交结构化内容。最终标题、section 顺序和 Markdown 版式均由脚本与模板决定。
+
+## 文献分类
+
+`literature_classification` 必须包含：
+
+- `disciplines`：短学科标签 `string[]`，可以为空数组；
+- `profile_id`：下列枚举之一；
+- `confidence`：`high`、`medium` 或 `low`；
+- `reason`：非空分类理由，说明证据与方法结构。
+
+按论文的主要论证和证据类型分类，不以题名、关键词或学科名称机械匹配。
+
+| `profile_id` | 主要依据 |
+| --- | --- |
+| `quantitative_empirical` | 观察或实验数据、测量、统计推断、定量模型检验及其经验结果。 |
+| `qualitative_empirical` | 访谈、观察、田野、案例或文本材料等经验证据，并通过系统的质性分析形成解释。 |
+| `interpretive_historical` | 以文本、档案、历史脉络和语境进行阐释，核心在于理解材料的意义与形成过程。它与规范论证、形式证明的经验依据不同。 |
+| `conceptual_normative` | 概念辨析、规范论证和价值判断，重点是为义务、权利、正当性或应然安排给出理由。 |
+| `formal_theoretical` | 形式模型、定义、定理、证明或推导构成主要论证，不以经验数据为主要依据。 |
+| `review_synthesis` | 围绕既有研究进行系统或叙述综合、比较与整合，包括叙述性文献综述。 |
+| `mixed_methods` | 定量与质性方法或证据在同一个核心论证中实质整合；并列汇报两类材料但未整合时不应仅因此选择此项。 |
+| `general` | 没有专门 profile 明显占主导，或证据不足以可靠选择专门类型。 |
+
+`confidence=low` 时，脚本把 effective profile 改为 `general`，并在 stdout 的 `warnings` 中加入 `classification_low_confidence`。该回退只选择通用标题，不作质量评分。
+
+## 内容 payload
+
+完整 payload 的最小形状如下；`digest_slots` 与 `section_summaries` 的条目数组都至少包含一个非空字符串：
+
 ```json
 {
-  "digest_path": "",
-  "provenance": {
-    "generated_at": "",
-    "input_hash": ""
+  "literature_classification": {
+    "disciplines": ["社会学"],
+    "profile_id": "qualitative_empirical",
+    "confidence": "high",
+    "reason": "核心材料为访谈，并通过质性编码形成解释。"
   },
-  "warnings": [],
-  "error": {
-    "code": "normalize_source_failed",
-    "message": "read source failed: [Errno 2] No such file or directory"
+  "digest_slots": {
+    "tldr": {"paragraphs": ["全文一句话结论。"]},
+    "focus": {"items": ["研究问题与核心主张。"]},
+    "basis": {"items": ["材料、方法与证据来源。"]},
+    "analysis": {"items": ["主要分析路径与发现。"]},
+    "limits": {"items": ["适用范围与可复现性线索。"]}
+  },
+  "section_summaries": [
+    {"source_heading": "Methods", "items": ["本节的方法与样本说明。"]}
+  ]
+}
+```
+
+`digest_slots` 的五个键必须齐全且内容非空：
+
+- `tldr.paragraphs`：覆盖问题、依据、主要结论和限制的全局摘要；
+- `focus.items`：研究问题、核心主张或贡献；
+- `basis.items`：材料、方法、数据、文本或来源基础；
+- `analysis.items`：关键论证、解释、结果或形式推导；
+- `limits.items`：证据边界、不确定性、反例或复现条件。
+
+各 profile 的四节标题和写作提示由 registry 提供；`slot_key` 固定为 `focus`、`basis`、`analysis`、`limits`，顺序不可改。
+
+摘要密度随原文的实质信息量调整。更多彼此独立的方法、证据、章节、案例或结论可以支持更细的条目；排版、附录和重复表述不构成扩写理由。不要按页数或字数设置机械阈值，也不要为达到篇幅加入原文没有的内容。
+
+`section_summaries` 按原文大纲顺序覆盖主要非参考文献章节。长章节或包含多个主题的章节应拆分；无法可靠识别标题时使用连续片段，并为每个片段写非空 `source_heading` 和 `items`。
+
+## 标题与翻译
+
+包内 `assets/literature_profiles.json` 是四个 profile section 标题的唯一来源，不从同仓库其它 skill 读取。
+
+- `language` 以 `zh` 开头时选择 registry 的 `zh-CN` 标题；TL;DR 标题为 `TL;DR`，章节汇总标题为 `分章节总结`。
+- `language` 以 `en` 开头时选择 registry 的 `en-US` 标题；TL;DR 标题为 `TL;DR`，章节汇总标题为 `Section-by-Section Summary`。
+- 其它语言必须在 payload 提供 `heading_translations`，值均为非空字符串，键必须完整包含 `tldr`、`focus`、`basis`、`analysis`、`limits`、`section_summaries`。
+
+任意语言的标题示例：
+
+```json
+{
+  "heading_translations": {
+    "tldr": "Résumé",
+    "focus": "Question et apport",
+    "basis": "Fondement",
+    "analysis": "Analyse",
+    "limits": "Limites",
+    "section_summaries": "Résumé par section"
   }
 }
 ```
 
-## 默认行为协议
+翻译只替换标题文本；不得改动 `slot_key`、模板循环或内容结构。
 
-- 读取 `source_path` 失败 → `digest_path=""`，填充 `error`
-- 无法识别输入格式 → 同上
-- `language` 为空 → 回退 `zh-CN`
-- payload 格式错误 → 返回 `error`
-- 模板渲染失败 → 返回 `error`
+## 执行步骤
 
-## 脚本 CLI 说明
+1. 调用 normalize，取得标准化正文：
 
-### `--mode normalize`
+```bash
+python scripts/run_digest.py --mode normalize \
+  --source-path "/abs/path/paper.pdf"
+```
 
-输入标准化模式。
+normalize stdout 包含 `normalized_text`、`input_hash`、输入类型、`warnings` 和 `error`。
 
-参数：
-- `--source-path`（必需）：源文件路径
+2. LLM 阅读标准化正文，依据上表完成分类；`confidence=low` 时按 `general` 处理。随后读取包内 registry 中 effective profile 的四个 `digest_sections[*].prompt`，按固定 `slot_key` 顺序生成 `digest_slots`、`section_summaries` 和所需标题翻译，写入临时 JSON 文件。
 
-输出：
-- stdout: JSON 结果（包含 `normalized_text`, `input_hash`, `source_type` 等）
+3. 调用 render：
 
-### `--mode render`
+```bash
+python scripts/run_digest.py --mode render \
+  --source-path "/abs/path/paper.pdf" \
+  --language "zh-CN" \
+  --payload-file "/tmp/digest_payload.json"
+```
 
-渲染输出模式。
+`--template-file` 可覆盖包内模板。自定义模板可读取 `language`、`digest_slots`、`section_summaries`、`digest_sections`、`tldr_heading` 和 `section_summaries_heading`；标题与 section 顺序仍由脚本传入的上下文决定。
 
-参数：
-- `--source-path`（必需）：源文件路径
-- `--language`（可选）：输出语言，默认 `zh-CN`
-- `--payload-file`（必需）：包含 `digest_slots + section_summaries` 的 JSON 文件
-- `--template-file`（可选）：运行时模板路径，默认根据 language 选择仓库模板
+4. 只在 render 返回 `error: null` 后报告 `digest_path`。
 
-输出：
-- stdout: JSON 结果（`digest_path`, `provenance`, `warnings`, `error`）
+## 错误处理
+
+payload、分类字段、内容列表、标题翻译、registry 或模板无效时，render 返回稳定 JSON 形状，不写出新的 digest：
+
+```json
+{
+  "digest_path": "",
+  "provenance": {"generated_at": "", "input_hash": ""},
+  "warnings": [],
+  "error": {"code": "render_failed", "message": "具体原因"}
+}
+```
+
+源文件不存在、不可读或格式无法识别时，normalize 同样返回 schema-compatible JSON，并在 `error` 中说明原因。失败时不要猜测摘要，不要手写最终 Markdown，也不要向用户询问后续决策。

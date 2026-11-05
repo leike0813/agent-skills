@@ -2,42 +2,21 @@
 Digest 模版约束：
 
 - LLM 只写结构化槽位，最终标题与版式由脚本渲染。
-- 该模板直接消费 `digest_slots + section_summaries`。
+- 该模板按 registry 顺序消费 `digest_sections`。
 - 标题文本和顺序固定，不允许由 LLM 直接生成最终成品块。
 -#}
-## TL;DR
-{% for paragraph in digest_slots.tldr.paragraphs %}
-{{ paragraph }}
-{% endfor %}
+## {{ tldr_heading }}
 
-## 研究问题与贡献
-{% if digest_slots.research_question_and_contributions.research_question %}
-- 研究问题：{{ digest_slots.research_question_and_contributions.research_question }}
-{% endif %}
-{% for item in digest_slots.research_question_and_contributions.contributions %}
-- {{ item }}
-{% endfor %}
+{{ digest_slots.tldr.paragraphs | join("\n\n") }}
 
-## 方法要点
-{% for item in digest_slots.method_highlights["items"] %}
-- {{ item }}
-{% endfor %}
+{% for section in digest_sections %}## {{ section.heading }}
 
-## 关键结果
-{% for item in digest_slots.key_results["items"] %}
-- {{ item }}
-{% endfor %}
+- {{ section["items"] | join("\n- ") }}
 
-## 局限与可复现性线索
-{% for item in digest_slots.limitations_and_reproducibility["items"] %}
-- {{ item }}
-{% endfor %}
+{% endfor %}## {{ section_summaries_heading }}
 
-## 分章节总结
-{% for section in section_summaries %}
-### {{ section.source_heading }}
-{% for item in section["items"] %}
-- {{ item }}
-{% endfor %}
+{% for section in section_summaries %}### {{ section.source_heading }}
+
+- {{ section["items"] | join("\n- ") }}
 
 {% endfor %}
