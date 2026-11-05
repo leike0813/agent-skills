@@ -5,12 +5,13 @@
 # each entry in one pass. Same temp-clone + audit semantics as publish.sh
 # --vendor-url, but applied to the full audit set.
 #
-# This script is intentionally self-contained: it does NOT source publish.sh.
-# The four shared functions (die / log / need_cmd, normalize_git_url,
-# parse_github_url, sync_readme_skills_table and its record_vendor_audit
-# helper) are copied verbatim from publish.sh. The audit file is the
-# contract between the two scripts.
+# Publication reconciliation is shared with publish.sh through publish-guard.sh.
+# The remaining vendor/audit helpers are local; the audit file is the contract.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/publish-guard.sh"
+REVIEWED_TARGETS=()
+FAILED=0
+UPDATED=0
 
 die() {
   echo "ERROR: $*" >&2
@@ -61,6 +62,7 @@ Options:
   --skill-branch-prefix <p> Prefix for single-skill branch (default: skill/)
   --only-main               Only update <AGG_MAIN>:skills/<skill>
   --only-skill-branch       Only update skill/<skill> branch
+  --reviewed-target <ref=sha> Explicitly reviewed exact remote snapshot (repeatable)
   --dry-run                 Print what would happen; no changes.
   -h | --help               Show this help.
 
@@ -99,6 +101,11 @@ while [[ $# -gt 0 ]]; do
   --only-skill-branch)
     ONLY_SKILL_BRANCH=1
     shift
+    ;;
+  --reviewed-target)
+    [[ $# -ge 2 ]] || die "--reviewed-target requires ref=full-sha"
+    REVIEWED_TARGETS+=("$2")
+    shift 2
     ;;
   --dry-run)
     DRY_RUN=1
@@ -421,6 +428,7 @@ fi
 [[ -z "$(git -C "${AGG_WT}" status --porcelain)" ]] || die "Aggregator worktree has local changes: ${AGG_WT}"
 
 git -C "${AGG_WT}" fetch origin --prune
+validate_reviewed_targets "${AGG_WT}" "${REVIEWED_TARGETS[@]}" || die "Target review validation failed."
 
 if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
   cur="$(git -C "${AGG_WT}" rev-parse --abbrev-ref HEAD)"
@@ -552,12 +560,37 @@ while IFS=$'\t' read -r ENTRY_SKILL ENTRY_URL ENTRY_COMMIT; do
   LIST_FINAL="${TMPDIR_PKG}/files_final.txt"
   TARFILE="${TMPDIR_PKG}/pkg.tar"
 
-  find "${PKG_PATH}" -mindepth 1 -maxdepth 5 -type f -not -path '*/.git/*' \
+  find "${PKG_PATH}" -mindepth 1 -maxdepth 5 \( -type f -o -type l \) -not -path '*/.git/*' \
     | sed "s#^${PKG_PATH}/##" \
     > "${LIST_REL}"
   [[ -s "${LIST_REL}" ]] || { log "WARN: no publishable files under ${PKG_PATH}; skipping ${ENTRY_SKILL}."; rm -rf "${WORK_TMP}" "${TMPDIR_PKG}"; trap 'rm -rf "${TMPDIR_BASE}"' EXIT; continue; }
   cp "${LIST_REL}" "${LIST_FINAL}"
   [[ -s "${LIST_FINAL}" ]] || { log "WARN: empty file list after filtering; skipping ${ENTRY_SKILL}."; rm -rf "${WORK_TMP}" "${TMPDIR_PKG}"; trap 'rm -rf "${TMPDIR_BASE}"' EXIT; continue; }
+
+  (cd "${PKG_PATH}" && tar -cf "${TARFILE}" -T "${LIST_FINAL}")
+  PACKAGE_CANDIDATE="${TMPDIR_PKG}/package"
+  MAIN_CANDIDATE="${TMPDIR_PKG}/main-package"
+  mkdir -p "${PACKAGE_CANDIDATE}" "${MAIN_CANDIDATE}"
+  tar -xf "${TARFILE}" -C "${PACKAGE_CANDIDATE}"
+  cp -a "${PACKAGE_CANDIDATE}/." "${MAIN_CANDIDATE}/"
+  readme_target="${MAIN_CANDIDATE}/README.md"
+  prefix_line="> 来源: ${VENDOR_URL}"
+  if [[ -f "${readme_target}" ]]; then
+    if ! head -n 1 "${readme_target}" | grep -qF "${prefix_line#> }"; then
+      { printf '%s\n\n' "${prefix_line}"; cat "${readme_target}"; } >"${readme_target}.prepend"
+      mv "${readme_target}.prepend" "${readme_target}"
+    fi
+  else
+    printf '# %s\n\n来源: %s\n\nUpstream commit: %s\n' "${SKILL}" "${VENDOR_URL}" "${VENDOR_COMMIT}" >"${readme_target}"
+  fi
+  if ! check_publish_target_reconciled "${AGG_WT}" "origin/${AGG_MAIN}" "${AGG_SKILL_DIR_REL}" "${SKILL}" "${MAIN_CANDIDATE}" "${REVIEWED_TARGETS[@]}" ||
+    ! check_publish_target_reconciled "${AGG_WT}" "origin/${SKILL_BRANCH}" . "${SKILL}" "${PACKAGE_CANDIDATE}" "${REVIEWED_TARGETS[@]}"; then
+    log "WARN: target reconciliation failed; skipping ${ENTRY_SKILL}."
+    FAILED=1
+    rm -rf "${WORK_TMP}" "${TMPDIR_PKG}"
+    trap 'rm -rf "${TMPDIR_BASE}"' EXIT
+    continue
+  fi
 
   if [[ "${DRY_RUN}" == "1" ]]; then
     echo "  - [${ENTRY_SKILL}] would clone https://github.com/${VENDOR_OWNER}/${VENDOR_REPO}.git (branch ${VENDOR_BRANCH}) into temp" >&2
@@ -574,7 +607,6 @@ while IFS=$'\t' read -r ENTRY_SKILL ENTRY_URL ENTRY_COMMIT; do
     continue
   fi
 
-  (cd "${PKG_PATH}" && tar -cf "${TARFILE}" -T "${LIST_FINAL}")
 
   # ==============================================================================
   # Step 1: update main IN-PLACE
@@ -582,32 +614,13 @@ while IFS=$'\t' read -r ENTRY_SKILL ENTRY_URL ENTRY_COMMIT; do
   if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
     mkdir -p "${AGG_WT}/${AGG_SKILL_DIR_REL}"
     clear_dir_contents "${AGG_WT}/${AGG_SKILL_DIR_REL}"
-    tar -xf "${TARFILE}" -C "${AGG_WT}/${AGG_SKILL_DIR_REL}"
-
-    vendor_source_url="${VENDOR_URL}"
-    readme_target="${AGG_WT}/${AGG_SKILL_DIR_REL}/README.md"
-    prefix_line="> 来源: ${vendor_source_url}"
-    if [[ -f "${readme_target}" ]]; then
-      if ! head -n 1 "${readme_target}" | grep -qF "$(printf '%s' "${prefix_line}" | sed 's/^> //')"; then
-        tmp_pre="${readme_target}.prepend"
-        {
-          printf '%s\n\n' "${prefix_line}"
-          cat "${readme_target}"
-        } > "${tmp_pre}"
-        mv "${tmp_pre}" "${readme_target}"
-      fi
-    else
-      {
-        printf '# %s\n\n' "${SKILL}"
-        printf '来源: %s\n\n' "${vendor_source_url}"
-        printf 'Upstream commit: %s\n' "${VENDOR_COMMIT}"
-      } > "${readme_target}"
-    fi
+    cp -a "${MAIN_CANDIDATE}/." "${AGG_WT}/${AGG_SKILL_DIR_REL}/"
 
     git -C "${AGG_WT}" add "${AGG_SKILL_DIR_REL}"
     if ! git -C "${AGG_WT}" diff --cached --quiet; then
       git -C "${AGG_WT}" commit -m "publish(${SKILL}): update ${AGG_SKILL_DIR_REL}"
       git -C "${AGG_WT}" push origin "${AGG_MAIN}"
+      advance_reviewed_target "origin/${AGG_MAIN}" "$(git -C "${AGG_WT}" rev-parse "${AGG_MAIN}^{commit}")"
       record_vendor_audit "${AGG_WT}" "${SKILL}" "${VENDOR_URL}" \
         "${VENDOR_OWNER}" "${VENDOR_REPO}" "${VENDOR_BRANCH}" "${VENDOR_SUBPATH}" \
         "${VENDOR_COMMIT}"
@@ -621,6 +634,12 @@ while IFS=$'\t' read -r ENTRY_SKILL ENTRY_URL ENTRY_COMMIT; do
   # ==============================================================================
   if [[ "${ONLY_MAIN}" != "1" ]]; then
     git -C "${AGG_WT}" fetch origin --prune
+    if ! check_publish_target_reconciled "${AGG_WT}" "origin/${SKILL_BRANCH}" . "${SKILL}" "${PACKAGE_CANDIDATE}" "${REVIEWED_TARGETS[@]}"; then
+      FAILED=1
+      rm -rf "${WORK_TMP}" "${TMPDIR_PKG}"
+      trap 'rm -rf "${TMPDIR_BASE}"' EXIT
+      continue
+    fi
 
     SKILL_WT="${WORK_TMP}/agg-skill-wt"
 
@@ -670,6 +689,7 @@ while IFS=$'\t' read -r ENTRY_SKILL ENTRY_URL ENTRY_COMMIT; do
   fi
 
   log "Done updating ${ENTRY_SKILL} (commit ${NEW_COMMIT})."
+  UPDATED=1
 
   rm -rf "${WORK_TMP}" "${TMPDIR_PKG}"
   trap 'rm -rf "${TMPDIR_BASE}"' EXIT
@@ -679,8 +699,11 @@ done < <(jq -rc 'select(.skill and .url) | [.skill, .url, (.commit // "")] | @ts
 # ==============================================================================
 # Sync README once after all entries processed
 # ==============================================================================
-if [[ "${ONLY_SKILL_BRANCH}" != "1" && "${DRY_RUN}" != "1" ]]; then
+if [[ "${UPDATED}" == 1 && "${ONLY_SKILL_BRANCH}" != "1" && "${DRY_RUN}" != "1" ]]; then
   sync_readme_skills_table "${AGG_WT}" "${AGG_SKILLS_DIR}"
 fi
 
+if [[ "${FAILED}" != 0 ]]; then
+  die "One or more vendor entries failed target reconciliation."
+fi
 log "All vendor entries processed. Aggregator local & remote aligned."

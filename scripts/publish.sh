@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/publish-guard.sh"
+REVIEWED_TARGETS=()
 
 die() {
   echo "ERROR: $*" >&2
@@ -59,6 +61,7 @@ Options:
   --only-main               Only update <AGG_MAIN>:skills/<skill>
   --only-skill-branch       Only update skill/<skill> branch
   --config <file>           Config file (default: <dev-root>/.agent-skills-publish.conf)
+  --reviewed-target <ref=sha> Explicitly reviewed exact remote snapshot (repeatable)
   --dry-run                 Print what would happen; no changes.
 
 Auto-discovery:
@@ -477,6 +480,11 @@ while [[ $# -gt 0 ]]; do
     CFG_FILE="${2:-}"
     shift 2
     ;;
+  --reviewed-target)
+    [[ $# -ge 2 ]] || die "--reviewed-target requires ref=full-sha"
+    REVIEWED_TARGETS+=("$2")
+    shift 2
+    ;;
   --dry-run)
     DRY_RUN=1
     shift
@@ -671,6 +679,7 @@ log "DRY_RUN        = ${DRY_RUN}"
 
 git -C "${AGG_WT}" fetch origin --prune
 git -C "${AGG_WT}" show-ref --verify --quiet "refs/remotes/origin/${AGG_MAIN}" || die "origin/${AGG_MAIN} not found."
+validate_reviewed_targets "${AGG_WT}" "${REVIEWED_TARGETS[@]}" || die "Target review validation failed."
 
 # require AGG_WT currently on main if we will update main in-place
 if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
@@ -720,7 +729,7 @@ if [[ "${VENDOR_MODE}" == "1" ]]; then
   # by AGG_WT's git (it lives in a temp clone), so `git ls-files` won't
   # see it. We must also exclude any nested .git directory (the cloned
   # repo's own meta).
-  find "${PKG_PATH}" -mindepth 1 -maxdepth 5 -type f -not -path '*/.git/*' \
+  find "${PKG_PATH}" -mindepth 1 -maxdepth 5 \( -type f -o -type l \) -not -path '*/.git/*' \
     | sed "s#^${PKG_PATH}/##" \
     > "${LIST_REL}"
 else
@@ -751,6 +760,28 @@ else
 fi
 [[ -s "${LIST_FINAL}" ]] || die "After EXCLUDES filtering, nothing left to publish."
 
+# Build both exact replacement candidates before touching either destination.
+(cd "${PKG_PATH}" && tar -cf "${TARFILE}" -T "${LIST_FINAL}")
+PACKAGE_CANDIDATE="${TMPDIR}/package"
+MAIN_CANDIDATE="${TMPDIR}/main-package"
+mkdir -p "${PACKAGE_CANDIDATE}" "${MAIN_CANDIDATE}"
+tar -xf "${TARFILE}" -C "${PACKAGE_CANDIDATE}"
+cp -a "${PACKAGE_CANDIDATE}/." "${MAIN_CANDIDATE}/"
+if [[ "${VENDOR_MODE}" == "1" ]]; then
+  readme_target="${MAIN_CANDIDATE}/README.md"
+  prefix_line="> 来源: ${VENDOR_URL}"
+  if [[ -f "${readme_target}" ]]; then
+    if ! head -n 1 "${readme_target}" | grep -qF "${prefix_line#> }"; then
+      { printf '%s\n\n' "${prefix_line}"; cat "${readme_target}"; } >"${readme_target}.prepend"
+      mv "${readme_target}.prepend" "${readme_target}"
+    fi
+  else
+    printf '# %s\n\n来源: %s\n\nUpstream commit: %s\n' "${SKILL}" "${VENDOR_URL}" "${VENDOR_COMMIT}" >"${readme_target}"
+  fi
+fi
+check_publish_target_reconciled "${AGG_WT}" "origin/${AGG_MAIN}" "${AGG_SKILL_DIR_REL}" "${SKILL}" "${MAIN_CANDIDATE}" "${REVIEWED_TARGETS[@]}" || die "Main target requires reconciliation."
+check_publish_target_reconciled "${AGG_WT}" "origin/${SKILL_BRANCH}" . "${SKILL}" "${PACKAGE_CANDIDATE}" "${REVIEWED_TARGETS[@]}" || die "Skill target requires reconciliation."
+
 # ==============================================================================
 if [[ "${DRY_RUN}" == "1" ]]; then
   log "DRY RUN plan:"
@@ -772,8 +803,6 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   fi
   exit 0
 fi
-# create tarball
-(cd "${PKG_PATH}" && tar -cf "${TARFILE}" -T "${LIST_FINAL}")
 
 # ==============================================================================
 # Step 1: update main IN-PLACE (no worktree add -> excludes your error)
@@ -781,37 +810,13 @@ fi
 if [[ "${ONLY_SKILL_BRANCH}" != "1" ]]; then
   mkdir -p "${AGG_WT}/${AGG_SKILL_DIR_REL}"
   clear_dir_contents "${AGG_WT}/${AGG_SKILL_DIR_REL}"
-  tar -xf "${TARFILE}" -C "${AGG_WT}/${AGG_SKILL_DIR_REL}"
-  if [[ "${VENDOR_MODE}" == "1" ]]; then
-    # Compose provenance README for the published skill on AGG main.
-    # The source URL is the original --vendor-url the user supplied, so the
-    # rendered URL exactly mirrors what they wrote (including /tree/<branch>).
-    vendor_source_url="${VENDOR_URL}"
-    readme_target="${AGG_WT}/${AGG_SKILL_DIR_REL}/README.md"
-    prefix_line="> 来源: ${vendor_source_url}"
-    if [[ -f "${readme_target}" ]]; then
-      # Prepend blockquote line in-place (idempotent: avoid stacking on re-run).
-      if ! head -n 1 "${readme_target}" | grep -qF "$(printf '%s' "${prefix_line}" | sed 's/^> //')"; then
-        tmp_pre="${readme_target}.prepend"
-        {
-          printf '%s\n\n' "${prefix_line}"
-          cat "${readme_target}"
-        } > "${tmp_pre}"
-        mv "${tmp_pre}" "${readme_target}"
-      fi
-    else
-      {
-        printf '# %s\n\n' "${SKILL}"
-        printf '来源: %s\n\n' "${vendor_source_url}"
-        printf 'Upstream commit: %s\n' "${VENDOR_COMMIT}"
-      } > "${readme_target}"
-    fi
-  fi
+  cp -a "${MAIN_CANDIDATE}/." "${AGG_WT}/${AGG_SKILL_DIR_REL}/"
 
   git -C "${AGG_WT}" add "${AGG_SKILL_DIR_REL}"
   if ! git -C "${AGG_WT}" diff --cached --quiet; then
     git -C "${AGG_WT}" commit -m "publish(${SKILL}): update ${AGG_SKILL_DIR_REL}"
     git -C "${AGG_WT}" push origin "${AGG_MAIN}"
+    advance_reviewed_target "origin/${AGG_MAIN}" "$(git -C "${AGG_WT}" rev-parse "${AGG_MAIN}^{commit}")"
     # Vendor mode: track the source URL so the aggregator README can list it.
     if [[ "${VENDOR_MODE}" == "1" ]]; then
       record_vendor_audit "${AGG_WT}" "${SKILL}" "${VENDOR_URL}" \
@@ -828,6 +833,7 @@ fi
 # ==============================================================================
 if [[ "${ONLY_MAIN}" != "1" ]]; then
   git -C "${AGG_WT}" fetch origin --prune
+  check_publish_target_reconciled "${AGG_WT}" "origin/${SKILL_BRANCH}" . "${SKILL}" "${PACKAGE_CANDIDATE}" "${REVIEWED_TARGETS[@]}" || die "Skill target changed or requires reconciliation."
 
   SKILL_WT="${TMPDIR}/agg-skill-wt"
 
