@@ -35,7 +35,7 @@
             "type": "string",
             "x-type": "artifact",
             "x-role": "citation-analysis-report",
-            "description": "Absolute path to the human-readable citation analysis report (citation_analysis.md). Optional; only present when citation analysis was generated. Its content must match citation_analysis.json.report_md exactly."
+            "description": "Absolute path to the human-readable citation analysis report (citation_analysis.md). Optional; only present when citation analysis was generated. The report is rendered independently from Citation DB content and is not embedded in citation_analysis.json."
         },
         "representative_image": {
             "type": "object",

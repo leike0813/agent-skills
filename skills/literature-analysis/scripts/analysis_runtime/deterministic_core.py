@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
-from jsonschema import validate  # type: ignore[import-untyped]
+from jsonschema import ValidationError, validate  # type: ignore[import-untyped]
 
 from . import reference_api
 from . import profiles
@@ -3529,9 +3529,8 @@ def _validate_context(context: dict[str, Any], schema_name: str) -> None:
 
 
 def _render_json(template_name: str, context: dict[str, Any], schema_name: str) -> str:
-    _validate_context(context, schema_name)
     rendered = _render_template(template_name, context)
-    json.loads(rendered)
+    _validate_context(json.loads(rendered), schema_name)
     return rendered + ("" if rendered.endswith("\n") else "\n")
 
 
@@ -4613,95 +4612,62 @@ def _normalize_reference_items_with_entry_metadata(
 
 
 def _validate_references_items(items: object) -> list[str]:
-    if not isinstance(items, list):
-        return ["references must be a JSON array"]
-    errors: list[str] = []
-    for index, item in enumerate(items):
-        if not isinstance(item, dict):
-            errors.append(f"references[{index}] must be object")
-            continue
-        if not isinstance(item.get("author"), list):
-            errors.append(f"references[{index}].author must be array")
-        if not isinstance(item.get("title"), str):
-            errors.append(f"references[{index}].title must be string")
-        year = item.get("year")
-        if year is not None and _as_int_or_none(year) is None:
-            errors.append(f"references[{index}].year must be int|null")
-        if not isinstance(item.get("raw"), str):
-            errors.append(f"references[{index}].raw must be string")
-        confidence = item.get("confidence")
-        if not isinstance(confidence, (int, float)):
-            errors.append(f"references[{index}].confidence must be number")
-    return errors
+    try:
+        validate(instance=items, schema=_schema("references.schema.json"))
+    except ValidationError as exc:
+        return [f"references canonical artifact invalid: {exc.message}"]
+    return []
 
 
 def _validate_citation_analysis_obj(obj: object) -> list[str]:
     if not isinstance(obj, dict):
-        return ["citation_analysis must be a JSON object"]
-    errors: list[str] = []
-    meta = obj.get("meta")
-    if not isinstance(meta, dict):
-        return ["citation_analysis.meta must be object"]
-    scope = meta.get("scope")
-    if not isinstance(scope, dict):
-        errors.append("citation_analysis.meta.scope must be object")
-        scope = {}
-    if not isinstance(meta.get("language"), str):
-        errors.append("citation_analysis.meta.language must be string")
-    if not isinstance(scope.get("section_title"), str):
-        errors.append("citation_analysis.meta.scope.section_title must be string")
-    line_start = _as_int_or_none(scope.get("line_start"))
-    line_end = _as_int_or_none(scope.get("line_end"))
-    if line_start is None or line_end is None:
-        errors.append("citation_analysis.meta.scope.line_start/line_end must be int")
-    elif line_start <= 0 or line_end <= 0 or line_start > line_end:
-        errors.append("citation_analysis.meta.scope line range invalid")
-
-    items = obj.get("items")
-    unmapped = obj.get("unmapped_mentions")
-    if not isinstance(items, list):
-        errors.append("citation_analysis.items must be array")
-        items = []
-    if not isinstance(unmapped, list):
-        errors.append("citation_analysis.unmapped_mentions must be array")
-        unmapped = []
-    if not isinstance(obj.get("summary"), str):
-        errors.append("citation_analysis.summary must be string")
-    if not isinstance(obj.get("report_md"), str):
-        errors.append("citation_analysis.report_md must be string")
-
+        return ["citation_analysis must be a canonical JSON object"]
+    try:
+        validate(instance=obj, schema=_schema("citation_analysis.schema.json"))
+    except ValidationError as exc:
+        return [f"citation_analysis canonical artifact invalid: {exc.message}"]
     seen_mention_ids: set[str] = set()
-    for ref_pos, item in enumerate(items):
-        if not isinstance(item, dict):
-            errors.append(f"citation_analysis.items[{ref_pos}] must be object")
-            continue
-        mentions = item.get("mentions")
-        if not isinstance(mentions, list):
-            errors.append(f"citation_analysis.items[{ref_pos}].mentions must be array")
-            continue
+    errors: list[str] = []
+    for mentions in [*(item["mentions"] for item in obj["items"]), obj["unresolved"]]:
         for mention in mentions:
-            if not isinstance(mention, dict):
-                errors.append(f"citation_analysis.items[{ref_pos}].mentions item must be object")
-                continue
-            mention_id = mention.get("mention_id")
-            if not isinstance(mention_id, str):
-                errors.append("citation mention_id must be string")
-                continue
+            mention_id = mention["mention_id"]
             if mention_id in seen_mention_ids:
                 errors.append("mention_id must be unique")
             seen_mention_ids.add(mention_id)
+    return errors
 
-    for mention in unmapped:
-        if not isinstance(mention, dict):
-            errors.append("citation_analysis.unmapped_mentions item must be object")
-            continue
-        mention_id = mention.get("mention_id")
-        if not isinstance(mention_id, str):
-            errors.append("unmapped mention_id must be string")
-            continue
-        if mention_id in seen_mention_ids:
-            errors.append("mention_id must be unique")
-        seen_mention_ids.add(mention_id)
+
+def _validate_reference_citation_links(
+    references_artifact: dict[str, Any],
+    citation_artifact: dict[str, Any],
+    *,
+    expected_mention_ids: set[str] | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    source_ids = [item["sourceReferenceId"] for item in references_artifact["references"]]
+    reference_ids = set(source_ids)
+    if len(source_ids) != len(reference_ids):
+        errors.append("sourceReferenceId must be unique")
+    item_ids: set[str] = set()
+    for item in citation_artifact["items"]:
+        source_id = item["sourceReferenceId"]
+        if source_id not in reference_ids:
+            errors.append(f"citation sourceReferenceId missing from References: {source_id}")
+        if source_id in item_ids:
+            errors.append("citation sourceReferenceId must be unique")
+        item_ids.add(source_id)
+    for name, bucket in citation_artifact["timeline"].items():
+        if not set(bucket["sourceReferenceIds"]).issubset(item_ids):
+            errors.append(f"citation timeline {name} references a missing citation item")
+    if expected_mention_ids is not None:
+        actual = {
+            mention["mention_id"]
+            for item in citation_artifact["items"]
+            for mention in item["mentions"]
+        }
+        actual.update(mention["mention_id"] for mention in citation_artifact["unresolved"])
+        if actual != expected_mention_ids:
+            errors.append("mention coverage mismatch")
     return errors
 
 
@@ -4709,15 +4675,15 @@ def _count_citation_mentions(citation_analysis_obj: object) -> int | None:
     if not isinstance(citation_analysis_obj, dict):
         return None
     items = citation_analysis_obj.get("items")
-    unmapped = citation_analysis_obj.get("unmapped_mentions")
-    if not isinstance(items, list) or not isinstance(unmapped, list):
+    unresolved = citation_analysis_obj.get("unresolved")
+    if not isinstance(items, list) or not isinstance(unresolved, list):
         return None
     consumed = 0
     for item in items:
         if not isinstance(item, dict) or not isinstance(item.get("mentions"), list):
             return None
         consumed += len(item["mentions"])
-    return consumed + len(unmapped)
+    return consumed + len(unresolved)
 
 
 def _extract_preprocess_expected_mentions(preprocess_artifact: Path | None) -> tuple[int | None, str | None]:
@@ -4739,15 +4705,52 @@ def _extract_preprocess_expected_mentions(preprocess_artifact: Path | None) -> t
 
 
 def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, output_root: Path, warnings: list[str]) -> dict[str, Any]:
-    digest_content = ""
-    references_items: list[dict[str, Any]] = []
-    citation_obj: dict[str, Any] = {
-        "meta": {"language": "zh-CN", "scope": {"section_title": "Introduction", "line_start": 1, "line_end": 1}},
+    references_artifact = candidate.get("references", {
+        "schema": "source_reference_artifact.v1", "references": [],
+    })
+    citation_obj = candidate.get("citation_analysis", {
+        "schema": "citation_analysis_artifact.v1",
+        "meta": {
+            "language": "zh-CN",
+            "scope": {"section_title": "Introduction", "line_start": 0, "line_end": 0},
+            "scope_source": None,
+            "scope_decision": {
+                "selection_reason": None, "covered_sections": [],
+                "fallback_from": None, "fallback_reason": None,
+            },
+            "mapping_reliability": "normal",
+            "reference_extraction": {"status": "completed"},
+        },
         "summary": "",
+        "timeline": {
+            name: {"summary": "", "sourceReferenceIds": []}
+            for name in ("early", "mid", "recent")
+        },
         "items": [],
-        "unmapped_mentions": [],
-        "report_md": "",
-    }
+        "unresolved": [],
+    })
+    validation_errors = _validate_references_items(references_artifact)
+    validation_code = "invalid_reference_artifact"
+    if not validation_errors:
+        validation_errors = _validate_citation_analysis_obj(citation_obj)
+        validation_code = "invalid_citation_artifact"
+    if not validation_errors:
+        validation_errors = _validate_reference_citation_links(references_artifact, citation_obj)
+    if not validation_errors and "literature_matching_metadata" in candidate:
+        try:
+            _validate_context(candidate["literature_matching_metadata"], "literature_matching_metadata.schema.json")
+        except ValidationError as exc:
+            validation_errors = [exc.message]
+            validation_code = "citation_report_failed"
+    if validation_errors:
+        return {
+            "digest_path": "", "references_path": "", "citation_analysis_path": "",
+            "literature_matching_metadata_path": "", "literature_score_path": "",
+            "provenance": {"generated_at": "", "input_hash": "", "model": ""},
+            "warnings": warnings,
+            "error": {"code": validation_code, "message": "; ".join(validation_errors)},
+        }
+    digest_content = ""
 
     digest_val = candidate.get("digest")
     if isinstance(digest_val, dict):
@@ -4758,15 +4761,6 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
         except Exception:  # noqa: BLE001
             digest_content = ""
 
-    refs_val = candidate.get("references")
-    if isinstance(refs_val, dict) and isinstance(refs_val.get("items"), list):
-        references_items = [_normalize_reference_item(item, warnings) for item in refs_val["items"]]
-    elif isinstance(refs_val, list):
-        references_items = [_normalize_reference_item(item, warnings) for item in refs_val]
-
-    citation_val = candidate.get("citation_analysis")
-    if isinstance(citation_val, dict):
-        citation_obj = citation_val
 
     digest_path = output_root / DIGEST_FILENAME
     references_path = output_root / REFERENCES_FILENAME
@@ -4775,7 +4769,7 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
     matching_metadata_path = output_root / LITERATURE_MATCHING_METADATA_FILENAME
 
     _write_text(digest_path, digest_content)
-    _write_json(references_path, references_items)
+    _write_json(references_path, references_artifact)
     _write_json(citation_path, citation_obj)
     matching_metadata = candidate.get("literature_matching_metadata")
     normalized_matching_metadata, matching_error = _validate_literature_matching_metadata_payload(matching_metadata)
@@ -4791,8 +4785,9 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
         if matching_error is not None:
             warnings.append(f"literature_matching_metadata ignored: {matching_error}")
     _write_json(matching_metadata_path, normalized_matching_metadata)
-    if str(citation_obj.get("report_md", "")).strip():
-        _write_text(citation_report_path, str(citation_obj["report_md"]))
+    report_md = candidate.get("citation_analysis_report", "")
+    if isinstance(report_md, str) and report_md.strip():
+        _write_text(citation_report_path, report_md)
 
     provenance = candidate.get("provenance")
     provenance_obj = provenance if isinstance(provenance, dict) else {}
@@ -4862,6 +4857,8 @@ def _validate_public_output(
             errors.append(representative_error)
 
     references_path = payload.get("references_path", "")
+    refs_obj: dict[str, Any] | None = None
+    references_valid = False
     if isinstance(references_path, str) and references_path:
         path = Path(references_path)
         if not path.exists():
@@ -4869,12 +4866,15 @@ def _validate_public_output(
         else:
             try:
                 refs_obj = json.loads(path.read_text(encoding="utf-8"))
-                errors.extend(_validate_references_items(refs_obj))
+                reference_errors = _validate_references_items(refs_obj)
+                errors.extend(reference_errors)
+                references_valid = not reference_errors
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"references_path unreadable JSON: {exc}")
 
     citation_path = payload.get("citation_analysis_path", "")
     citation_obj: dict[str, Any] | None = None
+    citation_valid = False
     if isinstance(citation_path, str) and citation_path:
         path = Path(citation_path)
         if not path.exists():
@@ -4882,9 +4882,18 @@ def _validate_public_output(
         else:
             try:
                 citation_obj = json.loads(path.read_text(encoding="utf-8"))
-                errors.extend(_validate_citation_analysis_obj(citation_obj))
+                citation_errors = _validate_citation_analysis_obj(citation_obj)
+                errors.extend(citation_errors)
+                citation_valid = not citation_errors
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"citation_analysis_path unreadable JSON: {exc}")
+
+    if references_valid and citation_valid and refs_obj is not None and citation_obj is not None:
+        expected_ids = None
+        if db_path is not None and db_path.exists():
+            with connect_db(db_path) as connection:
+                expected_ids = {str(mention["mention_id"]) for mention in fetch_citation_mentions(connection)}
+        errors.extend(_validate_reference_citation_links(refs_obj, citation_obj, expected_mention_ids=expected_ids))
 
     if citation_obj is not None and "citation_analysis_report_path" in payload:
         report_path_value = payload.get("citation_analysis_report_path")
@@ -4894,8 +4903,8 @@ def _validate_public_output(
                 errors.append(f"citation_analysis_report_path does not exist: {report_path}")
             else:
                 try:
-                    if report_path.read_text(encoding="utf-8") != str(citation_obj.get("report_md", "")):
-                        errors.append("citation_analysis_report_path content must equal citation_analysis.report_md")
+                    if not report_path.read_text(encoding="utf-8").strip():
+                        errors.append("citation_analysis_report_path must contain derived report text")
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"citation_analysis_report_path unreadable text: {exc}")
 
@@ -4907,6 +4916,7 @@ def _validate_public_output(
         else:
             try:
                 matching_obj = json.loads(path.read_text(encoding="utf-8"))
+                _validate_context(matching_obj, "literature_matching_metadata.schema.json")
                 _, matching_error = _validate_literature_matching_metadata_payload(matching_obj)
                 if matching_error is not None:
                     errors.append(matching_error)
@@ -7379,13 +7389,22 @@ def _render_public_artifacts(db_path: Path) -> dict[str, Any]:
             ensure_trailing_newline=False,
             template_root=runtime_template_paths.citation_analysis_template_path.parent,
         )
-        citation_context = build_citation_render_context(connection, report_md)
+        citation_context = build_citation_render_context(connection)
         citation_analysis_json = _render_json("citation_analysis.json.j2", citation_context, "citation_analysis.schema.json")
         matching_metadata_json = _render_json(
             "literature_matching_metadata.json.j2",
             matching_metadata_context,
             "literature_matching_metadata.schema.json",
         )
+        citation_artifact = json.loads(citation_analysis_json)
+        semantic_errors = _validate_citation_analysis_obj(citation_artifact)
+        semantic_errors.extend(_validate_reference_citation_links(
+            json.loads(references_json),
+            citation_artifact,
+            expected_mention_ids={str(mention["mention_id"]) for mention in fetch_citation_mentions(connection)},
+        ))
+        if semantic_errors:
+            raise ValueError("; ".join(semantic_errors))
 
         digest_path = (output_root / DIGEST_FILENAME).resolve()
         references_path = (output_root / REFERENCES_FILENAME).resolve()
@@ -7515,6 +7534,9 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
     if mode == "fix":
         warnings: list[str] = []
         fixed = _materialize_outputs(dict(obj) if isinstance(obj, dict) else {}, source_path, output_root, warnings)
+        if fixed.get("error"):
+            print(json.dumps(fixed, ensure_ascii=False))
+            return 2
         errors = _validate_public_output(fixed, preprocess_artifact=preprocess_artifact, db_path=db_path if args.db_path else None)
         if errors:
             fixed.setdefault("warnings", [])

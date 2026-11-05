@@ -104,7 +104,9 @@ Allowed reasons to skip a delegation point are limited to: no subagent capabilit
 输出规则：
 
 - 公开产物路径必须是绝对路径。
-- `citation_analysis.md` 必须与 `citation_analysis.json.report_md` 完全一致。
+- `references.json` 是 canonical `source_reference_artifact.v1`：顶层仅 `{schema, references}`；每条 reference 含 `sourceReferenceId`、`extraction`（`null` 或 `{raw, confidence}`）、`bibliography`（必填 `title`、`authors`、`year`，rich 字段按 schema 白名单）与 `matching`（仅含确有证据的 `DOI`、`url`、`ISBN`、`ISSN`、`citekey`）。同一 artifact 内 `sourceReferenceId` 唯一；它是 runtime 持久化的 opaque identity，内部 `ref_index` 与 workset 字段不公开。
+- `citation_analysis.json` 是 canonical `citation_analysis_artifact.v1`：顶层仅 `{schema, meta, summary, timeline, items, unresolved}`；`items[].sourceReferenceId` 与 `timeline.*.sourceReferenceIds` 必须属于 References ID 集合；`items[].mentions` 与 `unresolved` 不重复 `mention_id`，其并集等于 SQLite 中已过滤误报后的 mention 集合。未映射 mention 与缺 semantic review 的已映射 mention 都进入 `unresolved`，后者 `reason` 为 `semantic_review_missing`。
+- `citation_analysis.md` 是从 Citation DB 内容独立派生的报告，不嵌入 `citation_analysis.json`。
 - 最终 stdout 同步镜像写入 runtime DB 固化的 result JSON path。
 - full mode 成功时公开产物路径均非空；score-only 成功时只有 `literature_score_path` 非空，其他公开产物路径为空字符串，`citation_analysis_report_path` 不出现。
 - 失败时仍返回 schema-compatible JSON；不可用路径为空字符串，`error` 含结构化 `code` 与 `message`。
