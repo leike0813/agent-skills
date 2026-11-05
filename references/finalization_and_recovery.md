@@ -40,12 +40,13 @@ Formal render truth:
 
 - `digest.md` derives from persisted profile headings、`digest_slots` 与 `digest_section_summaries`。
 - digest section 标题与顺序来自 effective profile；非 zh/en 语言使用已持久化的 `digest_heading_translations`。
-- `references.json` derives from `reference_items`。
+- `references.json` derives from `reference_items` as a `source_reference_artifact.v1` object。
+- `citation_analysis.json` derives from citation tables as a `citation_analysis_artifact.v1` object。
 - `citation_analysis.json.summary` derives from `citation_summary`。
-- `citation_analysis.json.timeline` derives from `citation_timeline`。
-- `citation_analysis.json.items` derives from `citation_workset_items + citation_items`。
-- `citation_analysis.json.report_md` derives from citation summary/timeline/items/unmapped/scope。
-- `citation_analysis.md` must exactly equal `citation_analysis.json.report_md`。
+- `citation_analysis.json.timeline` derives from `citation_timeline`，每个 bucket 为 `{summary, sourceReferenceIds}`。
+- `citation_analysis.json.items` derives from `citation_workset_items + citation_items`，并与 References 共用 `sourceReferenceId`。
+- `citation_analysis.json.unresolved` derives from unmapped mention evidence and mapped mentions without a semantic review。
+- `citation_analysis.md` derives separately from citation summary/timeline/items/unresolved/scope and is a separate report artifact。
 - `literature_matching_metadata.json` derives from DB `literature_matching_metadata`。
 - `literature_score.json` derives from DB `literature_score` 与 persisted rubric snapshot，使用 `literature_score.v2`。
 - `representative_image` 是可选 stdout metadata，不是公开产物。
@@ -101,7 +102,7 @@ Artifact registry records at least:
 - `literature_matching_metadata_path` from `literature_matching_metadata`
 - `literature_score_path` from `literature_score`
 
-If renderer generated non-empty `report_md`, also record `citation_analysis_report_path`。
+When the renderer produced the citation report, also record `citation_analysis_report_path`。
 
 Warning aggregation may include:
 
@@ -223,7 +224,7 @@ Representative codes and meanings:
 - `citation_mentions_not_found`：citation scope had no stable mentions after filtering。
 - `citation_workset_empty`：no usable citation workset was produced。
 - `citation_merge_failed`：coverage、duplicate 或 mapping validation failed。
-- `citation_report_failed`：renderer could not derive a valid `report_md`。
+- `citation_report_failed`：final renderer could not derive the report or validate canonical JSON artifacts and their reference/mention associations before writing。
 - `render_validation_failed`：final artifact or stdout schema validation failed。
 
 ## Final Validation Checklist
@@ -233,11 +234,11 @@ Before considering the run successful:
 - stdout is exactly one JSON object。
 - All public artifact paths are absolute。
 - Fixed filenames are used。
-- `citation_analysis.md` equals `citation_analysis.json.report_md`。
+- `citation_analysis.md` is the separately rendered report; it is not embedded in `citation_analysis.json`。
 - `literature_matching_metadata.json.schema` is `literature_matching_metadata.v1`。
 - `literature_score.json.schema` is `literature_score.v2`，含 `literature_classification`、`rubric_id`、三个 aggregate 值，以及与 selected rubric 一致的动态 dimensions。
-- `references.json` is a JSON array with required fields。
-- `citation_analysis.json` has `meta`、`summary`、`timeline`、`items`、`unmapped_mentions` 和 `report_md`。
+- `references.json` is a `source_reference_artifact.v1` object with a unique `sourceReferenceId` per reference。
+- `citation_analysis.json` is a `citation_analysis_artifact.v1` object with `meta`、`summary`、`timeline`、`items` 和 `unresolved`；`items`/`timeline` 的 ID 属于 References 集合，`items[].mentions` 与 `unresolved` 的 `mention_id` 不重复且并集等于已过滤 mention 集合。
 - result mirror at `result_json_path` matches stdout。
 - warnings are non-fatal and auditable。
 - `error` is empty on success and structured on failure。

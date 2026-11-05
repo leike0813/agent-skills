@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1447,31 +1448,59 @@ def is_reference_extraction_abandoned(connection: sqlite3.Connection) -> bool:
     )
 
 
+def _validate_reference_source_id(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > 512:
+        raise ValueError("sourceReferenceId must be a nonblank string of at most 512 characters")
+    return value
+
+
 def store_reference_items(connection: sqlite3.Connection, items: list[dict[str, Any]]) -> None:
-    connection.execute("DELETE FROM reference_items")
+    previous_ids = {int(item["ref_index"]): item.get("sourceReferenceId") for item in fetch_reference_items(connection)}
+    rows: list[tuple[Any, ...]] = []
+    seen_ids: set[str] = set()
+    seen_indexes: set[int] = set()
     now = utc_now_iso()
     for item in items:
+        ref_index = int(item["ref_index"])
+        if ref_index in seen_indexes:
+            raise ValueError("reference ref_index must be unique")
+        seen_indexes.add(ref_index)
         metadata = dict(item.get("metadata", {})) if isinstance(item.get("metadata"), dict) else {}
+        supplied_ids = [value for value in (item.get("sourceReferenceId"), metadata.get("sourceReferenceId")) if value is not None]
+        for value in supplied_ids:
+            _validate_reference_source_id(value)
+        previous_id = previous_ids.get(ref_index)
+        if previous_id is not None:
+            _validate_reference_source_id(previous_id)
+        source_id = previous_id or (supplied_ids[0] if supplied_ids else str(uuid.uuid4()))
+        if any(value != source_id for value in supplied_ids):
+            raise ValueError("sourceReferenceId conflicts with the persisted reference identity")
+        if source_id in seen_ids:
+            raise ValueError("sourceReferenceId must be unique")
+        seen_ids.add(source_id)
         for key, value in item.items():
             if key not in {"ref_index", "author", "title", "year", "raw", "confidence", "metadata"}:
                 metadata[key] = value
-        connection.execute(
-            """
-            INSERT INTO reference_items (
-                ref_index, author_json, title, year, raw, confidence, metadata_json, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                int(item["ref_index"]),
-                _json_dump(item.get("author", [])),
-                str(item.get("title", "")),
-                int(item["year"]) if item.get("year") is not None else None,
-                str(item["raw"]),
-                float(item["confidence"]),
-                _json_dump(metadata),
-                now,
-            ),
-        )
+        metadata["sourceReferenceId"] = source_id
+        rows.append((
+            ref_index,
+            _json_dump(item.get("author", [])),
+            str(item.get("title", "")),
+            int(item["year"]) if item.get("year") is not None else None,
+            str(item["raw"]),
+            float(item["confidence"]),
+            _json_dump(metadata),
+            now,
+        ))
+    connection.execute("DELETE FROM reference_items")
+    connection.executemany(
+        """
+        INSERT INTO reference_items (
+            ref_index, author_json, title, year, raw, confidence, metadata_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
     touch_runtime(connection)
 
 
@@ -1493,6 +1522,36 @@ def fetch_reference_items(connection: sqlite3.Connection) -> list[dict[str, Any]
             }
         )
         items.append(item)
+    return items
+
+
+def _ensure_reference_source_ids(
+    connection: sqlite3.Connection,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    updates: list[tuple[str, str, int]] = []
+    seen_ids: set[str] = set()
+    now = utc_now_iso()
+    for item in items:
+        source_id = item.get("sourceReferenceId")
+        if source_id is None:
+            source_id = str(uuid.uuid4())
+            item["sourceReferenceId"] = source_id
+            metadata = {
+                key: value for key, value in item.items()
+                if key not in {"ref_index", "author", "title", "year", "raw", "confidence"}
+            }
+            updates.append((_json_dump(metadata), now, int(item["ref_index"])))
+        _validate_reference_source_id(source_id)
+        if source_id in seen_ids:
+            raise ValueError("sourceReferenceId must be unique")
+        seen_ids.add(source_id)
+    if updates:
+        connection.executemany(
+            "UPDATE reference_items SET metadata_json = ?, updated_at = ? WHERE ref_index = ?",
+            updates,
+        )
+        touch_runtime(connection)
     return items
 
 
@@ -2026,7 +2085,7 @@ def _build_citation_label_map(items: list[dict[str, Any]]) -> dict[int, str]:
     return label_map
 
 
-def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") -> dict[str, Any]:
+def fetch_citation_payload(connection: sqlite3.Connection) -> dict[str, Any]:
     scope = fetch_section_scope(connection, "citation_scope") or {
         "section_title": "Introduction",
         "line_start": 0,
@@ -2036,6 +2095,8 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
     scope_metadata = dict(scope.get("metadata", {}))
     semantics_items = {int(item["ref_index"]): item for item in fetch_citation_items(connection)}
     workset_items = fetch_citation_workset_items(connection)
+    if set(semantics_items) - {int(item["ref_index"]) for item in workset_items}:
+        raise ValueError("citation semantics reference a missing workset item")
     numeric_mentions = connection.execute(
         "SELECT COUNT(*) AS count FROM citation_mentions WHERE style = 'numeric'"
     ).fetchone()
@@ -2067,10 +2128,14 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
         reference_extraction = {"status": "completed"}
 
     items: list[dict[str, Any]] = []
+    unresolved = fetch_citation_unmapped_mentions(connection)
     for workset in workset_items:
         ref_index = int(workset["ref_index"])
         semantics = semantics_items.get(ref_index)
         if semantics is None:
+            unresolved.extend(
+                {**mention, "reason": "semantic_review_missing"} for mention in workset["mentions"]
+            )
             continue
         item = dict(semantics)
         item.update(
@@ -2127,8 +2192,7 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
         "summary": "" if summary_row is None else str(summary_row["summary"]),
         "timeline": timeline_row,
         "items": items,
-        "unmapped_mentions": fetch_citation_unmapped_mentions(connection),
-        "report_md": report_md,
+        "unmapped_mentions": unresolved,
     }
 
 
@@ -2154,45 +2218,53 @@ def build_digest_render_context(connection: sqlite3.Connection) -> dict[str, Any
     }
 
 
-REFERENCE_PUBLIC_METADATA_FIELDS = {
-    "publicationTitle",
-    "conferenceName",
-    "archiveID",
-    "university",
-    "volume",
-    "issue",
-    "pages",
-    "numPages",
-    "DOI",
-    "url",
-    "publisher",
-    "place",
-    "ISBN",
-    "ISSN",
-    "itemType",
-    "date",
-}
-
-REFERENCE_AUDIT_METADATA_FIELDS = {"entry_index", "selected_pattern", "pattern_candidate"}
+def _canonical_optional_string(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
-def _public_reference_item(item: dict[str, Any]) -> dict[str, Any]:
-    public_item = {
-        "ref_index": int(item["ref_index"]),
-        "author": list(item.get("author", [])),
+def _canonical_optional_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _canonical_source_reference(item: dict[str, Any]) -> dict[str, Any]:
+    bibliography: dict[str, Any] = {
         "title": str(item.get("title", "")),
+        "authors": list(item.get("author", [])),
         "year": item.get("year"),
-        "raw": str(item.get("raw", "")),
-        "confidence": float(item.get("confidence", 0.0)),
     }
-    for field in REFERENCE_PUBLIC_METADATA_FIELDS:
-        if field in item:
-            public_item[field] = item[field]
-    return public_item
+    for field in (
+        "publicationTitle", "conferenceName", "university", "archiveID", "volume",
+        "issue", "pages", "place", "publisher", "itemType", "date",
+    ):
+        value = item.get(field)
+        if value is not None and value != "":
+            bibliography[field] = str(value)
+    num_pages = _canonical_optional_int(item.get("numPages"))
+    if num_pages is not None and num_pages >= 0:
+        bibliography["numPages"] = num_pages
+    return {
+        "sourceReferenceId": item["sourceReferenceId"],
+        "extraction": {"raw": str(item["raw"]), "confidence": item["confidence"]},
+        "bibliography": bibliography,
+        "matching": {
+            field: str(item[field]) for field in ("DOI", "url", "ISBN", "ISSN", "citekey")
+            if item.get(field) is not None and item[field] != ""
+        },
+    }
 
 
 def build_references_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
-    return {"items": [_public_reference_item(item) for item in fetch_reference_items(connection)]}
+    items = _ensure_reference_source_ids(connection, fetch_reference_items(connection))
+    return {
+        "source_reference_artifact": {
+            "schema": "source_reference_artifact.v1",
+            "references": [_canonical_source_reference(item) for item in items],
+        }
+    }
 
 
 def build_reference_parse_audit_context(connection: sqlite3.Connection) -> dict[str, Any]:
@@ -2234,7 +2306,7 @@ def _function_label(function_value: Any) -> str:
 
 
 def build_citation_report_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
-    payload = fetch_citation_payload(connection, report_md="")
+    payload = fetch_citation_payload(connection)
     summary_row = fetch_citation_summary(connection) or {"summary": "", "basis": {}}
     summary_basis = dict(summary_row.get("basis", {}))
     ordered_items: list[dict[str, Any]] = []
@@ -2346,8 +2418,69 @@ def build_citation_report_render_context(connection: sqlite3.Connection) -> dict
     }
 
 
-def build_citation_render_context(connection: sqlite3.Connection, report_md: str) -> dict[str, Any]:
-    return {"citation_analysis": fetch_citation_payload(connection, report_md=report_md)}
+def _canonical_citation_mention(mention: dict[str, Any], *, unresolved: bool = False) -> dict[str, Any]:
+    result = {"mention_id": mention["mention_id"]}
+    for key in ("marker", "style", "snippet", "surname_hint", "citation_label_hint", "citekey_hint"):
+        result[key] = _canonical_optional_string(mention.get(key))
+    for key in ("line_start", "line_end", "ref_number_hint", "year_hint"):
+        result[key] = _canonical_optional_int(mention.get(key))
+    if unresolved:
+        result["reason"] = _canonical_optional_string(mention.get("reason"))
+    return result
+
+
+def build_citation_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
+    references = _ensure_reference_source_ids(connection, fetch_reference_items(connection))
+    source_ids = {int(item["ref_index"]): item["sourceReferenceId"] for item in references}
+    for workset in fetch_citation_workset_items(connection):
+        if int(workset["ref_index"]) not in source_ids:
+            raise ValueError(f"citation workset references missing ref_index {workset['ref_index']}")
+    payload = fetch_citation_payload(connection)
+    functions = {
+        "background", "baseline", "contrast", "component", "dataset",
+        "tooling", "historical", "uncategorized",
+    }
+    items: list[dict[str, Any]] = []
+    semantic_indexes: set[int] = set()
+    for item in payload["items"]:
+        ref_index = int(item["ref_index"])
+        semantic_indexes.add(ref_index)
+        function = str(item.get("function", "")).strip().lower()
+        items.append({
+            "sourceReferenceId": source_ids[ref_index],
+            "function": function if function in functions else "uncategorized",
+            "role_in_context": _canonical_optional_string(item.get("role_in_context")),
+            "topic": _canonical_optional_string(item.get("topic")),
+            "usage": _canonical_optional_string(item.get("usage")),
+            "keywords": item.get("keywords", []),
+            "summary": _canonical_optional_string(item.get("summary")),
+            "key_reference_reason": _canonical_optional_string(item.get("key_reference_reason")),
+            "confidence": item.get("confidence"),
+            "mentions": [_canonical_citation_mention(mention) for mention in item["mentions"]],
+        })
+    timeline: dict[str, Any] = {}
+    for bucket_name in ("early", "mid", "recent"):
+        bucket = payload["timeline"].get(bucket_name, {})
+        indexes = bucket.get("ref_indexes", [])
+        if any(index not in semantic_indexes for index in indexes):
+            raise ValueError(f"citation timeline {bucket_name} references a missing semantic item")
+        timeline[bucket_name] = {
+            "summary": bucket.get("summary", ""),
+            "sourceReferenceIds": [source_ids[index] for index in indexes],
+        }
+    return {
+        "citation_analysis": {
+            "schema": "citation_analysis_artifact.v1",
+            "meta": payload["meta"],
+            "summary": payload["summary"],
+            "timeline": timeline,
+            "items": items,
+            "unresolved": [
+                _canonical_citation_mention(mention, unresolved=True)
+                for mention in payload["unmapped_mentions"]
+            ],
+        }
+    }
 
 
 def build_literature_matching_metadata_render_context(connection: sqlite3.Connection) -> dict[str, Any]:

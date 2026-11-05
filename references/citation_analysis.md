@@ -1,6 +1,6 @@
 # Citation Analysis
 
-本文件补充 `persist_citation_analysis`。本阶段是 tolerant best-effort 持久化：agent 可写 citation semantic review、三段 timeline narrative 和全局 summary；字段缺失或为空时 runtime 保存空值，不生成替代语义。Mention extraction、mapping、function 分类、timeline bucket membership、renderer labels、`report_md` 都由 runtime 从 DB workset 派生。
+本文件补充 `persist_citation_analysis`。本阶段是 tolerant best-effort 持久化：agent 可写 citation semantic review、三段 timeline narrative 和全局 summary；字段缺失或为空时 runtime 保存空值，不生成替代语义。Mention extraction、mapping、function 分类、timeline bucket membership、renderer labels 和 `report_md` 报告文本都由 runtime 从 DB workset 派生；canonical `citation_analysis.json` 不嵌入 `report_md`。
 
 ## Stage Shape
 
@@ -236,7 +236,7 @@ Runtime derives renderer categories such as:
 - `historical`
 - `uncategorized`
 
-These words can appear naturally in `role_in_context`, but agent should not submit a category field.
+These are the only `function` values in the canonical artifact; any unknown internal class is projected as `uncategorized`. These words can appear naturally in `role_in_context`, but agent should not submit a category field.
 
 `summary`:
 
@@ -268,7 +268,7 @@ Runtime derives:
 - dated item membership for `early`, `mid`, and `recent`
 - timeline closure over all dated citation items
 - key-reference index list from non-empty `key_reference_reason`
-- renderer labels and `report_md`
+- renderer labels and the citation report Markdown (a separate artifact)
 
 All stable dated items are placed into exactly one bucket by runtime. The agent should not maintain a manual list.
 
@@ -317,18 +317,18 @@ These are invalid because submit payload should contain semantic reviews and nar
 
 ## Public Render Contract
 
-Rendered `citation_analysis.json` includes:
+Rendered `citation_analysis.json` is a canonical `citation_analysis_artifact.v1` object:
 
+- `schema`
 - `meta`
 - `summary`
-- `timeline`
-- `items`
-- `unmapped_mentions`
-- `report_md`
+- `timeline`：`early` / `mid` / `recent`，每段为 `{summary, sourceReferenceIds}`
+- `items`：每项含 `sourceReferenceId`、`function`、`role_in_context`、`topic`、`usage`、`keywords`、`summary`、`key_reference_reason`、`confidence`、`mentions`
+- `unresolved`
 
-`citation_analysis.md` must equal `citation_analysis.json.report_md`.
+`items[].sourceReferenceId` and `timeline.*.sourceReferenceIds` must resolve to persisted References entries. `unresolved` contains unmapped mentions and mapped mentions without a semantic review; the latter carry `reason="semantic_review_missing"`. `items[].mentions` and `unresolved` never repeat a `mention_id`, and their union equals the filtered `citation_mentions` set in SQLite.
 
-The agent does not write `report_md`. The renderer derives it from persisted semantic reviews, derived timeline, unmapped mentions, and templates.
+`citation_analysis.md` is a separate renderer-derived report and is not embedded in the canonical JSON artifact. The agent does not write report text. The renderer derives it from persisted semantic reviews, derived timeline, resolved items, unresolved mentions, and templates.
 
 ## Failure And Recovery Notes
 

@@ -531,7 +531,17 @@ Runtime tables and sidecars used by this stage:
 - `reference_items`: persisted normalized references.
 - `reference_metadata_evidence_workset`: local metadata evidence review aid.
 
-Public `references.json` is rendered from `reference_items`. It contains bibliographic fields and renderer-owned `ref_index`, but not parse/debug fields. The agent never edits it directly. Parse candidate audit lives in `.literature_analysis_tmp/reference_parse_audit.json`.
+Public `references.json` is rendered from `reference_items` as a `source_reference_artifact.v1` object:
+
+- Top level is exactly `{schema, references}`.
+- Each reference is `{sourceReferenceId, extraction, bibliography, matching}`.
+- `extraction` is `null` or `{raw, confidence}`.
+- `bibliography` requires `title`, `authors`, and `year`; rich fields use the artifact schema whitelist.
+- `matching` only carries evidenced `DOI`, `url`, `ISBN`, `ISSN`, and `citekey`; a missing citekey is valid and is never derived from numbering.
+- `ref_index`, workset keys, and parse/debug fields stay internal; parse candidate audit lives in `.literature_analysis_tmp/reference_parse_audit.json`.
+- `sourceReferenceId` is an opaque runtime identity. For the same persisted reference row it stays stable across core/metadata resubmission, `finalize_outputs`, and DB reopen. Re-extraction clears the old rows and produces a new ID generation.
+
+The agent never edits the public artifact directly.
 
 ## Examples
 
