@@ -1,105 +1,120 @@
 # Paper Scoring
 
-本文件补充 `persist_literature_score` 的语义判断方法。进入评分阶段、填写 review draft、修复 `score_review_invalid`，或需要判断 applicability 与 confidence 时读取；执行顺序、CLI 和最终 stdout 契约以 `SKILL.md` 为准。
+本文件补充 `persist_literature_score` 的语义判断方法。进入评分阶段、填写 review draft、修复 `score_review_invalid`，或判断 applicability 与 confidence 时读取；主路径、CLI 来源与 stdout 契约以 `SKILL.md` 为准。
 
 ## 评分目标
 
-评分同时表达论文文本呈现的质量与判断把握：
+评分表达当前 normalized source 能支持的质量判断：
 
-- `overall_score`：当前原文所展示的科学质量，范围 0–100。
-- `confidence`：agent 对上述判断的把握，范围 0–1。
+- `overall_score`：文本所展示的研究质量，范围 0–100。
+- `confidence`：agent 对质量判断的把握，范围 0–1。
 - `confidence_adjusted_score`：runtime 计算的 `overall_score × confidence`。
 
-不要用 confidence 代替质量分。论文可能设计良好，但原文缺页、OCR 较差或关键附录不可见；此时质量分可以较高，confidence 应降低。证据完整也不等于质量高：证据若清楚展示一个薄弱设计，质量分应低而 confidence 可以高。
+confidence 不能代替质量分。论文设计可能清楚但输入缺页、OCR 差或附录不可见；此时质量分可以较高，confidence 应降低。证据完整也不等于质量高：若原文明确展示薄弱设计，质量分应低而 confidence 可以高。
 
-只判断当前 normalized source 能支持的内容。作者、机构、期刊、会议名气、引用量、搜索热度和外部评价都不是评分证据。
+只判断当前 source 能支持的内容。作者、机构、期刊、会议名气、引用量、搜索热度和外部评价都不是评分证据。
 
-## Prepare 与 Submit
+## 前置条件与 Prepare
 
-Prepare：
+normal mode 必须已在同一 run 完成 classification 与 `persist_digest`；score-only 在 classification 后直接进入本阶段。
 
 ```bash
 python scripts/run_analysis.py persist_literature_score --db-path "<db_path>"
 ```
 
-读取 stdout 中的：
+prepare 返回：
 
 - `scoring_review_form_path`：runtime 生成的不可编辑原始表单，是 locked-field 校验和恢复真源。
-- `scoring_review_draft_path`：填写用草稿；同一 `form_id` 再次 prepare 时不会覆盖已有答案。
-- `editable_fields`：允许修改的字段集合。
-- `submit_command`：将当前 draft 直接作为 `--payload-file` 提交的完整命令。
+- `scoring_review_draft_path`：填写用草稿；相同 `form_id` 再次 prepare 时保留已有答案。
+- `editable_fields`：允许编辑的字段。
+- `submit_command`：将当前 draft 作为 `--payload-file` 提交的完整命令。
 
-从 `init_runtime` 返回的 normalized-source path 读取论文，只编辑 draft。提交时直接执行 prepare 返回的命令，不另建一份评分对象。
+从 DB 的 normalized source 读取论文，只编辑 draft。提交时直接执行 prepare 返回的命令，不新建另一份评分对象。
 
-表单绑定当前 normalized source 与 rubric snapshot。`form_id`、paper-type 选项、dimension/criterion key、名称、prompt、权重、满分及数组顺序均由 runtime 锁定。不要改写、删除、重排或补充这些字段。
+`form_id` 由 normalized source、locked classification 与 resolved rubric 派生。same source + same classification + same rubric 重复 prepare 返回同一 identity 与路径；任何一项变化都会生成新的 form。
 
-允许编辑的内容只有：
+## Locked Fields
 
-- 在 `paper_type_choices[*].selected` 中选择一个且仅一个选项；
-- `paper_type_reason`；
-- `dimension_reviews[*].confidence` 与 `summary`；
-- `criterion_reviews[*].applicable`、`score`、`reason` 与 `evidence_quotes`。
+以下内容由 runtime 锁定：
 
-## 论文类型选择
+- `form_id`
+- `literature_classification`
+- rubric 与 `rubric_id`
+- dimension/criterion keys、names、prompts、配置权重、满分与数组顺序
+- criterion 的 `max_score`
+- evidence 行号、criterion status、effective weights、dimension/overall/confidence/adjusted aggregates
 
-逐项阅读表单中的 paper-type `description`，选择最能描述主要论证方式的一项。`paper_type_reason` 简短说明判断依据。论文类型用于解释 criterion 是否有评价对象，不直接增加或降低分数。
+prepare 锁定 classification snapshot 与 selected rubric；criterion 的语义答案仍按表单填写。
 
-不要手写 paper-type 字符串。选择值来自被勾选条目的 locked `paper_type`。
+只允许编辑：
 
-## Dimension 与 Criterion 判断
+- `dimension_reviews[*].confidence`
+- `dimension_reviews[*].summary`
+- `criterion_reviews[*].applicable`
+- `criterion_reviews[*].score`
+- `criterion_reviews[*].reason`
+- `criterion_reviews[*].evidence_quotes`
 
-`scoring_rubric.json` 是 paper-type 选项、名称、prompt、顺序、权重和满分的唯一事实源；prepare 已将本次 snapshot 的全部定义写入表单。逐项依据表单内的 `prompt` 判断，不从本文档复制 key、满分或维度配置。
+locked field 变动返回 `score_review_invalid` 与 `locked_field_changed`。source、classification 或 rubric 变化后，此前的 draft 返回 `stale_form`。
 
-评分时先完成 criterion，再写 dimension summary 与 confidence：
+## Selected Rubric
 
-1. 判断该 criterion 对当前论文是否有合理评价对象。
-2. 若有，保持 `applicable=true`，填写合法整数 score、非空 reason，并按需加入原文 quote。
-3. 若没有，设置 `applicable=false`、`score=null`，并用 reason 说明为什么论文类型使该项没有评价对象。
-4. 汇总本维度的优势、缺口与证据边界。
-5. 若本维度至少一个 criterion applicable，填写 0–1 confidence；若全部不适用，confidence 保持 null。
+Canonical 定义位于 `assets/literature_profiles.json`。prepare 从 SQLite `literature_classification` 中选中的 `rubric` 快照生成本次表单；`scoring_rubric_path` 只是审计镜像。不要从本文档手抄 key、weight 或 criterion；以 runtime contract 和表单内容为准。
 
-不要为了让总分“看起来合理”反向调整 criterion。逐项依据原文评分，runtime 负责归一化、权重重分配和聚合。
+八个 profile 都使用固定六维 rubric。dimension 顺序与权重固定为 25/20/15/15/15/10，最后一项为 `writing_quality`；dimension key、name 与 criteria 按所选 profile 定义，相同数组位置不代表跨 profile 同义。
 
-## 分数校准
+- 不同 profile/rubric 的公开分数含义不同；没有明确映射时，不把 `overall_score` 或 dimension scores 直接横向排序。
 
-每项使用表单预填的 `max_score`。可按满分比例保持判断一致：
+classification confidence 与 scoring confidence 相互独立。`confidence=low` 已在分类阶段回退为 effective `general`，并保留 warning；该回退不直接扣减质量分。
 
-- 0：没有支持，或文本直接显示严重缺失。
-- 约 25%：有弱信号，但不足以承担该项要求。
+## Criterion Evaluation
+
+逐项阅读表单内 `prompt`，先完成 criterion，再写 dimension summary 与 confidence：
+
+1. 判断该 criterion 对当前材料是否存在合理评价对象。
+2. 有评价对象时保持 `applicable=true`，填写合法整数 `score`、非空 `reason`，并按需加入原文 quotes。
+3. 无合理评价对象时设置 `applicable=false`、`score=null`，在 reason 中说明该 criterion 为何不适用于当前材料或论证方式。
+4. 在同一证据边界下可评价的 criterion 上完成评分。
+5. 汇总本 dimension 的优势、缺口与证据限制。
+6. 若 dimension 至少一个 criterion applicable，填写 0–1 confidence；全部不适用时 confidence 为 `null`。
+
+不要为了得到预期总分反向调整 criterion。runtime 负责归一化、N/A 权重处理与聚合。
+
+## Score Calibration
+
+每项使用表单预填的 `max_score`，按可观察满足程度保持一致：
+
+- 0：没有支持，或原文直接显示严重缺失。
+- 约 25%：只有弱信号，尚不足以承担该要求。
 - 约 50%：基本满足，仍有明显缺口。
 - 约 75%：大部分满足，缺口有限。
-- 100%：证据清楚、完整，且与要求高度一致。
+- 100%：证据清楚完整，且与 prompt 要求高度一致。
 
-方法复杂不等于方法严谨，研究范围窄也不自动等于低质量。判断应落到 prompt 所问的可观察表现。
+方法复杂不等于严谨，研究范围窄也不自动等于低质量。经验研究、历史阐释、规范论证和形式证明按其自身证据标准判断，不把“没有实验”当作人文或理论材料的自动缺陷。
 
-## Applicability 边界
+## Applicability Boundary
 
-`applicable=false` 表示该 criterion 对当前论文类型没有合理评价对象。下列情况仍应保持 `applicable=true` 并按实际缺失给低分：
+`applicable=false` 只表示 criterion 对当前材料没有合理评价对象。下列情况仍保持 `applicable=true` 并按实际表现给分：
 
-- 作者没有报告相关信息；
-- 原文证据很弱；
-- agent 不确定；
-- 输入转换质量差；
+- 作者没有报告相关信息。
+- 原文证据很弱。
+- agent 不确定。
+- 输入转换质量差。
 - 该项得分会拉低总分。
 
-部分 criterion 不适用时，runtime 用该维度剩余 applicable maximum points 归一化，维度权重不变。整个维度都不适用时，score 与 confidence 为 null，effective weight 为 0，configured weight 按比例分配到其他 active dimensions，并写入 warning。所有维度均无 applicable criterion 时提交会被拒绝。
+部分 criterion 不适用时，runtime 用 dimension 剩余 applicable maximum points 归一化，configured weight 不变。整个 dimension 不适用时：
+
+- 该 dimension 仍保留在固定六项 `dimensions` 数组中。
+- dimension score 与 confidence 为 `null`。
+- effective weight 为 0。
+- configured weight 按比例分配给其他 active dimensions。
+- runtime 添加 N/A warning。
+
+所有 dimension 都无 applicable criterion 时，payload 返回 `score_payload_invalid`。
 
 ## Evidence Quotes
 
-`evidence_quotes` 是字符串数组：
-
-```json
-{
-  "applicable": true,
-  "score": 4,
-  "reason": "论文比较了三个基线，并报告了主要结果。",
-  "evidence_quotes": [
-    "We compare the proposed method against three baselines."
-  ]
-}
-```
-
-每条 quote 最长 500 字符。直接复制 normalized source 中短而有辨识度的片段；不要填写行号，runtime 会定位并生成公开产物的 `line_start` / `line_end`。
+`evidence_quotes` 是字符串数组。每条 quote 最长 500 字符，直接复制 normalized source 中短而有辨识度的片段；不要填写行号。
 
 定位顺序：
 
@@ -108,19 +123,28 @@ python scripts/run_analysis.py persist_literature_score --db-path "<db_path>"
 3. 相似度达到 0.45 时接受；并列候选按最早位置确定。
 4. 低于阈值时拒绝，错误详情给出 criterion、quote 序号、最佳相似度和候选行范围。
 
-证据数组可以为空。若判断依据是“全文未报告某项内容”，reason 应清楚说明可观察到的缺失，不要虚构一句否定性原文。
+证据数组可以为空。若判断依据是“全文未报告某项内容”，reason 应说明可观察的缺失，不要虚构一句否定性原文。Runtime 只定位 quote；quote 是否真正支持 score 仍由 agent 负责。
 
-Runtime 只确认 quote 能否定位。quote 是否真的支持 score，仍由 agent 负责。
+示例：
 
-## Confidence 校准
+```json
+{
+  "applicable": true,
+  "score": 4,
+  "reason": "作者说明材料边界，并用连续案例支持解释。",
+  "evidence_quotes": ["The archive contains correspondence from 1932 to 1938."]
+}
+```
 
-每个 active dimension 填写 0–1 confidence。综合考虑：
+## Confidence
 
-- 当前输入是否覆盖主体、附录和图表文字；
-- 相关信息是直接出现还是依赖推断；
-- OCR、公式、表格或版面转换是否损坏关键证据；
-- 多处文本是否相互一致；
-- 当前论文类型是否容易从文本判断该维度。
+每个 active dimension 填写 0–1 confidence，综合考虑：
+
+- 输入是否覆盖主体、附录、图表、脚注和必要文本。
+- 相关信息是直接出现还是依赖推断。
+- OCR、公式、表格或版面转换是否损坏关键证据。
+- 多处材料是否相互一致。
+- 当前 criterion 是否能由 source 中的实际证据判断。
 
 建议区间：
 
@@ -128,67 +152,74 @@ Runtime 只确认 quote 能否定位。quote 是否真的支持 score，仍由 a
 - 0.75–0.89：证据较充分，仅有小范围缺口。
 - 0.55–0.74：有可用证据，但关键细节缺失或需要明显推断。
 - 0.30–0.54：只能做初步判断，输入或信息缺口较大。
-- 0.00–0.29：维度有评价对象，但现有文本几乎不足以稳定判断。
+- 0.00–0.29：有评价对象，但现有文本几乎不足以稳定判断。
 
-全维度不适用时 confidence 必须为 null。不要填写 0；0 表示维度有评价对象但判断把握极低。
+全部 criterion 不适用时 confidence 必须为 `null`，不得填 0。0 表示有评价对象但把握极低。
 
-## 完整填写示意
+## Draft Shape
 
-下面仅展示表单中需要编辑的语义值。实际提交必须保留 prepare 生成的完整对象和全部 locked fields：
+保留 prepare 生成的完整 draft 与全部 locked fields，只改下列语义值：
 
 ```json
 {
-  "paper_type_choices": [
-    {"paper_type": "<locked>", "description": "<locked>", "selected": true}
-  ],
-  "paper_type_reason": "论文以实验比较检验主要主张。",
   "dimension_reviews": [
     {
-      "dimension_key": "<locked>",
-      "name": "<locked>",
-      "configured_weight": "<locked>",
-      "prompt": "<locked>",
       "confidence": 0.86,
-      "summary": "直接证据较充分，但关键参数选择依据仍不完整。"
+      "summary": "材料范围与解释路径清楚，反例讨论仍有限。"
     }
   ],
   "criterion_reviews": [
     {
-      "criterion_key": "<locked>",
-      "dimension_key": "<locked>",
-      "name": "<locked>",
-      "max_score": "<locked>",
-      "prompt": "<locked>",
       "applicable": true,
       "score": 4,
-      "reason": "研究目标和约束在引言中直接说明。",
-      "evidence_quotes": ["We study how to reduce inference cost while preserving accuracy."]
+      "reason": "原文说明了材料边界，并用同类材料验证解释。",
+      "evidence_quotes": ["The archive contains correspondence from 1932 to 1938."]
     }
   ]
 }
 ```
 
-## 常见失败与恢复
+实际提交使用原表单的完整对象；上例省略 locked keys，不可作为替代模板。
 
-- `score_prerequisite_missing`：确认 normalized source 已写入；full mode 还需先完成 `persist_digest`。
+## Output Contract
+
+submit 成功后 runtime 计算、渲染并登记 `literature_score.json`。当前 schema 为 `literature_score.v2`，包含：
+
+- `schema`
+- `rubric_id`
+- `literature_classification`
+- `overall_score`
+- `confidence`
+- `confidence_adjusted_score`
+- selected rubric 的 `dimensions`（固定 6 项）
+
+每个 dimension 保留 canonical key、name、configured/effective weight、raw/applicable maximum、score、confidence、summary 和 criteria；key/name 与 criteria 随所选 profile 定义。每个 criterion 保留 key、name、status、score、maximum、reason 与定位后的 evidence。not-applicable criterion 留在产物中，score 为 `null`。
+
+Runtime 将 score round 到 0.1、confidence 到 0.01、weights 到 6 位小数，并让公开维度与 rubric snapshot 精确一致。不得手写或修改聚合值。
+
+full mode 提交成功后进入 references；score-only 提交成功后直接返回最终 JSON，且只有 `literature_score_path` 非空。
+
+## Failure And Recovery
+
+- `classification_required`：先完成 `persist_literature_classification`，不要用默认 category 猜测。
+- `score_prerequisite_missing`：normal mode 先完成 `persist_digest`；确认 normalized source 已写入。
 - `scoring_context_failed`：检查 runtime rubric snapshot、review-form 目录和原始表单是否可读。
-- `score_review_invalid`：逐条读取 `error.details[*].reason`：
-  - `stale_form`：重新 prepare，使用新 `scoring_review_draft_path`；不要把旧答案覆盖到新 locked fields。
-  - `locked_field_changed`：从 `scoring_review_form_path` 恢复 locked 字段，只保留允许编辑的语义答案。
-  - `invalid_selection`：只保留一个 paper-type `selected=true`。
+- `score_review_invalid`：逐条读取 `error.details`。
+  - `stale_form`：重新 prepare，使用新 `scoring_review_draft_path`。
+  - `locked_field_changed`：从 `scoring_review_form_path` 恢复 locked fields，只保留允许编辑的语义答案。
   - `incomplete_answer`：补齐指出的 score、reason、summary、confidence 或 applicability 约束。
-  - `evidence_not_found`：根据候选行范围从 normalized source 复制更准确、辨识度更高的短 quote。
-- `score_render_failed`：不要手改 `literature_score.json`；检查 DB 评分状态、runtime template 和 render schema 后重跑评分或 finalization。
-- whole-dimension N/A warning：确认所有 criterion 的确没有合理评价对象；若只是未报告，应恢复 `applicable=true` 并给低分。
+  - `evidence_not_found`：按候选行范围复制更准确、辨识度更高的 source quote。
+- `score_payload_invalid`：确认至少一个 criterion applicable，且合法的 issue 不是所有维度都无法评分。
+- `score_render_failed`：不要手改 `literature_score.json`；检查 DB score state、runtime template 与 render schema 后重跑评分或 finalization。
 
-## 完成检查
+## Completion Check
 
 提交成功后确认：
 
-- `literature_score_path` 是绝对路径，文件名为 `literature_score.json`；
-- 文件包含 `overall_score`、`confidence`、`confidence_adjusted_score`；
-- 所有 canonical dimensions 与 criteria 均保留；
-- inapplicable criterion 的公开 status 为 `not_applicable` 且 score 为 null；
-- configured/effective weights、证据行号与 aggregate values 来自 runtime；
-- score-only stdout 中其他公开产物路径为空字符串；
-- result JSON mirror 与最终 stdout 内容一致。
+- `literature_score_path` 是绝对路径，文件名为 `literature_score.json`。
+- 产物含 `literature_score.v2`、`rubric_id`、`literature_classification`、三个 aggregate 值与固定 6 项 dimensions。
+- dimensions 的顺序、keys 与各 profile 的 criteria 匹配本次 locked rubric。
+- not-applicable criterion 的 status 为 `not_applicable`，score 为 `null`，reason 保留。
+- configured/effective weights、evidence 行号与 aggregate values 来自 runtime。
+- score-only stdout 中其他公开产物路径为空字符串。
+- result JSON mirror 与最终 stdout 一致。

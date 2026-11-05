@@ -9,7 +9,7 @@
         "score_only": {
             "type": "boolean",
             "default": false,
-            "description": "When true, run source normalization and paper scoring only; skip digest, references, and citation analysis"
+            "description": "When true, normalize and classify the source, then run paper scoring only; skip analysis plan, digest, references, and citation analysis"
         },
         "identifier": {
             "type": "string",

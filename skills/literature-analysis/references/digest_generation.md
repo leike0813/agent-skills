@@ -1,217 +1,183 @@
 # Digest Generation
 
-本文件补充 `persist_digest`。本阶段只提交结构化 digest payload；最终 Markdown 标题、顺序与排版由 renderer/template 从 DB 渲染。
+本文件补充 `persist_digest`。该阶段只提交结构化内容；最终标题、section 顺序与 Markdown 由 runtime 根据 selected profile、DB 内容和 persisted template 渲染。
 
 ## LLM And Script Responsibilities
 
 Script/runtime owns:
 
-- Payload shape validation, fixed-slot enforcement, representative image field validation, DB persistence, and final Markdown rendering.
-- Template headings, section order, JSON/stdout validation, and renderer-owned artifact creation.
+- 读取 persisted `literature_classification`、有效 profile、normalized source、outline 和 runtime template。
+- 校验五个固定 slot、`section_summaries`、标题翻译和 representative image。
+- 从 profile 生成 `digest_sections`，选择目标语言标题，写入 DB 并渲染最终 Markdown。
+- 检查主要非 reference 章节覆盖，生成 undercoverage warning。
 
 LLM/agent owns:
 
-- Writing `digest_slots`, `section_summaries`, and `representative_image.selection_reason` from the normalized source.
-- Judging whether a figure is representative based on textual evidence.
-- Preserving uncertainty honestly when source evidence is thin.
+- 按 runtime 返回的四个 `digest_sections[*].prompt` 写 `focus`、`basis`、`analysis`、`limits`。
+- 写 `tldr.paragraphs` 与按原文顺序的 `section_summaries`。
+- 非 zh/en 语言时翻译六个固定标题键。
+- 基于文本证据判断 representative image。
 
-Do not use a temporary script to summarize sections, choose contributions, invent key results, select the representative image, or generate final Markdown. Scripts may only serialize the already-reviewed digest payload or call `run_analysis.py`.
+不要用临时脚本生成摘要、拆分章节、选择代表图或拼最终 Markdown。脚本只序列化已经审核的 payload 或调用 `run_analysis.py`。
 
-## Output Structure
+## Structured Payload
 
-The agent writes structured payload only. Final Markdown headings and layout are rendered from templates.
+`persist_digest` 不重新提交 `literature_classification`。它读取 classification 阶段已持久化的 effective profile，因此 digest 与 scoring 使用同一分类快照。
 
-For `zh-*`, rendered `digest.md` uses fixed sections:
-
-- `## TL;DR`
-- `## 研究问题与贡献`
-- `## 方法要点`
-- `## 关键结果`
-- `## 局限与可复现性线索`
-- `## 分章节总结`
-
-For `en-*`, rendered `digest.md` uses fixed sections:
-
-- `## TL;DR`
-- `## Research Question & Contributions`
-- `## Method Highlights`
-- `## Key Results`
-- `## Limitations & Reproducibility`
-- `## Section-by-Section Summary`
-
-Do not add a top-level title such as `# 文献摘要` / `# Paper Digest`, and do not add a paper metadata block unless a future public contract explicitly adds one.
-
-## Content Density Rules
-
-Choose digest depth from the normalized source's substantive length and information density. Treat the ranges below as common-output guidance, not payload limits or validation thresholds. Expand beyond them when a long source contains additional grounded methods, experiments, findings, limitations, chapters, or independent subtopics. Do not expand mechanically for layout, appendices, or repetition, and do not pad the digest with synonymous bullets, repeated claims, or unsupported detail.
-
-`TL;DR` should be materially richer than a short abstract:
-
-- Prefer about 8-20 informative lines or paragraphs for an ordinary paper; use more when distinct source content warrants it.
-- Cover problem, method, result, limits, and reproducibility clues.
-- Include concrete terms, modules, datasets, metrics, losses, or assumptions when they appear in source.
-- Do not hallucinate missing quantitative results.
-
-`section_summaries` should be fine-grained:
-
-- Follow persisted `outline_nodes` order.
-- Prefer original source headings.
-- Cover all major non-reference sections when source structure permits.
-- If a major section is long or contains multiple subthemes, split into smaller entries using source headings or clear subtopic labels.
-- An ordinary paper may use roughly 8 or more section/subsection summaries. Longer, information-dense sources should use substantially more entries or items when their chapter and subtopic structure warrants it; there is no upper limit.
-- If headings are unreliable, use `Segment 1`, `Segment 2`, etc., and explain the fallback in the summary wording.
-
-## Slot Requirements
-
-`digest_slots` must include exactly the five fixed semantic slots:
-
-- `tldr.paragraphs`: global summary paragraphs/lines.
-- `research_question_and_contributions.research_question`: one clear sentence.
-- `research_question_and_contributions.contributions`: commonly 2-8 contribution bullets.
-- `method_highlights.items`: commonly 3-12 concrete method points.
-- `key_results.items`: commonly 2-10 quantitative or qualitative findings.
-- `limitations_and_reproducibility.items`: commonly 1-6 honest limitations or reproducibility clues.
-
-These ranges are soft references. Exceed them when the source contains more distinct, grounded content; do not treat range deviations as failures or warnings by themselves.
-
-Mapping to final Markdown:
-
-- `tldr.paragraphs` -> final `## TL;DR`.
-- `research_question_and_contributions.research_question` -> research question sentence.
-- `research_question_and_contributions.contributions` -> contribution bullets.
-- `method_highlights.items` -> method highlights.
-- `key_results.items` -> key results.
-- `limitations_and_reproducibility.items` -> limitations and reproducibility clues.
-- `section_summaries[*]` -> section-by-section summary in outline order.
-
-The payload must not contain final Markdown headings.
-
-## Legal Payload Example
+payload 的最小完整形状：
 
 ```json
 {
   "digest_slots": {
     "tldr": {
-      "paragraphs": [
-        "本文提出一种面向低延迟推理的模型结构。",
-        "核心方法通过分层模块与蒸馏损失减少计算量。"
-      ]
+      "paragraphs": ["本文研究……，主要依据……，得到……，并受……限制。"]
     },
-    "research_question_and_contributions": {
-      "research_question": "如何在保持精度的同时降低推理成本？",
-      "contributions": ["提出新架构", "给出新的训练策略"]
+    "focus": {
+      "items": ["研究问题、核心主张或主要贡献。"]
     },
-    "method_highlights": {
-      "items": ["使用分层模块", "引入蒸馏损失", "保留端到端训练流程"]
+    "basis": {
+      "items": ["支撑论证的材料、方法、数据、文本或来源。"]
     },
-    "key_results": {
-      "items": ["在数据集 A 上提升 2%", "推理延迟下降 15%"]
+    "analysis": {
+      "items": ["主要分析路径、证据、结果或形式推导。"]
     },
-    "limitations_and_reproducibility": {
-      "items": ["未开源训练代码", "消融实验覆盖有限"]
+    "limits": {
+      "items": ["适用范围、不确定性、反例或复现条件。"]
     }
   },
   "section_summaries": [
-    {"source_heading": "Introduction", "items": ["定义问题背景", "总结主要挑战"]},
-    {"source_heading": "Method", "items": ["解释模块结构", "说明训练目标"]}
-  ],
-  "representative_image": {
-    "status": "selected",
-    "source_kind": "markdown_image_ref",
-    "label": "Figure 2",
-    "caption_quote": "Overview of the proposed pipeline",
-    "section_hint": "Methods",
-    "page_hint": 4,
-    "markdown_src_hint": "figures/overview.png",
-    "selection_reason": "该图概括论文核心方法流程。",
-    "confidence": "medium"
-  }
-}
-```
-
-## Illegal Payload Examples
-
-Final-Markdown-shaped payload:
-
-```json
-{
-  "sections": [
-    {"heading": "## TL;DR", "body_md": "..."}
+    {
+      "source_heading": "Introduction",
+      "items": ["本节界定问题并提出核心主张。"]
+    }
   ]
 }
 ```
 
-Missing fixed slots:
+约束：
+
+- `digest_slots` 必须恰好包含 `tldr`、`focus`、`basis`、`analysis`、`limits`，五个键都必须非空。
+- `tldr` 只使用 `paragraphs`；其他四个 slot 只使用 `items`。
+- `section_summaries` 必须是按原文大纲顺序排列的数组；每项含非空 `source_heading` 与至少一个非空 `items` 字符串。
+- `representative_image` 可选。
+- payload 只提交 `digest_slots`、`section_summaries` 与可选 `representative_image`；最终 heading/body Markdown 由 renderer 生成。
+- 最终 Markdown 不含顶层论文标题与 paper metadata block。
+
+## Profile Headings
+
+selected profile 的 `digest_sections` 固定四个 slot key 和顺序：
+
+1. `focus`
+2. `basis`
+3. `analysis`
+4. `limits`
+
+classification 与 `status` 返回每项的 `heading`、`prompt` 和 `slot_key`。agent 按 `prompt` 写对应 slot；不得更换 key、重排 section，或把内容写进最终 Markdown。
+
+`language` 以 `zh` 开头时：
+
+- `tldr` 标题固定为 `TL;DR`。
+- 中间四节使用 profile 的 `zh-CN` 标题。
+- `section_summaries` 标题固定为 `分章节总结`。
+
+`language` 以 `en` 开头时：
+
+- `tldr` 标题固定为 `TL;DR`。
+- 中间四节使用 profile 的 `en-US` 标题。
+- `section_summaries` 标题固定为 `Section-by-Section Summary`。
+
+Other languages:
+
+- `persist_digest` 必须提交 `heading_translations`。
+- 键必须恰好覆盖 `tldr`、`focus`、`basis`、`analysis`、`limits`、`section_summaries`。
+- 六个值都必须是非空字符串。
+- 翻译只替换标题文本；不得改变 slot keys、section 顺序、数组内容或 Jinja 模板结构。
+
+示例：
 
 ```json
 {
-  "digest_slots": {
-    "tldr": {"paragraphs": ["..."]}
-  },
-  "section_summaries": []
-}
-```
-
-Representative image without evidence:
-
-```json
-{
-  "representative_image": {
-    "status": "selected",
-    "source_kind": "markdown_image_ref",
-    "markdown_src_hint": "guessed/path.png",
-    "selection_reason": "Looks useful",
-    "confidence": "high"
+  "heading_translations": {
+    "tldr": "Résumé",
+    "focus": "Question et apport",
+    "basis": "Fondement",
+    "analysis": "Analyse",
+    "limits": "Limites",
+    "section_summaries": "Résumé par section"
   }
 }
 ```
 
-## Representative Image Selection
+## Content Density
 
-The agent must actively inspect text evidence for a representative image candidate. Do not return `{"status":"none"}` merely because the image binary cannot be viewed.
+Digest 深度由 normalized source 的实质信息量决定。材料、论证、证据、章节和独立结论越多，条目可以越细；排版、附录重复和同义改写不构成扩写理由。
+
+`tldr.paragraphs`:
+
+- 通常覆盖问题、中心主张、依据、主要结论和边界。
+- 可以用多个短段落，但每段都要增加独立信息。
+- 不猜造原文没有的定量结果、实验或材料。
+
+四个 profile section:
+
+- 每项围绕 runtime prompt 写具体内容，避免只换写法的重复 bullet。
+- 定量实证可覆盖设计、数据、测量、对照、统计和稳健性。
+- 质性实证可覆盖取样、材料获取、编码、解释路径、反例和研究者位置。
+- 历史阐释可覆盖史料范围、语境、解释步骤、竞争解释和证据边界。
+- 概念/规范论证可覆盖概念区分、前提、推理链、反例和应用边界。
+- 形式理论可覆盖定义、假设、定理、证明结构、适用范围和未决问题。
+- 综述综合可覆盖检索或选择范围、组织框架、证据分歧、综合结论和缺口。
+- 混合方法还应说明两类证据如何连接、互证或处理冲突。
+- 人文、规范、历史和理论研究没有实验、代码、数据集或 reproducible pipeline 是材料特征，不构成缺陷。只有原文主张了这些内容却未提供时，才写为局限。
+
+`section_summaries`:
+
+- 跟随 persisted `outline_nodes` 的顺序。
+- 优先使用原文 heading；长章节含多个独立主题时拆成相邻条目。
+- 覆盖所有主要非 references/bibliography 章节。无法可靠识别 heading 时，用连续 source segment 作为 `source_heading`。
+- 不用页数或固定条数机械控制覆盖；以主要论证和章节结构为准。
+
+## Representative Image
+
+Agent 必须主动检查文本中的代表图证据，不能因为无法读取图片二进制就直接返回 `none`。
 
 Candidate evidence:
 
-- Markdown image reference: `![caption](figures/foo.png)`.
-- HTML image reference: `<img src="figures/foo.png">`.
-- LaTeX image commands: `\includegraphics{...}` or `\includegraphics[...]{...}`.
-- PDF text containing figure label, caption, or page hints.
-
-Recall keywords:
-
-- English: `overview`, `framework`, `architecture`, `pipeline`, `method`, `model`, `workflow`, `system`, `design`, `approach`, `results`, `main`, `overall`, `proposed`.
-- Chinese: `概览`、`框架`、`架构`、`流程`、`方法`、`模型`、`系统`、`设计`、`总体`、`提出`、`结果`.
+- Markdown：`![caption](figures/foo.png)`
+- HTML：`<img src="figures/foo.png">`
+- LaTeX：`\includegraphics{...}` 或 `\includegraphics[...]{...}`
+- PDF text：figure label、caption、section、page hint
 
 Selection priority:
 
-- Prefer method, architecture, pipeline, model overview, system diagram, experimental setup, or central result figures.
-- Method / architecture / pipeline figures outrank ordinary result plots.
-- Avoid tables, equation-only figures, decorative images, logos, cover images, or low-information screenshots.
-- If multiple candidates exist but evidence is uneven, choose the best textual candidate with `medium` or `low` confidence instead of returning `none`.
-- `none` is only valid when there is no reliable text evidence or all candidates are clearly low information.
+- 优先选择 method、framework、architecture、pipeline、model overview、system design 或 central result。
+- 人文、历史、规范或理论材料没有图时，`{"status":"none"}` 合法；不要为了凑图选择装饰图、表格、公式或低信息截图。
+- 多个候选证据不均时选最可靠的一项，并将 confidence 设为 `medium` 或 `low`。
 
-When `selected`, include:
+`status="selected"` 时填写：
 
-- `source_kind`: `markdown_image_ref` or `pdf_figure_caption`.
-- `label`: source label such as `Figure 1`, `Fig. 2`, `Figure 3a`.
-- `caption_quote`: short source quote; do not rewrite it.
-- `section_hint`: nearby section name when known.
-- `page_hint`: 1-based page number when reliable.
-- `markdown_src_hint`: raw path from Markdown, HTML, or LaTeX source when available.
-- `selection_reason`: one sentence explaining why this figure best represents the paper.
-- `confidence`: `high`, `medium`, or `low`.
+- `source_kind`：`markdown_image_ref` 或 `pdf_figure_caption`。
+- `label`：原文图号。
+- `caption_quote`：简短原文 caption，不改写。
+- `section_hint`：附近章节，未知时可省略。
+- `page_hint`：可靠的 1-based 页码，未知时 `null`。
+- `markdown_src_hint`：Markdown/HTML/LaTeX 原始路径；PDF caption 选择不得包含该字段。
+- `selection_reason`：一句话说明为何最能代表材料。
+- `confidence`：`high`、`medium` 或 `low`。
 
 Path rules:
 
-- For Markdown/HTML, `markdown_src_hint` must come from the original source; do not rewrite it as an absolute path.
-- For LaTeX `\includegraphics{...}`, preserve the raw path as `markdown_src_hint`; do not complete extensions, rewrite directories, or check file existence.
-- For PDF, do not extract images; use only figure label/caption/page text and `source_kind="pdf_figure_caption"`.
+- 不得把 Markdown/HTML/LaTeX 路径改写成绝对路径。
+- 不补扩展名、不重写目录、不检查文件是否存在、不提取图片本体。
+- PDF 只使用文本中的 figure label/caption/page evidence。
 
 ## Failure Semantics
 
-- Missing any fixed slot: `persist_digest` should fail or request a corrected payload.
-- Slot shape invalid: resubmit structured `digest_slots`; do not submit Markdown sections.
-- Empty fixed slot: treat as failure or high-severity warning depending on source length.
-- Section undercoverage: add `section_summaries` for major non-reference sections.
-- Representative image selected without source evidence: correct fields or use `{"status":"none"}`.
-- The agent must not generate final `digest.md`; final layout is produced from DB and templates.
+- 缺 slot、slot 名称错误或必要列表为空：修正结构后重交。
+- 提交最终 Markdown sections：改为 `digest_slots + section_summaries`。
+- 非 zh/en 缺 `heading_translations` 或键不全：补齐六个值。
+- selected profile 与 persisted classification 不一致：重新读取 `status`；不要在同一 run 内另选 profile。
+- 章节覆盖不足：按 outline 补齐主要非 reference 章节。
+- representative image 缺证据或字段不合法：改为证据充分的对象或 `{"status":"none"}`。
+- 分类已改变或 source 已重新归一化：旧 digest 失效；从 `status.next_action` 重新开始。
+- agent 不直接生成 `digest.md`；最终布局由 runtime 与模板生成。

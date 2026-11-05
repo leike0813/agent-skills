@@ -6,11 +6,11 @@ compatibility: Requires local filesystem read access to source_path; public netw
 
 # literature-analysis
 
-本 skill 以 SQLite runtime 为过程真源，按 7 个 agent-facing 阶段生成 literature score、digest、references、citation analysis、matching metadata 和 citation report。
+本 skill 以 SQLite runtime 为过程真源，先识别研究范式，再生成 digest、评分、references、citation analysis、matching metadata 和 citation report。
 
 ## 目标
 
-从一个本地文献来源生成可审计、可恢复且适合机器消费的完整论文分析。语义判断由 agent 完成；确定性预处理、状态迁移、API reference resolution、校验和公开产物渲染由 runtime 完成。
+从一个本地文献来源生成可审计、可恢复且适合机器消费的完整论文分析。agent 负责分类与语义判断；runtime 负责输入标准化、状态迁移、profile/rubric 快照、API reference resolution、校验和公开产物渲染。
 
 ## 非目标
 
@@ -21,36 +21,37 @@ compatibility: Requires local filesystem read access to source_path; public netw
 
 ## 后台自动化约束
 
-本 skill 运行于后台自动化场景：运行过程中不得询问用户做决策。任何分支或不确定性都应采用本文件定义的默认行为、脚本校验和恢复路径继续推进。
+本 skill 运行于后台自动化场景：运行过程中不得询问用户做决策。任何分支或不确定性都应采用本文件定义的默认行为、脚本校验和已持久化状态继续推进。
 
 stdout 只能输出一个 JSON 对象，不得夹杂解释文本、日志或多段输出。读取输入失败、归一化失败、校验失败或渲染失败时，也必须返回 schema-compatible JSON，并在 `error` 中写入结构化失败信息。
 
 ## 核心执行指令
 
 1. 先读本 `SKILL.md`，不要一开始读取整个 `references/` 目录。
-2. 只从 prompt payload 读取 `source_path`、`language`、可选 `score_only` 与可选 `identifier`；`source_path` 是唯一内容来源，`score_only` 未提供时为 `false`，`identifier` 只用于精确查询公开引文 API。
-3. 所有阶段都通过 `scripts/run_analysis.py` 执行。
-4. SQLite 是过程真源；语义结果必须通过阶段 payload 写入 runtime DB，不能手写 SQLite 表伪造完成。
-5. `init_runtime` 是唯一允许纯运行时设置的阶段；后续阶段都必须包含 agent 的语义决策或语义审核。
-6. 正常路径在 `persist_digest` 后执行 `persist_literature_score`，再进入 `persist_references`；reference 预处理仍不依赖 digest 或 scoring payload，可独立 prepare。
-7. Reference title 必须保持 raw reference 中的原始语言和文字系统；不得翻译、英文化、罗马化，或用 `none` / `null` / `unknown` / `untitled` / `N.A.` 等 placeholder 代替未知题名。
-8. 当环境支持 subagent 且 runtime 返回可分批的 batch file paths 时，reference review、metadata review、citation semantic review 必须默认按 runtime 预切 batch 委派；只有主智能体可以合并并提交一次正式 payload。
-9. 最终公开产物只能由 runtime 从 DB 和运行时模板渲染生成；agent 不直接写最终 `literature_score.json`、`digest.md`、`references.json`、`citation_analysis.json`、`citation_analysis.md`。
-10. 最终 assistant 输出必须直接采用 runtime 返回的 stdout JSON，且满足下方 stdout schema。
+2. 只从 prompt payload 读取 `source_path`、`language`、可选 `score_only` 与可选 `identifier`。`score_only` 未提供时为 `false`；`identifier` 只用于精确查询公开引文 API。
+3. 调用任何脚本前，先在当前 shell 执行 `pwd` 取得工作目录。所有动作都通过 `scripts/run_analysis.py` 执行。
+4. SQLite 是过程真源。语义结果必须通过阶段 payload 写入 runtime DB，不能手写 SQLite 表伪造完成。
+5. `init_runtime` 合并路径确认、DB/template 初始化、profile catalogue 快照和 source normalization，是唯一没有 agent 语义 payload 的阶段。
+6. 正常路径固定为：classification -> `persist_analysis_plan` -> `persist_digest` -> `persist_literature_score` -> references -> citation -> finalize。`score_only=true` 时，classification 成功后直接评分。
+7. 每次中断、恢复或不确定下一步时先运行 `status`；以 stdout 的 `next_action` 为唯一阶段依据。
+8. Reference title 必须保持 raw reference 中的原始语言和文字系统；不得翻译、英文化、罗马化，或用 `none` / `null` / `unknown` / `untitled` / `N.A.` 等 placeholder 代替未知题名。
+9. 当环境支持 subagent 且 runtime 返回可分批的 batch file paths 时，reference review、metadata review、citation semantic review 默认按 runtime 预切 batch 委派；只有主 agent 可以合并并提交正式 payload。
+10. 最终公开产物只能由 runtime 从 DB 和运行时模板渲染生成。agent 不直接写 `literature_score.json`、`digest.md`、`references.json`、`citation_analysis.json`、`citation_analysis.md` 或 `literature_matching_metadata.json`。
+11. 最终 assistant 输出直接采用 runtime 返回的 stdout JSON。
 
 Runtime path is owned by `literature-analysis/scripts/analysis_runtime` and `literature-analysis/assets`.
 
 ## Subagent Delegation Contract
 
-Reference core review、Reference Metadata Evidence Review、citation semantic review 是本 skill 的默认可委派工作。只要当前环境支持 subagent、runtime/JIT 返回 batch file paths，且 batch 不是小到无需拆分或上下文不可拆，主 agent 必须默认按 runtime 预切 batch 委派。跳过委派时，主 agent 应在执行 notes、`review_notes` 或 payload 合并说明中保留原因。
+Reference core review、Reference Metadata Evidence Review、citation semantic review 是本 skill 的默认可委派工作。只要当前环境支持 subagent、runtime/JIT 返回 batch file paths，且 batch 不是小到无需拆分或上下文不可拆，主 agent 就必须按 runtime 预切 batch 委派。跳过委派时，在执行 notes、`review_notes` 或 payload 合并说明中保留原因。
 
 主 agent 职责：
 
 - 读取 runtime/JIT 返回的 manifest path、batch file paths、field guidance、batch prompts 和 merge contract。
 - 按 runtime 预切的 batch JSON 文件路径委派 subagent，收集 batch draft。
 - 合并 drafts，保持 stable keys 不变，去重，校验覆盖集合，再提交一次正式 payload。
-- 作为唯一 DB writer 执行 `scripts/run_analysis.py`，不得让 subagent 写 DB、提交 payload 或生成最终 artifacts。
-- 不得从全量 workset 或 review sidecar 手工切 batch；runtime batch files 是唯一委派输入边界。
+- 作为唯一 DB writer 执行 `scripts/run_analysis.py`；subagent 不写 DB、不提交 payload、不生成 final artifacts。
+- 不从全量 workset 或 review sidecar 手工切 batch；runtime batch files 是唯一委派输入边界。
 
 Subagent 职责：
 
@@ -60,34 +61,30 @@ Subagent 职责：
 - 不填 `raw`、`confidence`、`ref_index`、mentions、timeline bucket、`report_md` 等内部审计或 renderer 字段。
 - 不修改 locked fields；Reference Metadata Evidence Review 只能基于 batch JSON 中的本地证据返回 canonical metadata 字段和 evidence note。
 
-Subagent 禁止处理全局闭包：citation timeline bucket membership、全局 `summary`、最终 report 和 artifact 渲染始终由 runtime 或主 agent 负责。
+Citation timeline bucket membership、全局 `summary`、最终 report 和 artifact 渲染由 runtime 或主 agent 负责。
 
-Runtime batch files are written under `.literature_analysis_tmp/agent_work/`. Each batch has at most 10 items and contains the package subset, allowed enum subset, prompt, return shape, forbidden fields, merge notes, and `suggested_draft_output_path`.
+Runtime batch files are written under `.literature_analysis_tmp/agent_work/`. Each batch contains at most 10 items, the package subset, allowed enum subset, prompt, return shape, forbidden fields, merge notes, and `suggested_draft_output_path`.
 
 Mandatory delegation points:
 
-- Reference Core Review Delegation Point：`persist_references` prepare 返回 `reference_core_review_manifest_path` 与 `reference_core_batch_paths` 后，主 agent 必须把每个 batch JSON 文件路径交给 subagent；subagent 读取该文件并使用其中的 prompt 和 package 子集完成 draft。
-- Reference Metadata Evidence Review Delegation Point：core `reference_reviews[]` submit 成功并返回 `metadata_evidence_review_manifest_path` 与 `metadata_evidence_batch_paths` 后，主 agent 必须把每个 metadata evidence batch JSON 文件路径交给 subagent；subagent 只处理该文件内 keys。
-- Citation Semantic Review Delegation Point：`persist_citation_analysis` prepare 返回 `citation_semantic_review_manifest_path` 与 `citation_batch_paths` 后，主 agent 必须把每个 citation batch JSON 文件路径交给 subagent；subagent 读取该文件并返回 `citation_semantic_reviews[]` draft。
+- Reference Core Review：`persist_references` prepare 返回 `reference_core_review_manifest_path` 与 `reference_core_batch_paths` 后，把每个 batch JSON 文件路径交给 subagent。
+- Reference Metadata Evidence Review：core `reference_reviews[]` 提交成功并返回 `metadata_evidence_review_manifest_path` 与 `metadata_evidence_batch_paths` 后，把每个 metadata evidence batch JSON 文件路径交给 subagent。
+- Citation Semantic Review：`persist_citation_analysis` prepare 返回 `citation_semantic_review_manifest_path` 与 `citation_batch_paths` 后，把每个 citation batch JSON 文件路径交给 subagent。
 
 Allowed reasons to skip a delegation point are limited to: no subagent capability in the environment, a trivially small batch where delegation adds no value, or a batch that cannot be split without losing necessary context. Do not skip because a temporary script seems faster.
 
 ## 输入输出硬契约
 
-- 输入只读取 prompt payload：
-  - `source_path`
-  - `language`
-  - `score_only`（可选 boolean，默认 `false`）
-  - `identifier`（可选 string，默认空；支持 DOI 与 arXiv）
-- `source_path` 支持：
-  - Markdown / 纯文本
-  - PDF
-  - 单文件 `.tex`
-  - LaTeX 工程目录
-  - 无扩展名 UTF-8 文本文件
-- `language` 若用户显式指定则直接使用；否则先从 prompt 主要语言推断，仅在无法稳定判断时回退 `zh-CN`。
-- `score_only=true` 时只执行初始化/归一化与评分，跳过 analysis plan、digest、references 和 citation analysis。
-- `identifier` 非空且合法时优先作为来源论文标识；格式非法时 runtime 写 warning，并使用 analysis plan 中有原文证据的 `source_identity`。两者都不可用时，reference 阶段直接执行本地审核流程。
+输入只读取 prompt payload：
+
+- `source_path`：唯一内容来源。
+- `language`：输出语言。显式给出时直接使用；否则先从 prompt 主要语言推断，仍无法稳定判断时回退 `zh-CN`。
+- `score_only`：可选 boolean，默认 `false`。
+- `identifier`：可选 DOI/arXiv；格式非法时 runtime 写 warning，并使用 plan 中有原文证据的 `source_identity`。
+
+`source_path` 支持 Markdown、纯文本、PDF、单文件 `.tex`、LaTeX 工程目录和无扩展名 UTF-8 文本文件。格式按内容优先探测，后续阶段只消费 DB 中的 normalized source。
+
+`score_only=true` 时只执行 initialization/normalization、classification 和 scoring，不要求 analysis plan、digest、references 或 citation analysis。
 
 成功态 stdout JSON 必须包含：
 
@@ -102,199 +99,154 @@ Allowed reasons to skip a delegation point are limited to: no subagent capabilit
 - `warnings`
 - `error`
 
-成功态 stdout JSON 可选包含：
+成功态 stdout JSON 可包含 `citation_analysis_report_path` 和 `representative_image`。固定公开产物为 `digest.md`、`references.json`、`citation_analysis.json`、`citation_analysis.md`、`literature_matching_metadata.json`、`literature_score.json`，不生成额外分类文件。
 
-- `citation_analysis_report_path`
-- `representative_image`
+输出规则：
 
-固定公开产物文件名：
+- 公开产物路径必须是绝对路径。
+- `citation_analysis.md` 必须与 `citation_analysis.json.report_md` 完全一致。
+- 最终 stdout 同步镜像写入 runtime DB 固化的 result JSON path。
+- full mode 成功时公开产物路径均非空；score-only 成功时只有 `literature_score_path` 非空，其他公开产物路径为空字符串，`citation_analysis_report_path` 不出现。
+- 失败时仍返回 schema-compatible JSON；不可用路径为空字符串，`error` 含结构化 `code` 与 `message`。
 
-- `digest.md`
-- `references.json`
-- `citation_analysis.json`
-- `citation_analysis.md`
-- `literature_matching_metadata.json`
-- `literature_score.json`
+## SQLite SSOT
 
-输出路径规则：
+`init_runtime` 固化 `working_dir`、`tmp_dir`、`db_path`、`result_json_path`、`output_dir`、输入、source hash、normalized source、渲染模板和 package 内 `literature_profiles.json` 快照路径。
 
-- stdout JSON 中公开产物路径必须是绝对路径。
-- `citation_analysis.md` 内容必须与 `citation_analysis.json.report_md` 完全一致。
-- 最终结果 JSON 同步镜像写入 runtime DB 固化的 result JSON path。
-- 失败时仍返回 schema-compatible JSON；路径字段为空字符串，`error` 填入 `{code, message}`。
+`literature_classification` 是单行状态，保存 classification、有效 profile、resolved rubric 与 source-hash 快照。digest 与 scoring 都读取这份 SQLite snapshot；`scoring_rubric_path` 是 runtime 写出的审计镜像。
 
-成功态 stdout 示例：
+- 同一 classification 与同一 profile 定义重复提交是幂等操作，不删除已完成的下游状态。
+- 重分类会失效旧 plan、digest、score、references、citation、artifact registry 和下游 receipts，并按 `score_only` 回到 plan 或 scoring。
+- 重新初始化/re-normalize 会使旧 classification 和全部依赖结果失效。
+- 后续阶段只读取 DB 已固化的 runtime inputs、normalized source、classification/profile/rubric、outline、scope、reference/citation workset 和模板路径。
+- payload 文件必须是 UTF-8 JSON，并通过 `--payload-file` 传入。JSON 语法无效时 runtime 返回 `payload_json_invalid`，不猜测修复。
+- `persist_digest` 不重传 `source_path`；`persist_references` 不重传 `references_scope`；`persist_citation_analysis` 不重传 `citation_scope`；`finalize_outputs` 不接受业务 payload 或路径覆盖。
+
+## Runtime 调用方式
+
+- 从 skill 目录执行：`python scripts/run_analysis.py ...`
+- 从 repo 根目录执行：`python literature-analysis/scripts/run_analysis.py ...`
+- 首个脚本调用前先执行 `pwd`，让默认 `working_dir` 反映调用时的真实目录。
+- `run_analysis.py` 基于自身路径自举 `analysis_runtime` 导入。
+
+## LLM 与脚本职责边界
+
+LLM/agent 负责：
+
+- 按主要论证和证据结构完成 `literature_classification`。
+- 大纲、`references_scope` / `citation_scope` 和 `literature_matching_metadata` 决策。
+- digest 五个中性槽位、`section_summaries`、非 zh/en 标题翻译和 representative image 文本判断。
+- 在 runtime review draft 中填写 dimension 与 criterion 的语义答案、applicability、evidence quotes、confidence 和理由。
+- reference candidate、core fields、split review、Reference Metadata Evidence Review 和 citation semantic review。
+- citation `timeline_summaries` 与全局 `summary`。
+
+Script/runtime 负责：
+
+- 输入探测、source normalization、UTF-8/PDF/LaTeX 处理、input hash 和 SQLite 状态迁移。
+- profile catalogue 加载、classification 结构校验、有效 profile 选择和 rubric resolution。
+- reference deterministic preprocess、API resolution、candidate/workset 生成和质量校验。
+- citation mention extraction、mapping 和 workset 生成。
+- digest、classification、scope、review form 和 citation payload 校验。
+- 生成锁定 scoring form、校验 form identity、定位 evidence quotes、派生证据行号与 criterion status。
+- rubric snapshot、N/A 归一化、权重重分配、dimension/overall/confidence/adjusted score 计算。
+- 从 DB 读取 profile headings 与内容，渲染最终产物，校验 stdout。
+
+绝对禁止：
+
+- 用临时脚本或批量规则代替 LLM/subagent 完成分类、摘要、大纲、scope、representative image、reference refinement、metadata evidence review、split review 或 citation semantics。
+- 用脚本自动填充 `reference_reviews[]`、`metadata_evidence_reviews[]` 或 `citation_semantic_reviews[]` 的语义字段。
+- 绕过 `run_analysis.py` 手工写 DB，或手工编辑最终公开 JSON 后冒充 renderer 输出。
+
+## 文献分类
+
+classification 必须在 normalized source 上完成，先看主要主张依赖的证据与论证方式，再用学科标签描述领域。学科不能替代研究范式判断。
+
+payload 固定为：
 
 ```json
 {
-  "digest_path": "/abs/path/digest.md",
-  "references_path": "/abs/path/references.json",
-  "citation_analysis_path": "/abs/path/citation_analysis.json",
-  "literature_matching_metadata_path": "/abs/path/literature_matching_metadata.json",
-  "literature_score_path": "/abs/path/literature_score.json",
-  "citation_analysis_report_path": "/abs/path/citation_analysis.md",
-  "representative_image": {
-    "status": "selected",
-    "source_kind": "markdown_image_ref",
-    "label": "Figure 2",
-    "caption_quote": "Overview of the proposed pipeline",
-    "section_hint": "Methods",
-    "markdown_src_hint": "figures/overview.png",
-    "selection_reason": "该图概括论文核心方法流程。",
-    "confidence": "medium"
-  },
-  "provenance": {
-    "generated_at": "2026-03-31T09:00:00Z",
-    "input_hash": "sha256:0123456789abcdef",
-    "model": "gpt-5.4"
-  },
-  "warnings": [],
-  "error": {}
-}
-```
-
-失败态 stdout 示例：
-
-```json
-{
-  "digest_path": "",
-  "references_path": "",
-  "citation_analysis_path": "",
-  "literature_matching_metadata_path": "",
-  "literature_score_path": "",
-  "provenance": {
-    "generated_at": "",
-    "input_hash": "",
-    "model": ""
-  },
-  "warnings": [],
-  "error": {
-    "code": "normalize_source_failed",
-    "message": "source_path not found: /abs/path/missing.pdf"
+  "literature_classification": {
+    "disciplines": ["社会学", "公共政策"],
+    "profile_id": "mixed_methods",
+    "confidence": "high",
+    "reason": "核心主张同时依赖调查数据的量化比较与访谈材料的质性解释，并在同一论证中整合两类证据。"
   }
 }
 ```
 
-## SQLite SSOT
+字段约束：
 
-- 新 run 的 `working_dir`、`tmp_dir`、`db_path`、`result_json_path`、`output_dir` 在 `init_runtime` 中固化。
-- 后续阶段只读取 DB 中已经固化的 runtime inputs、normalized source、outline、scope、reference/citation workset 和模板路径。
-- 不保留中间 JSON/Markdown 文件作为过程真源；workset/review JSON 只是人工审阅副产物。
-- 一旦某项决策已经写入 DB，后续 payload 不应重新指定它。例如：
-  - `persist_digest` 不重传 `source_path`
-  - `persist_references` 不重传 `references_scope`
-  - `persist_citation_analysis` 不重传 `citation_scope`
-  - `finalize_outputs` 不接受业务 payload 或输出目录覆盖
-- 结构化 payload 默认通过 `--payload-file` 传入，避免超长内联 JSON 命令。
-- Payload 文件必须是 UTF-8 JSON。不要在 shell heredoc 中手写复杂转义；可以用编辑器、JSON encoder 或脚本把已经完成的 LLM/subagent 决策序列化为 JSON 文件。若 JSON 语法无效，runtime 返回 `payload_json_invalid`，不会猜测修复未转义引号。
+- `disciplines`：短标签字符串数组，可以为空；不得用空字符串占位。
+- `profile_id`：只能取表中八个值。
+- `confidence`：只能是 `high`、`medium`、`low`。
+- `reason`：非空字符串，说明证据和论证结构。
 
-## Runtime 调用方式
+| `profile_id` | 选择依据 |
+| --- | --- |
+| `quantitative_empirical` | 实验、观测、测量、统计推断或定量模型检验构成主要经验证据。 |
+| `qualitative_empirical` | 访谈、观察、田野、案例或文本资料通过系统的质性分析形成解释。 |
+| `interpretive_historical` | 以史料、档案、文本及历史语境进行阐释，重点在意义与形成过程。 |
+| `conceptual_normative` | 概念辨析、规范判断或价值论证构成核心，需说明权利、义务、正当性或应然安排。 |
+| `formal_theoretical` | 形式模型、定义、定理、证明或推导构成主要论证。 |
+| `review_synthesis` | 以系统或叙述性综述、比较和综合既有研究为主。 |
+| `mixed_methods` | 定量与质性证据在同一个核心论证中实质整合；并列汇报两类材料不因此成为该类。 |
+| `general` | 没有专门 profile 明显占主导，或证据不足以稳定选择专门类型。 |
 
-- 正式 skill 指令只假设有可用 `python`。
-- 从 skill 目录执行时使用 `python scripts/run_analysis.py ...`。
-- 从 skill 父目录或工作区执行时使用 `python literature-analysis/scripts/run_analysis.py ...`。
-- 需要 module 形式时，可使用 `PYTHONPATH=literature-analysis/scripts python -m run_analysis ...`。
-- `run_analysis.py` 会基于自身路径自举 `analysis_runtime` 导入；不要在 skill 指令中依赖本机专属虚拟环境路径。
+`confidence=low` 时 effective profile 固定为 `general`，runtime 添加 `classification_low_confidence` warning。低置信分类只选择通用 digest 与 rubric，不直接降低论文质量分。classification confidence 与 scoring confidence 相互独立。
 
-## LLM 与脚本职责边界
+提交命令：
 
-必须由 agent/LLM 完成：
+```bash
+python scripts/run_analysis.py persist_literature_classification \
+  --db-path "<db_path>" \
+  --payload-file classification.json
+```
 
-- 大纲和 `references_scope` / `citation_scope` 决策
-- `literature_matching_metadata`
-- 在 runtime review draft 中选择论文类型，完成 criterion 评分、applicability、原文 evidence quotes、dimension confidence 与评分理由
-- digest 槽位内容与分章节总结
-- representative image 的文本证据判断
-- reference candidate 选择、核心字段 refinement、Reference Metadata Evidence Review
-- split review 的边界判断与 source-preserving corrected reference texts
-- citation semantic review，包括 `topic`、`usage`、`role_in_context`、`keywords`、item `summary` 和 `key_reference_reason`
-- `timeline_summaries` 和全局 citation `summary`
+成功返回 effective `literature_classification`、四个 `digest_sections`、`rubric_id` 和 `next_action`。normal mode 进入 `persist_analysis_plan`，score-only 进入 `persist_literature_score`。未知 profile、缺字段或无效 enum 返回 `classification_invalid`，不得继续。
 
-必须由脚本完成：
+## 参数词表
 
-- 输入协议探测与标准化
-- PDF/Markdown/LaTeX 归一化
-- SQLite 写入与状态推进
-- reference deterministic preprocess、candidate/workset 生成、质量校验
-- citation mention extraction、mention mapping、workset 生成
-- payload schema 校验
-- 生成并锁定 scoring review form、校验 form identity、定位 evidence quotes、派生证据行号和 criterion status
-- rubric snapshot、N/A 归一化、权重重分配、dimension/overall/confidence/adjusted score 计算
-- JSON 语法解析、字段别名规范化、stable key 覆盖检查、重复 key 检查
-- 基于 DB 与模板渲染最终产物
-- stdout JSON 合法性检查
-
-绝对禁止：
-
-- 用临时脚本、正则批处理或批量规则代替 LLM/subagent 做摘要、大纲、scope 决策、representative image 判断、reference candidate 选择、authors/title/year refinement、Reference Metadata Evidence Review、split review 边界判断、citation semantic review、timeline narratives 或全局 summary。
-- 用临时脚本从 workset 自动填充 `reference_reviews[]`、`metadata_evidence_reviews[]` 或 `citation_semantic_reviews[]` 的语义字段。
-- 允许的脚本用途仅限：调用 `run_analysis.py`、读取/格式化 runtime 返回的 work packages、检查 JSON 语法、统计 stable key 覆盖、合并已经由 LLM/subagent 产出的 batch drafts、把已经审核过的决策序列化为 payload 文件。
-- 绕过 `run_analysis.py` 手工写 DB。
-- 手工编辑最终公开 JSON 再假装它来自 renderer。
-
-## 参数词表（literature-analysis）
-
-- `source_path`：唯一内容来源路径；输入文件或 LaTeX 工程目录。
-- `language`：输出语言；控制 digest 与 citation report 语言。
-- `score_only`：为 `true` 时只执行源归一化和 `persist_literature_score`，其余公开产物路径留空。
-- `identifier`：可选 DOI/arXiv 来源标识；只触发精确公开 API 查询，不触发标题搜索。
-- `source_identity`：analysis plan 中必填但可为 `null` 的来源标识证据对象；非空时含 `identifier`、`evidence_quote`、`line_start`、`line_end`。
-- `working_dir`：本次运行根目录；由 `init_runtime` 固化。
-- `tmp_dir`：本次运行临时副产物目录；保存 normalized source、workset exports、runtime templates 等。
-- `db_path`：SQLite runtime DB 路径；所有过程数据以它为真源。
-- `result_json_path`：最终 stdout JSON 的镜像文件路径。
-- `output_dir`：最终公开产物输出目录。
-- `normalized_source`：脚本归一化后写入 DB 的唯一分析文本。
-- `outline_nodes`：按原文顺序组织的章节骨架，含 `node_id`、`heading_level`、`title`、`line_start`、`line_end`、`parent_node_id`、`metadata`。
-- `references_scope`：references 抽取允许覆盖的章节范围，含 `section_title`、`line_start`、`line_end`、`metadata`。
-- `citation_scope`：citation workset 抽取允许覆盖的综述/背景范围，含 `section_title`、`line_start`、`line_end`、`metadata.selection_reason`。
-- `literature_matching_metadata`：下游候选召回 sidecar；固定 schema 为 `literature_matching_metadata.v1`，含 `key_terms`、`methods`、`problems`、`datasets`、`exclude_terms`。
-- `representative_image`：可选代表图选择结果，只能基于文本中的图片引用、figure label、caption、章节和页码线索判断。
-- `digest_slots`：最终 digest 的结构化槽位，不是最终 Markdown。
-- `section_summaries`：按大纲顺序组织的章节级摘要列表。
-- `literature_score`：DB 中的结构化论文评分状态；包含论文类型、六维逐项结果、质量总分、confidence 与 confidence-adjusted score。
-- `reference_key`：reference review 的稳定工作键，例如 `reference-10`。
-- `selected_parse_pattern`：agent 必填的 reference parse hypothesis；必须来自 JIT 输出的 `allowed_parse_patterns`。
-- `split_review_packages`：reference 边界不稳定时提供的复核工作包。
-- `suspect_blocks`：reference preprocess 标出的疑似过切、合并或噪声块；由 prepare 输出供 split review 判断。
-- `batch file paths`：runtime 预切 subagent 输入文件路径；每个 batch 最多 10 条，主 agent 不手工切 batch。
-- `requires_split_review`：reference deterministic preprocess 判断仍需条目边界复核。
-- `file_quality_low`：reference 文件级质量低信号；只有 DB 中 deterministic preprocess 写入时才有效。
-- `reference_preprocess_quality`：reference preprocess 的质量指标快照；agent 不得在 payload 中伪造。
-- `metadata_evidence_reviews`：reference metadata 的本地证据审核结果，只从 batch JSON 可见证据中抽取 allowed metadata。
-- `mention_id`：citation mention 唯一 ID。
-- `citation_work_key`：citation semantic review 的稳定工作键，例如 `citation-work-12`。
-- `source_reference_number`：原文数字引用编号，仅供人工定位。
-- `role_in_context`：自然语言描述该引用在原文中的功能；runtime 会映射为内部渲染分类。
-- `topic`：被引工作在当前 `citation_scope` 中代表的主题、路线或对象。
-- `usage`：原文为什么引用该工作，用它完成什么论证。
-- `keywords`：2-5 个短词组，概括任务、方法、对象或路线。
-- `key_reference_reason`：若该文献是关键引用，说明原因；runtime 据此派生关键文献标记。
-- `summary`：在 citation item 中是条目级作用总结；在 citation payload 顶层是全局引文组织总结。
-- `timeline_summaries`：`early` / `middle` / `recent` 三段自然语言时间线总结；runtime 派生 bucket membership，缺失或空字符串合法。
+- `source_path`：唯一内容来源路径，文件或 LaTeX 工程目录。
+- `language`：输出语言，控制 digest、citation report 和非 zh/en 标题翻译要求。
+- `score_only`：source normalization 与 classification 后直接评分。
+- `identifier`：可选 DOI/arXiv，只触发精确公开 API 查询。
+- `literature_classification`：`disciplines`、`profile_id`、`confidence`、`reason`。
+- `working_dir` / `tmp_dir` / `db_path` / `result_json_path` / `output_dir`：由 `init_runtime` 固化。
+- `normalized_source`：脚本标准化后写入 DB 的唯一分析文本。
+- `outline_nodes`：含 `node_id`、`heading_level`、`title`、`line_start`、`line_end`、`parent_node_id`、`metadata` 的章节骨架。
+- `references_scope` / `citation_scope`：含 `section_title`、`line_start`、`line_end`、`metadata` 的章节范围。
+- `literature_matching_metadata`：固定 `literature_matching_metadata.v1`，含 `key_terms`、`methods`、`problems`、`datasets`、`exclude_terms`。
+- `digest_slots`：`tldr.paragraphs` 与 `focus/basis/analysis/limits.items`；不是最终 Markdown。
+- `section_summaries`：按大纲顺序组织的章节摘要。
+- `digest_sections`：runtime 按有效 profile 返回的四个 section 标题与写作提示。
+- `heading_translations`：非 zh/en 语言的六个标题翻译，键固定为 `tldr`、`focus`、`basis`、`analysis`、`limits`、`section_summaries`。
+- `representative_image`：只能基于 figure label、caption、图片引用、章节和页码文本线索判断。
+- `literature_score`：当前 `literature_score.v2` 评分产物，含 classification、rubric 与 selected profile 定义下的固定 6 个 dimensions。
+- `reference_key` / `citation_work_key`：runtime batch 中的稳定工作键。
+- `selected_parse_pattern`：必须来自对应 reference batch 的 allowed values。
+- `metadata_evidence_reviews`：只从 batch 本地证据提取 canonical metadata。
+- `citation_semantic_reviews`：`topic`、`usage`、`role_in_context`、`keywords`、条目 `summary`、可选 `key_reference_reason`。
+- `timeline_summaries`：`early` / `middle` / `recent` 三段叙述；bucket membership 由 runtime 派生。
 
 ## 参考索引
 
-启动时只读本文件。只有在进入对应阶段或遇到对应错误时，才读取下列 references：
+启动时只读本文件。进入对应阶段或遇到对应错误时再读取：
 
-- [source_and_plan.md](references/source_and_plan.md)：`init_runtime`、`persist_analysis_plan`、source normalization、scope 决策。
-- [digest_generation.md](references/digest_generation.md)：`persist_digest`、digest slot、section summary、representative image。
-- [paper_scoring.md](references/paper_scoring.md)：`persist_literature_score` review form、语义评分、evidence quotes、applicability、confidence 与错误恢复。
+- [source_and_plan.md](references/source_and_plan.md)：`init_runtime`、classification、`persist_analysis_plan`、source normalization、scope 决策。
+- [digest_generation.md](references/digest_generation.md)：`persist_digest`、中性槽位、profile headings、section summary、representative image。
+- [paper_scoring.md](references/paper_scoring.md)：`persist_literature_score` review form、profile rubric、applicability、evidence、confidence。
 - [reference_extraction.md](references/reference_extraction.md)：`persist_references`、split review、quality gate、Reference Metadata Evidence Review、bibliography formats。
 - [citation_analysis.md](references/citation_analysis.md)：`persist_citation_analysis`、mention mapping、semantics、timeline、summary。
-- [finalization_and_recovery.md](references/finalization_and_recovery.md)：`finalize_outputs`、render validation、错误恢复。
-
-正常执行只读取本 skill 的阶段指南和 runtime 返回的 JIT 指令。
+- [finalization_and_recovery.md](references/finalization_and_recovery.md)：`finalize_outputs`、render validation、classification/profile 失效和错误恢复。
 
 ## 最小执行主路径
 
 ### 1. `init_runtime`
 
-- 何时执行：
-  - 新 run 的第一步。
-  - 必须在任何语义 payload 提交前执行。
-- 调用命令：
+新 run 的第一步，必须在任何语义 payload 前执行。
+
 ```bash
+pwd
 python scripts/run_analysis.py init_runtime \
   --source-path "/abs/path/paper.md" \
   --language "zh-CN" \
@@ -305,585 +257,167 @@ python scripts/run_analysis.py init_runtime \
   [--identifier "10.1109/CVPR.2016.90"] \
   [--score-only]
 ```
-- 读取真源：
-  - prompt payload 的 `source_path`、`language`、可选 `identifier`
-  - shell 当前工作目录（若未显式传 `--working-dir`）
-- 脚本职责：
-  - 固化 runtime paths
-  - 初始化 SQLite
-  - 写入 source/language/provenance
-  - 持久化 runtime templates
-  - 规范化 Markdown/PDF/LaTeX source
-  - 写入 `normalized_source`
-- 必须参数：
-  - `--source-path`
-  - `--language`（若 prompt 未显式给出，由 agent 推断后传入）
-- 可选参数：
-  - `--identifier`：只在 prompt payload 的 `identifier` 非空时传入。
-- 最小合法示例：
+
+该动作确认并固化 paths、初始化 SQLite、持久化 templates 与 `literature_profiles.json` 快照、写入 provenance、normalize source。成功返回 `db_path`、`source_profile` 和 `next_action=persist_literature_classification`。文件不可读、编码失败或 source 无法标准化时，不提交语义 payload。
+
+### 2. `persist_literature_classification`
+
+读取 normal source 与 `status` 返回的 `profile_choices`，按上方固定 payload 分类。
+
+成功返回 effective classification、`digest_sections`、`rubric_id` 和下一动作。相同 classification 与 profile 定义重复提交保持现有下游状态；改变分类会失效依赖结果。
+
+### 3. `persist_analysis_plan`
+
+仅 normal mode。classification 成功后，在 normalized source 上完成结构化 plan：
+
 ```bash
-python scripts/run_analysis.py init_runtime --source-path "/tmp/paper.md" --language "zh-CN"
+python scripts/run_analysis.py persist_analysis_plan \
+  --db-path "<db_path>" \
+  --payload-file plan.json
 ```
-- 成功后应该看到：
-  - stdout JSON 包含 `db_path`
-  - `source_profile.source_type`
-  - `source_profile.normalized_source_chars > 0`
-  - `next_action = "persist_analysis_plan"`
-  - `score_only=true` 时 `next_action = "persist_literature_score"`
-- 关键失败分支：
-  - 文件不存在：返回 `error.code=FILE_NOT_FOUND` 或 `normalize_source_failed`
-  - PDF 转换失败：返回 schema-compatible error；不要继续提交语义 payload
-  - 非 zh/en 语言模板需要后续专门模板策略时，参考 `source_and_plan.md`
 
-### 2. `persist_analysis_plan`
+必须 payload：
 
-- 何时执行：
-  - `init_runtime` 成功后。
-  - agent 已阅读 normalized source 并完成大纲、scope、matching metadata 决策后。
-- 调用命令：
+- `outline_nodes`：按原文顺序的对象数组。每项必须含 stable `node_id`、整数 `heading_level`、原文 `title`、1-based inclusive `line_start` / `line_end`、可为 `null` 的 `parent_node_id` 与显式 `metadata` 对象。
+- `references_scope`：对象，含非空 `section_title`、normalized source 内的 1-based `line_start` / `line_end` 与显式 `metadata`。
+- `citation_scope`：对象，字段同上，覆盖综述/背景论证，可跨多个章节；`metadata.selection_reason` 说明选择依据。
+- `source_identity`：显式 `null`，或对象 `{identifier, evidence_quote, line_start, line_end}`。非空 identifier 必须是有效 DOI/arXiv；证据行必须在 normalized source 内、位于 `references_scope` 外，且 `evidence_quote` 出现在该行范围并包含该 identifier。
+- `literature_matching_metadata`：固定 `literature_matching_metadata.v1` schema，含 `key_terms`、`methods`、`problems`、`datasets`、`exclude_terms`，不得省略。
+
+成功返回 stored scope、matching metadata 和 `next_action=persist_digest`。结构、行号、schema 错误修正后重交。
+
+### 4. `persist_digest`
+
+classification 后的 normal mode，读取 DB 中 normalized source、outline、selected profile 与 runtime 返回的 `digest_sections[*].prompt`。
+
 ```bash
-python scripts/run_analysis.py persist_analysis_plan --db-path "<db_path>" --payload-file plan.json
+python scripts/run_analysis.py persist_digest \
+  --db-path "<db_path>" \
+  --payload-file digest.json
 ```
-- 读取真源：
-  - DB 中的 `normalized_source`
-  - `source_profile`
-- 必须 payload：
-  - `outline_nodes`
-  - `references_scope`
-  - `citation_scope`
-  - `source_identity`（无法从原文稳定识别 DOI/arXiv 时显式写 `null`）
-  - `literature_matching_metadata`
-- 可选 payload：
-  - `representative_image_plan`（若先在 plan 阶段记录候选线索；最终选择仍在 digest payload）
-- 字段含义：
-  - `outline_nodes[*].node_id`：同一 payload 内唯一。
-  - `outline_nodes[*].heading_level`：标题层级。
-  - `outline_nodes[*].line_start/line_end`：1-based 行号范围。
-  - `references_scope`：唯一合法 bibliography extraction 边界。
-  - `citation_scope`：唯一合法 citation workset 边界；应覆盖文献综述职责范围。
-  - `source_identity`：来源论文的 DOI/arXiv 及其 normalized source 行号证据；证据不得落在 `references_scope` 内。
-  - `literature_matching_metadata.key_terms/methods/problems/datasets/exclude_terms`：用于下游候选召回，不是正文阅读真源。
-- 最小合法示例：
-```json
-{
-  "outline_nodes": [
-    {
-      "node_id": "n1",
-      "heading_level": 1,
-      "title": "Introduction",
-      "line_start": 1,
-      "line_end": 48,
-      "parent_node_id": null,
-      "metadata": {}
-    }
-  ],
-  "references_scope": {
-    "section_title": "References",
-    "line_start": 201,
-    "line_end": 260,
-    "metadata": {}
-  },
-  "citation_scope": {
-    "section_title": "Introduction + Related Work",
-    "line_start": 1,
-    "line_end": 80,
-    "metadata": {
-      "selection_reason": "综述职责集中在引言与相关工作",
-      "covered_sections": ["Introduction", "Related Work"]
-    }
-  },
-  "source_identity": null,
-  "literature_matching_metadata": {
-    "schema": "literature_matching_metadata.v1",
-    "key_terms": ["citation-aware literature review"],
-    "methods": ["dense retrieval"],
-    "problems": ["evidence synthesis"],
-    "datasets": [],
-    "exclude_terms": ["clinical trial matching"]
-  }
-}
-```
-- 成功后应该看到：
-  - `stored_outline_nodes`
-  - `references_scope`
-  - `citation_scope`
-  - `next_action = "persist_digest"`
-- 关键失败分支：
-  - scope 越界：重新读取 normalized source 行号后修正。
-  - matching metadata schema 错误：固定为 `literature_matching_metadata.v1`。
 
-### 3. `persist_digest`
+最小 payload：
 
-- 何时执行：
-  - `persist_analysis_plan` 成功后。
-  - agent 已生成 digest slots、section summaries，并完成 representative image 文本证据判断后。
-- 调用命令：
-```bash
-python scripts/run_analysis.py persist_digest --db-path "<db_path>" --payload-file digest.json
-```
-- 读取真源：
-  - `normalized_source`
-  - `outline_nodes`
-  - `language`
-- 必须 payload：
-  - `digest_slots`
-  - `section_summaries`
-- 可选 payload：
-  - `representative_image`
-- 字段含义：
-  - digest 篇幅依据 normalized source 的实质篇幅与信息密度弹性调整；长且内容密集的来源应展开更多独立要点与章节总结，篇幅长但内容稀疏时不要机械扩写。
-  - `digest_generation.md` 中的数量区间是常见输出的写作提示，不是 payload 上限；有充分原文依据时可以超过，也不要为了达到区间而重复或补写内容。
-  - `digest_slots.tldr.paragraphs`：全局摘要，覆盖问题、方法、结果、局限与复现线索。
-  - `research_question_and_contributions.research_question`：研究问题一句话。
-  - `research_question_and_contributions.contributions`：有原文依据的核心贡献。
-  - `method_highlights.items`：具体且彼此有区分的方法要点。
-  - `key_results.items`：关键定量或定性结果。
-  - `limitations_and_reproducibility.items`：局限和可复现性线索。
-  - `section_summaries[*].source_heading`：原文章节标题。
-  - `section_summaries[*].items`：章节要点，按大纲顺序。
-- representative image 硬规则：
-  - 必须主动寻找文本证据中的图候选。
-  - 有 pipeline、architecture、method overview、核心结果图时优先选择。
-  - 不能读取或导出图片本体；只基于 caption、figure label、Markdown/HTML/LaTeX 路径、PDF caption/page hint。
-  - 没有可靠文本证据才返回 `{"status":"none"}`。
-- 最小合法示例：
 ```json
 {
   "digest_slots": {
-    "tldr": {"paragraphs": ["本文提出……", "实验显示……"]},
-    "research_question_and_contributions": {
-      "research_question": "如何在保持效果的同时降低推理成本？",
-      "contributions": ["提出新架构", "给出训练策略"]
-    },
-    "method_highlights": {"items": ["使用分层模块", "引入蒸馏损失"]},
-    "key_results": {"items": ["在数据集 A 上提升 2%", "推理延迟下降 15%"]},
-    "limitations_and_reproducibility": {"items": ["未开源训练代码"]}
+    "tldr": {"paragraphs": ["全文问题、依据、结论与边界的综合摘要。"]},
+    "focus": {"items": ["研究问题、核心主张或贡献。"]},
+    "basis": {"items": ["材料、方法、数据、文本或来源基础。"]},
+    "analysis": {"items": ["主要分析路径、证据、结果或形式推导。"]},
+    "limits": {"items": ["适用范围、不确定性、反例或复现条件。"]}
   },
   "section_summaries": [
-    {"source_heading": "Introduction", "items": ["定义研究背景", "说明核心挑战"]}
-  ],
-  "representative_image": {"status": "none"}
+    {"source_heading": "Introduction", "items": ["本节的问题与主张。"]}
+  ]
 }
 ```
-- 成功后应该看到：
-  - `stored_digest_slots`
-  - `stored_section_summaries`
-  - `next_action = "persist_literature_score"`
-- 关键失败分支：
-  - 缺少固定 slot：补齐结构化槽位。
-  - section summary 覆盖不足：按 outline 补充。
-  - representative image 字段不合法：参考 `digest_generation.md`。
 
-### 4. `persist_literature_score`
+- 五个 slot 必须齐全且非空；slot key 与顺序固定，标题和语义由 selected profile 决定。
+- `section_summaries` 按 outline 顺序覆盖主要非 reference 章节；长章节按实际论题拆分。
+- `representative_image` 可选；`status` 只能是 `selected` 或 `none`。人文或理论文献没有实验、代码或数据集是材料特征，不构成 digest 缺陷。
+- `status=selected` 时必须含 `source_kind`（`markdown_image_ref` 或 `pdf_figure_caption`）、`label`、`caption_quote`、`selection_reason` 与 `confidence`（`high` / `medium` / `low`）。`markdown_image_ref` 另需非空 `markdown_src_hint`；`pdf_figure_caption` 不使用该字段。`section_hint` 与正整数的 `page_hint` 可选。
+- `language` 以 `zh` 或 `en` 开头时，标题由 profile 与 runtime 选择。其他语言必须提交 `heading_translations` 的六个非空值，键不变。
+- 不提交最终 Markdown；renderer 使用 DB 内容和持久化 profile headings 渲染。
+- 成功返回 `next_action=persist_literature_score`。
 
-- 何时执行：
-  - 正常路径在 `persist_digest` 成功后执行。
-  - `score_only=true` 时在 `init_runtime` 成功后直接执行。
-- prepare 命令：
+### 5. `persist_literature_score`
+
+normal mode 在 digest 后评分；score-only 在 classification 后直接评分。
+
+Prepare：
+
 ```bash
 python scripts/run_analysis.py persist_literature_score --db-path "<db_path>"
 ```
-- prepare 后必须读取：
-  - `scoring_review_form_path`
-  - `scoring_review_draft_path`
-  - `editable_fields`
-  - `submit_command`
-- agent 必须：
-  - 只编辑 `scoring_review_draft_path` 中 `editable_fields` 列出的语义字段。
-  - 在 `paper_type_choices[*].selected` 中选择一个且仅一个选项并填写理由。
-  - 为每个 criterion 填写 `applicable`、`score`、`reason` 和 `evidence_quotes`；为每个 dimension 填写 `summary`，并为 active dimension 填写 `confidence`。
-  - `evidence_quotes` 应填写**最能支撑评分的、简短的原文片段**。
-  - 只使用归一化原文证据；不依据外部声誉、引用量、venue 或联网信息评分。
-- agent 不得提交：
-  - 手写或修改 `form_id`、paper-type 值、key、名称、prompt、criterion 满分、权重或数组顺序。
-  - evidence 行号、criterion status、dimension totals、dimension score、`overall_score`、`confidence_adjusted_score`。
-- submit 命令：
+
+读取 `scoring_review_form_path`、`scoring_review_draft_path`、`editable_fields` 和 `submit_command`。本次 profile、classification、rubric 与 source snapshot 已锁定；`form_id` 由 source、classification 和 resolved rubric 派生。
+
+只编辑：
+
+- `dimension_reviews[*].confidence`、`summary`
+- `criterion_reviews[*].applicable`、`score`、`reason`、`evidence_quotes`
+
+classification、rubric key/name/prompt/weight/max/order 沿用 prepare 的 locked values；聚合分数、status、effective weight 与证据行号由 runtime 派生。
+
+Submit：
+
 ```bash
 python scripts/run_analysis.py persist_literature_score \
   --db-path "<db_path>" \
   --payload-file "<scoring_review_draft_path>"
 ```
-- 已填写 draft 示例：
-  - 下例展示当前评分表的完整填写形态，包括未选中的论文类型、active dimension、适用 criterion、N/A criterion，以及有/无直接 quote 的证据数组。
-  - 实际执行时必须从本次 prepare 返回的 `scoring_review_draft_path` 原位填写，保留其中的 `form_id`、全部 locked fields、数组成员与顺序；不要复制下例的 `form_id` 或依据示例重建表单。
-  - 下例中的 `evidence_quotes` 仅为形态示意；实际值必须逐字来自当前 normalized source。空数组表示没有合适的直接引文，不能填虚构的否定句。
-```json
-{
-  "form_id": "<keep the runtime-generated form_id unchanged>",
-  "paper_type_choices": [
-    {"paper_type": "empirical", "description": "以实验、观测或量化分析检验主张", "selected": true},
-    {"paper_type": "review", "description": "以系统整理、比较或综合已有研究为主", "selected": false},
-    {"paper_type": "theoretical", "description": "以定理、证明、形式模型或理论推导为主", "selected": false},
-    {"paper_type": "qualitative", "description": "以访谈、案例、田野材料或质性编码为主", "selected": false},
-    {"paper_type": "mixed_methods", "description": "质性与量化证据共同承担主要论证", "selected": false},
-    {"paper_type": "other", "description": "以上类别都不能稳定描述论文", "selected": false}
-  ],
-  "paper_type_reason": "论文以多个数据集上的对照实验检验所提方法的效果与效率。",
-  "dimension_reviews": [
-    {"dimension_key": "methodological_rigor", "name": "Methodological Rigor", "configured_weight": 0.25, "prompt": "判断方法是否可靠、合理且可审查。", "confidence": 0.88, "summary": "研究问题、方法和对照设置清楚，但参数选择依据仍有少量缺口。"},
-    {"dimension_key": "evidence_completeness", "name": "Evidence Completeness", "configured_weight": 0.2, "prompt": "判断论文给出的证据是否足以支持其结论。", "confidence": 0.84, "summary": "主要主张得到多数据集实验支持，统计不确定性报告较少。"},
-    {"dimension_key": "reproducibility", "name": "Reproducibility", "configured_weight": 0.15, "prompt": "判断第三方能否根据论文文本重建研究材料与过程。", "confidence": 0.82, "summary": "数据、代码和主要步骤可获得，环境与部分配置说明不够完整。"},
-    {"dimension_key": "innovation_signals", "name": "Innovation Signals", "configured_weight": 0.15, "prompt": "判断文本是否展示创新行为及其依据。", "confidence": 0.8, "summary": "论文提出明确的新架构并针对已有瓶颈验证改进；没有以新理论解释为目标。"},
-    {"dimension_key": "research_impact_potential", "name": "Research Impact Potential", "configured_weight": 0.15, "prompt": "判断论文是否具备产生研究或应用影响的结构性条件。", "confidence": 0.76, "summary": "问题具有实际意义，方法可迁移，但跨领域适用范围仍需验证。"},
-    {"dimension_key": "writing_quality", "name": "Writing Quality", "configured_weight": 0.1, "prompt": "判断表达是否帮助读者准确理解与审查研究。", "confidence": 0.92, "summary": "结构、术语和论证总体清楚，图表能够支撑主要结果说明。"}
-  ],
-  "criterion_reviews": [
-    {"criterion_key": "research_question_clarity", "dimension_key": "methodological_rigor", "name": "Research Question Clarity", "max_score": 5, "prompt": "论文是否清楚说明研究目标、问题或假设？", "applicable": true, "score": 5, "reason": "引言直接说明了研究目标和约束。", "evidence_quotes": ["We study how to reduce inference cost while preserving accuracy."]},
-    {"criterion_key": "method_description_sufficiency", "dimension_key": "methodological_rigor", "name": "Method Description Sufficiency", "max_score": 5, "prompt": "方法信息是否足以理解其核心机制？", "applicable": true, "score": 4, "reason": "核心模块和训练目标均有说明，但个别实现细节只在附录简述。", "evidence_quotes": ["Our model consists of a hierarchical encoder and a lightweight prediction head."]},
-    {"criterion_key": "analysis_process_completeness", "dimension_key": "methodological_rigor", "name": "Experiment Or Analysis Process Completeness", "max_score": 5, "prompt": "实验、证明、分析或质性流程是否完整闭合？", "applicable": true, "score": 4, "reason": "训练、比较和消融流程基本闭合。", "evidence_quotes": []},
-    {"criterion_key": "baseline_or_control_adequacy", "dimension_key": "methodological_rigor", "name": "Baseline Or Control Adequacy", "max_score": 5, "prompt": "是否使用与论文类型相称的基线、对照材料或替代解释检验？", "applicable": true, "score": 4, "reason": "覆盖强基线并提供统一设置下的比较。", "evidence_quotes": ["We compare against six competitive baselines under the same evaluation protocol."]},
-    {"criterion_key": "parameter_transparency", "dimension_key": "methodological_rigor", "name": "Parameter Transparency", "max_score": 5, "prompt": "关键参数、阈值、选择规则或分析设定是否透明？", "applicable": true, "score": 3, "reason": "主要超参数已给出，但阈值选择依据不完整。", "evidence_quotes": []},
-    {"criterion_key": "experiment_coverage", "dimension_key": "evidence_completeness", "name": "Experiment Coverage", "max_score": 5, "prompt": "证据是否覆盖主要主张和重要边界？", "applicable": true, "score": 4, "reason": "实验覆盖准确率、效率和消融，尚缺更极端分布条件。", "evidence_quotes": []},
-    {"criterion_key": "data_scale_adequacy", "dimension_key": "evidence_completeness", "name": "Data Scale Adequacy", "max_score": 5, "prompt": "样本、数据集、案例或证明范围是否与结论相称？", "applicable": true, "score": 4, "reason": "三个公开数据集与论文结论范围基本相称。", "evidence_quotes": ["Experiments are conducted on three public benchmark datasets."]},
-    {"criterion_key": "statistical_analysis", "dimension_key": "evidence_completeness", "name": "Statistical Analysis", "max_score": 5, "prompt": "需要统计或不确定性分析时，处理是否充分？", "applicable": true, "score": 2, "reason": "报告均值但缺少方差、置信区间或显著性分析。", "evidence_quotes": []},
-    {"criterion_key": "claim_evidence_alignment", "dimension_key": "evidence_completeness", "name": "Claim Evidence Alignment", "max_score": 5, "prompt": "结论是否严格落在证据支持的范围内？", "applicable": true, "score": 4, "reason": "结论主要限定在已测试任务内，仅有少量泛化表述超出直接证据。", "evidence_quotes": []},
-    {"criterion_key": "data_source_clarity", "dimension_key": "reproducibility", "name": "Data Source Clarity", "max_score": 3, "prompt": "数据、样本或材料来源是否明确？", "applicable": true, "score": 3, "reason": "数据集名称、划分和来源均有说明。", "evidence_quotes": []},
-    {"criterion_key": "code_availability", "dimension_key": "reproducibility", "name": "Code Availability", "max_score": 3, "prompt": "论文是否提供代码、实现或可访问的等价工件？", "applicable": true, "score": 3, "reason": "原文提供了公开代码仓库地址。", "evidence_quotes": ["Code and configuration files are available at the project repository."]},
-    {"criterion_key": "parameter_availability", "dimension_key": "reproducibility", "name": "Parameter Availability", "max_score": 3, "prompt": "关键参数和配置是否公开？", "applicable": true, "score": 2, "reason": "主体列出主要参数，部分数据预处理配置缺失。", "evidence_quotes": []},
-    {"criterion_key": "procedure_detail", "dimension_key": "reproducibility", "name": "Procedure Detail", "max_score": 3, "prompt": "训练、实验、证明、编码或分析步骤是否详细？", "applicable": true, "score": 2, "reason": "训练与评估步骤可追踪，但复现实验仍需推断少量步骤。", "evidence_quotes": []},
-    {"criterion_key": "environment_description", "dimension_key": "reproducibility", "name": "Environment Description", "max_score": 3, "prompt": "软件、硬件、依赖或实验环境是否说明？", "applicable": true, "score": 1, "reason": "只报告硬件，未完整列出软件与依赖版本。", "evidence_quotes": []},
-    {"criterion_key": "new_method_or_framework", "dimension_key": "innovation_signals", "name": "New Method Or Framework", "max_score": 5, "prompt": "是否提出清楚的新方法、框架或组合方式？", "applicable": true, "score": 4, "reason": "提出了结构明确且可与既有路线区分的架构。", "evidence_quotes": []},
-    {"criterion_key": "addresses_known_limitations", "dimension_key": "innovation_signals", "name": "Addresses Known Limitations", "max_score": 5, "prompt": "是否针对已有方法的明确缺陷提出并验证解决方案？", "applicable": true, "score": 4, "reason": "针对推理成本问题提出设计，并以延迟实验验证。", "evidence_quotes": ["The proposed model reduces latency by 18% while maintaining comparable accuracy."]},
-    {"criterion_key": "new_theoretical_explanation", "dimension_key": "innovation_signals", "name": "New Theoretical Explanation", "max_score": 5, "prompt": "是否提出新的机制解释、理论推导或概念关系？", "applicable": false, "score": null, "reason": "该实证论文不提出理论机制、形式推导或新的概念关系，因此本项没有评价对象。", "evidence_quotes": []},
-    {"criterion_key": "problem_importance", "dimension_key": "research_impact_potential", "name": "Problem Importance", "max_score": 5, "prompt": "问题是否对应清楚且有意义的研究或应用需求？", "applicable": true, "score": 4, "reason": "论文把推理成本与部署约束建立了直接联系。", "evidence_quotes": []},
-    {"criterion_key": "method_transferability", "dimension_key": "research_impact_potential", "name": "Method Transferability", "max_score": 5, "prompt": "方法、结论或工具是否可能迁移到其他数据、任务或场景？", "applicable": true, "score": 4, "reason": "设计不依赖单一数据集，但尚未跨任务验证。", "evidence_quotes": []},
-    {"criterion_key": "application_breadth", "dimension_key": "research_impact_potential", "name": "Application Breadth", "max_score": 5, "prompt": "潜在使用范围是否超出一个极窄的单点案例？", "applicable": true, "score": 3, "reason": "可用于多类资源受限推理场景，当前证据仍集中在同类任务。", "evidence_quotes": []},
-    {"criterion_key": "structural_clarity", "dimension_key": "writing_quality", "name": "Structural Clarity", "max_score": 2, "prompt": "章节组织和信息层级是否清楚？", "applicable": true, "score": 2, "reason": "章节组织与方法、实验、讨论的层次清楚。", "evidence_quotes": []},
-    {"criterion_key": "terminology_consistency", "dimension_key": "writing_quality", "name": "Terminology Consistency", "max_score": 2, "prompt": "术语、符号和缩写是否一致？", "applicable": true, "score": 2, "reason": "核心术语和缩写在全文保持一致。", "evidence_quotes": []},
-    {"criterion_key": "logical_coherence", "dimension_key": "writing_quality", "name": "Logical Coherence", "max_score": 2, "prompt": "论证是否连贯，前提、过程和结论能否衔接？", "applicable": true, "score": 2, "reason": "研究动机、方法选择和实验结论能够衔接。", "evidence_quotes": []},
-    {"criterion_key": "figure_table_effectiveness", "dimension_key": "writing_quality", "name": "Figure And Table Effectiveness", "max_score": 2, "prompt": "图表是否被有效说明并承担信息表达功能？", "applicable": true, "score": 2, "reason": "方法图和结果表均在正文解释并承担关键信息表达。", "evidence_quotes": []},
-    {"criterion_key": "language_quality", "dimension_key": "writing_quality", "name": "Language Quality", "max_score": 2, "prompt": "语言是否规范、准确且可读？", "applicable": true, "score": 2, "reason": "语言准确，长句较少影响理解。", "evidence_quotes": []}
-  ]
-}
-```
-- runtime 固定执行：
-  - 从本次 rubric snapshot 生成并锁定完整 review form；同一 `form_id` 重复 prepare 不覆盖 draft。
-  - 校验 locked fields 和完整答案，根据唯一选中的 choice 派生 paper type，根据 `applicable` 派生 criterion status。
-  - 在 normalized source 中定位 `evidence_quotes`，生成公开产物的证据行号。
-  - 按 rubric snapshot 计算维度分、有效权重和聚合值。
-  - `overall_score`、`confidence`、`confidence_adjusted_score = overall_score × confidence`
-- N/A 硬规则：
-  - `applicable=false` 仅表示 criterion 对论文类型确实无评价对象；此时 score 必须为 null 并提供理由。
-  - 未报告、证据弱或 agent 不确定仍使用 `applicable=true` 并按原文评分。
-  - 部分 criterion 不适用时，runtime 在维度内按 applicable maximum points 归一化；整个维度不适用时将其权重按比例分配给 active dimensions 并写 warning。
-- 成功后应该看到：
-  - 正常路径：`literature_score_path` 与 `next_action = "prepare_references_workset"`。
-  - score-only：stdout 即最终 JSON；`literature_score_path` 为绝对路径，其余公开产物路径为空字符串。
-- 详细语义、证据定位、confidence 校准、draft 填写和恢复方法见 `paper_scoring.md`。
 
-### 5. `persist_references`
+公开产物使用 `literature_score.v2`，包含 `literature_classification`、`rubric_id`、`overall_score`、`confidence`、`confidence_adjusted_score` 与固定 6 项 `dimensions`。权重顺序统一为 25/20/15/15/15/10，最后一项为 `writing_quality`。quantitative rubric 的六维名称和分项按其专属定义提供；其他 profile 同样使用六项专属维度，不包含占位或重复分项。每个位置的 dimension key/name 与 criteria 按所选 profile 定义，不能仅凭数组位置跨 profile 对齐。N/A dimension 仍保留，score 与 confidence 为 `null`，effective weight 为 0，configured weight 按比例分配给其他 active dimensions。不同 rubric 的分数不默认可直接比较。
 
-- 何时执行：
-  - `persist_literature_score` 成功后。
-  - 本阶段先由 runtime 在本地 prepare 后自动尝试公开 API；只有未解决条目才进入 core submit 与 metadata submit，仍使用同一个公开 CLI 阶段。
-- prepare 命令：
+### 6. `persist_references`
+
+评分成功后执行 prepare：
+
 ```bash
 python scripts/run_analysis.py persist_references --db-path "<db_path>"
 ```
-- prepare 读取真源：
-  - `normalized_source`
-  - `references_scope`
-  - `runtime_inputs.identifier` 或 `source_identity`
-- prepare 输出：
-  - `workset_path`
-  - `review_path`
-  - `reference_core_review_manifest_path`
-  - `reference_core_batch_paths`
-  - `reference_core_package_count`
-  - `reference_core_batch_count`
-  - `split_review_packages_path`
-  - `split_review_package_count`
-  - `batch_max_items`
-  - `allowed_payload_shape`
-  - `field_guidance`
-  - `subagent_prompt_template`
-  - `merge_contract`
-  - `reference_api` 与 `reference_api_audit_path`
-- API 解析规则：
-  - 本地 prepare 的条目边界、顺序、`raw` 与 stable key 始终为真源。
-  - Runtime 在生成确定性 entries/candidates 后、外部化 split review package 前执行 API resolution；suspect block 通过 `entry_indexes` 关联本地条目。
-  - 仅当一个 suspect block 的全部条目均已 accepted 时跳过该块；部分 accepted 时仍输出完整 `source_text`、fragments、`accepted_reference_keys` 与 `unresolved_reference_keys`，由 agent 整块复核。
-  - DOI 先查 Crossref；仍有未解决条目时查 Semantic Scholar。arXiv 直接查 Semantic Scholar。
-  - API 只自动接受完整且唯一匹配的 title/authors/year；Semantic Scholar 中含规范化 arXiv ID 的非精确 title candidate 使用 `0.95` 阈值，其他非精确 title candidate 使用 `0.90`，mutual-best margin 均为 `0.05`。精确 DOI/arXiv 匹配不使用 title 阈值。
-  - Split review 改变边界时，runtime 清除旧 resolution，保留同一来源标识的 provider cache，并对新 entry indexes 重新匹配。
-  - Provider 额外、乱序、模糊或不完整记录只进入内部审计。
-  - API 或网络不可用时写 warning，未解决条目继续进入本地 core review。
-  - `reference_core_required_coverage_keys` 只包含未解决条目；若全部解决，prepare 返回 `next_action="persist_citation_analysis"`，不生成 core/metadata batch。
-- core submit 命令：
-```bash
-python scripts/run_analysis.py persist_references --db-path "<db_path>" --payload-file references.json
-```
-- 存在 `reference_core_batch_paths` 时，core submit 必须 payload：
-  - `reference_reviews`
-- split repair payload：
-  - `split_reviews`
-- metadata submit 命令：
-```bash
-python scripts/run_analysis.py persist_references --db-path "<db_path>" --payload-file reference_metadata.json
-```
-- 存在 `metadata_evidence_batch_paths` 时，metadata evidence submit 必须 payload：
-  - `metadata_evidence_reviews`
-- `reference_reviews[*]` 字段含义：
-  - `reference_key`：来自 `reference_core_batch_paths[*]` 文件内 `reference_review_packages[*].reference_key` 的稳定工作键。
-  - `selected_parse_pattern`：必填 parse hypothesis；只能取同一 batch 文件内 `allowed_parse_patterns_by_reference_key` 中列出的值。
-  - `authors`：作者字符串数组，按原文顺序保留边界和缩写。
-  - `title`：原始语言/文字系统标题，不得 placeholder。
-  - `publication_year`：整数年份；无可靠证据时填 `null`。
-  - `review_notes`：可选，说明低置信或人工判断依据。
-- `reference_reviews[*]` 禁止字段：
-  - 不得提交 `metadata`、`raw`、`confidence`、`ref_index` 或任何 DB/renderer 审计字段。
-  - 富元数据必须等 runtime 返回 `metadata_evidence_review_manifest_path` / `metadata_evidence_batch_paths` 后，通过 `metadata_evidence_reviews[]` 单独提交。
-- `metadata_evidence_reviews[*]` 字段含义：
-  - `reference_key`：来自 `metadata_evidence_batch_paths[*]` 文件内的 `metadata_evidence_packages[*].reference_key`。
-  - `status`：必填，只能是 `fields_extracted`、`existing_fields_confirmed`、`no_local_evidence`。
-  - `metadata`：仅当 `status="fields_extracted"` 时填写；只能填写 batch JSON 本地证据支持的 canonical metadata 字段。
-  - `evidence_note`：说明 metadata 证据来自 batch JSON 的 `locked_reference`、`existing_metadata` 或 `metadata_context_text`。
-- Metadata canonical 字段：
-  - 首选 `publicationTitle`、`DOI`、`ISBN`、`ISSN`、`archiveID`、`url`、`publisher`、`place`、`pages`、`volume`、`issue`、`itemType`、`date`、`conferenceName`、`university`。
-  - Runtime 会把确定性别名如 `journal`、`journalTitle`、`journal_title`、`doi`、`isbn`、`issn`、`arxivId`、裸 arXiv id 规范化为 canonical 字段并写 warning。
-  - 未知 metadata 字段不作为阻断错误，但会产生 `reference_metadata_field_unrecognized` warning；主 agent 应在合并 subagent drafts 时优先修正为 canonical 字段。
-- `split_reviews[*]` 字段含义：
-  - `block_key`：来自 `split_review_packages_path` 文件内 `split_review_packages[*].block_key`。
-  - `accepted_reference_keys` / `unresolved_reference_keys`：runtime 提供的只读提示；即使部分条目已 accepted，也必须根据完整 block 证据判断边界。
-  - `action`：来自该 package 的 `allowed_actions`。
-  - `corrected_reference_texts`：当需要修正条目边界时，给出修正后的完整 reference 文本数组；可修复换行、空白、Unicode/全角半角、引号、破折号和标点样式差异，但不得翻译、改写、删 DOI/URL/arXiv ID、删作者/标题关键词，或补不存在的内容。
-- Subagent hard rules：
-  - 当环境支持 subagent 且存在 `reference_core_batch_paths` / `metadata_evidence_batch_paths` 时，core reference review 和 Reference Metadata Evidence Review 必须默认按 runtime 预切 batch 文件分批委派。
-  - 只有环境不支持、batch 极小，或上下文不可拆时才由主 agent 自行完成；跳过原因写入执行 notes 或 `review_notes`。
-  - subagent 只读取被分配的 batch JSON 文件，只返回 batch draft；不得写 DB、不得改 key、不得补 `raw`/`confidence`/`ref_index` 等内部审计字段。
-  - 如果 subagent 可写文件，优先写到 batch JSON 中的 `suggested_draft_output_path` 并返回路径；否则直接返回 batch draft JSON。
-  - 主 agent 先合并 core reference drafts 并提交 `reference_reviews[]`；成功后读取 `metadata_evidence_batch_paths`，再合并 metadata evidence drafts 并提交 `metadata_evidence_reviews[]`。
-  - 主 agent 是唯一 DB 写入者。
-- Reference core review subagent prompt (short)：
-```text
-You are reviewing one literature-analysis reference core batch.
-Read the provided batch JSON file path first.
-Use only reference_review_packages and allowed_parse_patterns_by_reference_key in that batch file.
-Return JSON with reference_reviews[] only.
-For each package, keep reference_key unchanged, choose selected_parse_pattern from that package's allowed list, and provide authors, title, publication_year, and optional review_notes.
-Do not include metadata, raw text, confidence, ref_index, database fields, renderer fields, or entries outside this batch.
-If file writing is available, write the draft to suggested_draft_output_path and return that path.
-Do not write DB, run runtime commands, submit payloads, or generate final artifacts.
-```
-- Reference Metadata Evidence Review subagent prompt (short)：
-```text
-This is not a metadata discovery task.
-You are reviewing one literature-analysis reference metadata evidence batch.
-Read the provided batch JSON file path first.
-Use only metadata_evidence_packages, allowed_metadata_fields, locked_fields, and evidence_policy in that batch file.
-external_lookup_allowed is false: do not use web search, Crossref, arXiv, Google Scholar, Zotero, Semantic Scholar, DOI resolvers, or any external database.
-Return JSON with metadata_evidence_reviews[] only.
-For each package, keep reference_key unchanged and set status to fields_extracted, existing_fields_confirmed, or no_local_evidence.
-Only include metadata for status=fields_extracted, only use canonical metadata fields, and include evidence_note naming the batch JSON field that supports each value.
-If the information is not visible in locked_reference, existing_metadata, or metadata_context_text, use no_local_evidence. Do not search.
-Do not modify locked fields, stable keys, selected_parse_pattern, raw text, confidence, ref_index, or other internal fields.
-If file writing is available, write the draft to suggested_draft_output_path and return that path.
-Do not write DB, run runtime commands, submit payloads, or generate final artifacts.
-```
-- Reference hard rules：
-  - 不提交 runtime 审计字段；原文文本、置信度、内部序号由 runtime 从 workset 和候选生成。
-  - public `references.json` 不包含 parse candidate/debug data；调试只看 `.literature_analysis_tmp/reference_parse_audit.json` 与 workset sidecar。
-  - 不得将 `Al-Rfou, R.` 拆成 `["Al-Rfou", "R."]`。
-  - 不得让 title 以前导逗号、句点、分号、冒号开头。
-  - `placeholder_title`、`bare_identifier_or_url_title`、空 title 等质量问题必须修复或说明不可恢复。
-  - `cjk_type_marker_entry`、全角标点、`［J］` / `［C］` / `［D］` / `［EB/OL］` 等线索必须按原文语言处理。
-- core submit 最小合法示例：
-```json
-{
-  "reference_reviews": [
-    {
-      "reference_key": "reference-10",
-      "selected_parse_pattern": "authors_colon_title_in_year",
-      "authors": ["Gu, J.", "Bradbury, J.", "Xiong, C.", "Li, V.O.", "Socher, R."],
-      "title": "Non-autoregressive neural machine translation",
-      "publication_year": 2018,
-      "review_notes": "The selected pattern preserves the author boundary and title."
-    }
-  ]
-}
-```
-- metadata submit 最小合法示例：
-```json
-{
-  "metadata_evidence_reviews": [
-    {
-      "reference_key": "reference-10",
-      "status": "fields_extracted",
-      "metadata": {
-        "conferenceName": "ICLR",
-        "pages": "12-20"
-      },
-      "evidence_note": "Venue and pages are visible in metadata_context_text."
-    }
-  ]
-}
-```
-- core submit 成功后应该看到：
-  - `stored_reference_items`
-  - `metadata_evidence_packages`
-  - `instructions.allowed_metadata_fields`
-  - `instructions.locked_fields`
-  - `next_action = "persist_references"`
-- metadata submit 成功后应该看到：
-  - `metadata_evidence_review`
-  - `next_action = "persist_citation_analysis"`
-- 关键失败分支：
-  - `requires_split_review=true`：先提交 `split_reviews[]` 修正 suspect blocks；若边界改变，runtime 会返回 regenerated reference review packages，随后再提交 `reference_reviews[]`。
-  - split review token coverage 失败：按 `missing_tokens_sample`、`unexpected_tokens_sample`、`coverage_ratio` 修正文本，不要臆造或翻译。
-  - split review 后 heuristic 仍疑似边界不稳定：runtime 会写 `reference_boundary_suspicion_after_review` warning 并继续，不要求额外 accept 步骤。
-  - `file_quality_low=true`：只能基于 DB 中 deterministic quality snapshot 做 continue/abandon 决策。
-  - invalid pattern：按错误详情中列出的 `allowed_parse_patterns_by_reference_key` 修正所有问题后重交。
-  - missing/duplicate/unknown `reference_key`：一次性修正覆盖集合后重交。
-  - core payload 含 `metadata`：改为先提交 core fields，等待 `metadata_evidence_packages` 后再提交 `metadata_evidence_reviews[]`。
-  - metadata submit 覆盖不完整：按错误详情一次性补齐 missing/duplicate/unknown `reference_key`。
 
-### 6. `persist_citation_analysis`
+读取 API resolution 结果、`reference_core_batch_paths`、metadata packages、split packages 和 field guidance。只有 unresolved entries 需要 core review；metadata review 只使用各自 batch 的本地证据。
 
-- 何时执行：
-  - `persist_references` 成功后。
-  - 本阶段分为 prepare 与 submit 两次命令。
-- prepare 命令：
+提交入口：
+
+```bash
+python scripts/run_analysis.py persist_references \
+  --db-path "<db_path>" \
+  --payload-file references.json
+```
+
+- core payload 使用 `reference_reviews[]`，每项保持 `reference_key`，`selected_parse_pattern` 取自允许集合，并填写 `authors`、`title`、`publication_year` 与可选 `review_notes`。
+- core review 不提交 `metadata`、`raw`、`confidence`、`ref_index` 等 runtime 字段。
+- 边界不稳定时先按 `split_review_packages` 提交 `split_reviews[]`；修正文本必须保留原始 tokens、语言与标识符。
+- core 成功后使用 `metadata_evidence_reviews[]`，status 只能是 `fields_extracted`、`existing_fields_confirmed`、`no_local_evidence`，只填写本地可见的 canonical metadata。
+- author 边界保持完整，title 使用原文文字系统，不得 placeholder、翻译或补造。
+- 成功后按 `next_action` 进入 citation prepare。Reference 细节读取 [reference_extraction.md](references/reference_extraction.md)。
+
+### 7. `persist_citation_analysis`
+
+Prepare：
+
 ```bash
 python scripts/run_analysis.py persist_citation_analysis --db-path "<db_path>"
 ```
-- prepare 读取真源：
-  - `normalized_source`
-  - `citation_scope`
-  - `reference_items`
-  - citation mention deterministic preprocess
-- prepare 输出：
-  - `workset_path`
-  - `review_path`
-  - `scope`
-  - `citation_semantic_review_manifest_path`
-  - `citation_batch_paths`
-  - `citation_package_count`
-  - `citation_batch_count`
-  - `batch_max_items`
-  - `allowed_payload_shape`
-  - `field_guidance`
-  - `unresolved_mentions`
-  - `filtered_false_positive_mentions`
-  - `reference_free_mode`
-  - `subagent_prompt_template`
-  - `merge_contract`
-- submit 命令：
-```bash
-python scripts/run_analysis.py persist_citation_analysis --db-path "<db_path>" --payload-file citation.json
-```
-- 推荐 payload：
-  - `citation_semantic_reviews`
-  - `timeline_summaries`
-  - `summary`
-- 本阶段是 tolerant best-effort 持久化：payload 字段可以缺失或为空；runtime 只保存 agent 已提交且 key 可识别的 citation items，不为未提交 key 制造占位语义。
-- `citation_semantic_reviews[*]` 字段含义：
-  - `citation_work_key`：来自 `citation_batch_paths[*]` 文件内 `citation_work_packages[*].citation_work_key` 的稳定工作键。
-  - `topic`：该文献在当前 `citation_scope` 中代表的主题、路线或对象。
-  - `usage`：原文为什么引用它，用它完成什么论证。
-  - `role_in_context`：自然语言描述引用功能；runtime 会派生渲染分类。
-  - `keywords`：2-5 个短词组。
-  - `summary`：该引用在当前 scope 中的具体作用，不写泛化文献简介。
-  - `key_reference_reason`：可选；非空时 runtime 将其视为关键引用依据。
-- `timeline_summaries` 字段含义：
-  - 可包含 `early`、`middle`、`recent` 三段自然语言总结；缺段或空字符串合法。
-  - agent 不填写 bucket membership；runtime 根据年份派生闭包分桶。
-- `summary` 字段含义：
-  - 全局 citation analysis 总结，概括原文如何组织和使用这些引用；空字符串合法。
-- Subagent hard rules：
-  - 当环境支持 subagent 且存在 `citation_batch_paths` 时，citation semantic review 必须默认按 runtime 预切 batch 文件委派。
-  - 只有环境不支持、batch 极小，或上下文不可拆时才由主 agent 自行完成；跳过原因写入执行 notes。
-  - subagent 只读取被分配的 citation batch JSON 文件，只返回 `citation_semantic_reviews[]` draft；主 agent 合并后提交一次正式 payload。
-  - 如果 subagent 可写文件，优先写到 batch JSON 中的 `suggested_draft_output_path` 并返回路径；否则直接返回 batch draft JSON。
-  - 主 agent 单独撰写或整合 `timeline_summaries` 与全局 `summary`。
-- Citation semantic review subagent prompt (short)：
-```text
-You are reviewing one literature-analysis citation semantic batch.
-Read the provided batch JSON file path first.
-Use only citation_work_packages in that batch file.
-Return JSON with citation_semantic_reviews[] only.
-For each package, keep citation_work_key unchanged and provide topic, usage, role_in_context, keywords, summary, and optional key_reference_reason.
-Do not include ref_index, source mention arrays, function, is_key_reference, timeline buckets, timeline_summaries, global summary, report_md, or final artifacts.
-If file writing is available, write the draft to suggested_draft_output_path and return that path.
-Do not write DB, run runtime commands, or submit payloads.
-```
-- Citation hard rules：
-  - 语义阶段只消费 citation batch files 中的 `citation_work_packages`，不得重新全文盲扫或重做 mention-reference join。
-  - `source_reference_number` 只用于人工定位，不作为 submit 主键。
-  - LaTeX `\cite{...}`、`\citep{...}`、`\citet{...}` 多 key 映射由 preprocess 完成。
-  - BibTeX/alpha 风格 bracket labels（如 `[RNSS18]`、`[DGV+18]`、`[YDY+19]`、`[Fou]`）由 runtime 从正文和 references 自动映射；agent 不在 semantic payload 中填写 label 字段。
-  - 图片链接、URL、资源路径、日期型字符串等假阳性应由 preprocess 过滤并计入 `citation_false_positive_filtered`。
-  - 模糊 mention 进入 `unmapped_mentions`，不得硬猜。
-  - Web/resource 型 reference 可以缺 authors/year；这会产生 warning 但不阻断。`publication_year=null` 的引用不会进入 runtime 自动时间线分桶，可能产生 `citation_timeline_missing_year` warning。
-- 完整 payload 示例：
-```json
-{
-  "citation_semantic_reviews": [
-    {
-      "citation_work_key": "citation-work-12",
-      "topic": "早期注意力机制",
-      "usage": "原文用它交代 transformer 之前的注意力思想来源。",
-      "role_in_context": "historical background for pre-transformer attention",
-      "keywords": ["attention", "pre-transformer", "historical lineage"],
-      "summary": "该工作被用来追溯 transformer 之前的注意力思想来源，帮助原文把自身方法放回更早的技术谱系中。",
-      "key_reference_reason": "它定义了引言中回溯技术谱系的早期起点。"
-    }
-  ],
-  "timeline_summaries": {
-    "early": "早期工作奠定基础建模思想。",
-    "middle": "中期工作推动成熟检测路线。",
-    "recent": "近期工作直接收束到本文方法脉络。"
-  },
-  "summary": "本节先用早期注意力与序列建模工作铺出技术背景，再引出本文路线。"
-}
-```
-- 成功后应该看到：
-  - runtime 自动渲染最终公开产物。
-  - stdout 即最终 JSON。
-- 宽松持久化规则：
-  - `citation_semantic_reviews` 缺失、为空或只覆盖部分 `citation_work_key` 时合法；未提交 key 不生成 item。
-  - `topic` / `usage` / `role_in_context` / `keywords` / `summary` 缺失或为空时合法；runtime 保存空字符串或空数组，不生成替代语义。
-  - duplicate `citation_work_key` 不阻断；runtime 合并为一条，字符串字段取第一个非空值，`keywords` 合并去重。
-  - unknown `citation_work_key`、forbidden internal fields、非法 JSON 仍然失败。
-  - scope 存在但无稳定 mapped workset 时，prepare 会返回 `citation_package_count=0`；仍提交空 payload，让 runtime 持久化空 citation semantics、timeline、summary 并渲染空 citation artifact。
 
-### 7. `finalize_outputs`
+读取 `citation_batch_paths`、`citation_work_packages`、scope、allowed payload shape 与 merge contract。只消费 runtime 已 mapping 的 workset，不重新做 mention-reference join。
 
-- 何时执行：
-  - 仅用于恢复或手动重渲染。
-  - 正常情况下 `persist_citation_analysis` submit 成功后已自动完成最终渲染。
-- 调用命令：
+Submit：
+
 ```bash
+python scripts/run_analysis.py persist_citation_analysis \
+  --db-path "<db_path>" \
+  --payload-file citation.json
+```
+
+payload 可含 `citation_semantic_reviews[]`、`timeline_summaries` 和全局 `summary`。阶段采用 tolerant best-effort：未提交的 known key 不生成占位语义，缺段或空 summary 合法；unknown keys、forbidden internal fields 和非法 JSON 仍失败。
+
+- `citation_semantic_reviews[*]` 保持 `citation_work_key`，填写 `topic`、`usage`、`role_in_context`、2-5 个 `keywords`、条目 `summary` 与可选 `key_reference_reason`。
+- `timeline_summaries` 含 `early` / `middle` / `recent` 叙述；不填写 bucket membership。
+- 不提交 `report_md`、mentions、timeline ref indexes 或最终渲染字段。
+- `citation_package_count=0` 时提交空 citation payload 完成阶段。
+- 成功提交后 runtime 级联 final render。细节读取 [citation_analysis.md](references/citation_analysis.md)。
+
+### 8. `finalize_outputs`
+
+用于恢复或手动重渲染，只在 DB 状态完整或需要重新生成公开产物时执行。正常 citation 提交已自动完成这一步。
+
+```bash
+python scripts/run_analysis.py status --db-path "<db_path>"
 python scripts/run_analysis.py finalize_outputs --db-path "<db_path>"
 ```
-- 读取真源：
-  - DB 中所有已持久化结构化数据
-  - runtime templates
-  - `output_dir`
-  - `result_json_path`
-- 必须 payload：
-  - 无
-- 成功后应该看到：
-  - stdout 最终 JSON
-  - `artifact_registry` 登记公开产物
-  - result JSON mirror 与 stdout 内容一致
-- 关键失败分支：
-  - 缺 `digest_slots` / `section_summaries`：回到 `persist_digest`。
-  - 缺 `literature_score`：回到 `persist_literature_score`。
-  - 缺 `reference_items`：回到 `persist_references` 或确认 reference-free mode。
-  - 缺 `citation_timeline` / `citation_summary`：回到 `persist_citation_analysis`。
-  - `citation_analysis_report_path` 内容与 `citation_analysis.json.report_md` 不一致：不要手改产物，重新 finalize。
+
+`status` 根据 workflow 状态、classification 与 prerequisites 返回当前 `next_action`。finalize 不接受业务 payload、source/language/output override 或手写 `report_md`。成功后 stdout 来自 DB-backed renderer，artifact registry 与 result mirror 同步更新。
 
 ## 阶段性最低输出约束
 
-- digest 阶段不得提交近最终 Markdown，只能提交结构化槽位。
-- scoring 阶段只编辑 runtime review draft 的 `editable_fields`；不得改 locked fields 或手写权重、聚合值、status 与证据行号。
-- references 阶段不得凭空编造未出现在 `references_scope` 的条目。
-- Reference Metadata Evidence Review 不得修改 locked core fields，不得联网发现缺失 metadata。
-- citation 语义阶段不得重做 mention-reference join。
-- citation 阶段不得直接写 `report_md`。
-- `citation_analysis.summary` 可以为空字符串；空 summary 代表本阶段未获得稳定全局综合。
-- `persist_citation_analysis.citation_semantic_reviews[*]` 可以缺少 `topic`、`usage`、`role_in_context`、`keywords`、`summary`；runtime 不补造语义。
-- prepare 已完成但 `citation_package_count=0` 时，必须提交空 citation payload 完成本阶段；不得跳过 citation 阶段、直接 finalize，或手工拼装最终 stdout JSON。
-- `timeline_summaries` 可以缺少 `early`、`middle`、`recent`；runtime 仍写三段 timeline bucket，summary 可为空。
-- agent 不填写 citation bucket membership；runtime 根据 dated citation items 派生时间线闭包。
-- numeric 和 bracket-alpha 型渲染标签保留原文标签；author-year 型渲染标签由 renderer 合成 `[AY-k]`，不得与原始 numeric `[n]` 混用。
+- classification 只提交规定的四字段对象；低置信分类使用 effective `general` 并保留原因。
+- plan 必须一次提交 outline、两个 scope、source identity 和 matching metadata。
+- digest 只提交结构化 slot、section summaries 与可选 representative image；最终标题和 Markdown 由 renderer 生成。
+- scoring 只编辑 draft 的 semantic fields；locked classification/rubric 或 stale form 会被拒绝。
+- references 不得编造 `references_scope` 外的条目；metadata review 不得联网或修改 locked core fields。
+- citation 不重做 mention-reference join，不直写 `report_md`，不填 timeline bucket membership。
+- 恢复时先读 `status.next_action`；不要跳过 classification 或手工写 SQLite。

@@ -6,6 +6,7 @@ from typing import Any
 from . import deterministic_core
 from . import runtime_db
 from . import scoring
+from . import profiles
 from .algorithm_adapter import call_algorithm_handler
 from .runtime import AnalysisRuntimePaths
 
@@ -34,6 +35,9 @@ def normalize_source(
 
 
 def persist_analysis_plan(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    rejection, code = profiles.check_classification(db_path)
+    if rejection is not None:
+        return rejection, code
     result, code = call_algorithm_handler("_handle_persist_outline_and_scopes", db_path, payload=payload)
     if code == 0:
         result.update({"db_path": str(db_path), "runtime_backend": "analysis_runtime.stages", "next_action": "persist_digest"})
@@ -41,6 +45,9 @@ def persist_analysis_plan(db_path: Path, payload: dict[str, Any]) -> tuple[dict[
 
 
 def persist_digest(db_path: Path, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    rejection, code = profiles.check_classification(db_path)
+    if rejection is not None:
+        return rejection, code
     result, code = call_algorithm_handler("_handle_persist_digest", db_path, payload=payload)
     if code == 0:
         result.update({"db_path": str(db_path), "runtime_backend": "analysis_runtime.stages", "next_action": "persist_literature_score"})

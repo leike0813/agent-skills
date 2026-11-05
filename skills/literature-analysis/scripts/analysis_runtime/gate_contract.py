@@ -5,11 +5,13 @@ from typing import Any
 
 from . import runtime_db
 from . import scoring
+from . import profiles
 from .payload_normalization import CANONICAL_METADATA_FIELDS
 
 
 INSTRUCTION_REF_BY_ACTION = {
     "init_runtime": "references/source_and_plan.md",
+    "persist_literature_classification": "references/source_and_plan.md",
     "persist_analysis_plan": "references/source_and_plan.md",
     "persist_digest": "references/digest_generation.md",
     "persist_literature_score": "references/paper_scoring.md",
@@ -48,6 +50,7 @@ def _local_next_action(raw_next_action: str) -> str:
 def _execution_note(next_action: str) -> str:
     notes = {
         "init_runtime": "Initialize runtime paths, templates, DB state, source hash, and normalized source.",
+        "persist_literature_classification": "Read normalized source and submit discipline labels, research profile, confidence and reason; use general when uncertain.",
         "persist_analysis_plan": "Persist outline_nodes, references_scope, citation_scope, source_identity, and literature_matching_metadata in one structured payload.",
         "persist_digest": "Persist structured digest_slots, section_summaries, and optional representative_image only.",
         "persist_literature_score": "Prepare or submit the runtime-generated scoring review draft; edit only the listed semantic fields and let runtime locate evidence and compute all scores.",
@@ -64,6 +67,9 @@ def _instruction_refs(next_action: str) -> list[dict[str, str]]:
 
 
 def _allowed_payload_shape(next_action: str, connection: Any) -> dict[str, Any] | None:
+    if next_action == "persist_literature_classification":
+        return {"literature_classification": {"disciplines": ["field"], "profile_id": "one of profile_choices",
+                                               "confidence": "high|medium|low", "reason": "source-grounded reasoning"}}
     if next_action == "persist_literature_score":
         return None
     if next_action == "persist_references":
@@ -150,6 +156,11 @@ def _missing_prerequisites(connection: Any, next_action: str) -> list[str]:
     if next_action != "init_runtime" and not source_doc:
         missing.append("source_documents.normalized_source")
     score_only = runtime_db.is_score_only(connection)
+    if next_action not in {"init_runtime", "persist_literature_classification"}:
+        try:
+            profiles.require_classification(connection)
+        except ValueError:
+            missing.append("literature_classification")
     if not score_only and next_action == "persist_literature_score":
         if not runtime_db.has_action_receipt(connection, "persist_digest"):
             missing.append("action_receipts.persist_digest")
@@ -202,6 +213,12 @@ def status_payload(db_path: Path) -> dict[str, Any]:
         state = runtime_db.fetch_workflow_state(connection) or {}
         raw_next_action = str(state.get("next_action") or "")
         next_action = _local_next_action(raw_next_action)
+        source = runtime_db.fetch_source_document(connection, "normalized_source")
+        if source:
+            try:
+                profiles.require_classification(connection)
+            except ValueError:
+                next_action = "persist_literature_classification"
         payload = {
             "db_path": str(db_path),
             "workflow_state": state,
@@ -220,4 +237,17 @@ def status_payload(db_path: Path) -> dict[str, Any]:
         }
         if next_action == "persist_literature_score":
             payload.update(scoring.scoring_contract(connection, db_path))
+        if next_action == "persist_literature_classification":
+            inputs = runtime_db.fetch_runtime_inputs(connection)
+            catalogue = profiles.load_catalogue(Path(inputs.get("literature_profiles_path", str(profiles.CATALOGUE_PATH))))
+            payload["profile_choices"] = [
+                {"profile_id": key, "description": value["description"]}
+                for key, value in catalogue["profiles"].items()
+            ]
+        else:
+            snapshot = runtime_db.fetch_literature_classification(connection)
+            if snapshot:
+                payload["literature_classification"] = snapshot["classification"]
+                if next_action == "persist_digest":
+                    payload["digest_sections"] = snapshot["profile"]["digest_sections"]
     return payload

@@ -5,6 +5,7 @@ import json
 import re
 import unicodedata
 from collections import Counter
+from copy import deepcopy
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
@@ -12,20 +13,17 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from jsonschema import validate
 
-from . import runtime_db
+from . import profiles, runtime_db
 
 
 SKILL_DIR = Path(__file__).resolve().parents[2]
 ASSETS_DIR = SKILL_DIR / "assets"
-DEFAULT_RUBRIC_PATH = ASSETS_DIR / "scoring_rubric.json"
 DEFAULT_TEMPLATE_PATH = ASSETS_DIR / "templates" / "literature_score.json.j2"
 RENDER_SCHEMA_PATH = ASSETS_DIR / "render_schemas" / "literature_score.schema.json"
 SCORE_FILENAME = "literature_score.json"
 REVIEW_FORM_PREFIX = "scoring_review_form"
 REVIEW_DRAFT_PREFIX = "scoring_review_draft"
 EDITABLE_FIELDS = [
-    "paper_type_choices[*].selected (select exactly one)",
-    "paper_type_reason",
     "dimension_reviews[*].confidence",
     "dimension_reviews[*].summary",
     "criterion_reviews[*].applicable",
@@ -35,16 +33,15 @@ EDITABLE_FIELDS = [
 ]
 
 
+class _ClassificationRequired(ValueError):
+    pass
+
+
 def _json_read(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"JSON object required: {path}")
     return value
-
-
-def _rubric_path(inputs: dict[str, str]) -> Path:
-    configured = inputs.get("scoring_rubric_path", "")
-    return Path(configured).expanduser().resolve() if configured else DEFAULT_RUBRIC_PATH.resolve()
 
 
 def _template_path(inputs: dict[str, str]) -> Path:
@@ -75,23 +72,9 @@ def _sha256_text(value: str) -> str:
 def _validate_rubric(rubric: dict[str, Any]) -> None:
     if not isinstance(rubric.get("rubric_id"), str) or not str(rubric["rubric_id"]).strip():
         raise ValueError("scoring rubric requires a non-empty rubric_id")
-    choices = rubric.get("paper_type_choices")
-    if not isinstance(choices, list) or not choices:
-        raise ValueError("scoring rubric requires paper_type_choices")
-    paper_types: set[str] = set()
-    for index, choice in enumerate(choices):
-        if not isinstance(choice, dict) or set(choice) != {"paper_type", "description"}:
-            raise ValueError(f"paper_type_choices[{index}] must contain paper_type and description")
-        paper_type = choice.get("paper_type")
-        description = choice.get("description")
-        if not isinstance(paper_type, str) or not paper_type or paper_type in paper_types:
-            raise ValueError(f"paper_type_choices[{index}].paper_type must be unique and non-empty")
-        if not isinstance(description, str) or not description.strip():
-            raise ValueError(f"paper_type_choices[{index}].description must be non-empty")
-        paper_types.add(paper_type)
     dimensions = rubric.get("dimensions")
-    if not isinstance(dimensions, list) or not dimensions:
-        raise ValueError("scoring rubric requires dimensions")
+    if not isinstance(dimensions, list) or len(dimensions) != 6:
+        raise ValueError("scoring rubric requires exactly six dimensions")
     dimension_keys: set[str] = set()
     criterion_keys: set[str] = set()
     total_weight = Decimal("0")
@@ -139,14 +122,26 @@ def _validate_rubric(rubric: dict[str, Any]) -> None:
         raise ValueError("scoring rubric dimension weights must sum to 1")
 
 
-def _form_id(source_text: str, rubric: dict[str, Any]) -> str:
+def _classification_copy(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"disciplines", "profile_id", "confidence", "reason"}:
+        raise ValueError("literature_classification must contain disciplines, profile_id, confidence and reason")
+    return deepcopy(value)
+
+
+def _form_id(source_text: str, rubric: dict[str, Any], classification: dict[str, Any]) -> str:
     source_hash = _sha256_text(source_text)
     rubric_hash = _sha256_text(_canonical_json(rubric))
-    return f"sha256:{_sha256_text(f'{source_hash}:{rubric_hash}')}"
+    classification_hash = _sha256_text(_canonical_json(classification))
+    return f"sha256:{_sha256_text(f'{source_hash}:{rubric_hash}:{classification_hash}')}"
 
 
-def _review_form(source_text: str, rubric: dict[str, Any]) -> dict[str, Any]:
+def _review_form(
+    source_text: str,
+    rubric: dict[str, Any],
+    classification: dict[str, Any],
+) -> dict[str, Any]:
     _validate_rubric(rubric)
+    locked_classification = _classification_copy(classification)
     dimension_reviews: list[dict[str, Any]] = []
     criterion_reviews: list[dict[str, Any]] = []
     for dimension in rubric["dimensions"]:
@@ -175,16 +170,8 @@ def _review_form(source_text: str, rubric: dict[str, Any]) -> dict[str, Any]:
                 }
             )
     return {
-        "form_id": _form_id(source_text, rubric),
-        "paper_type_choices": [
-            {
-                "paper_type": choice["paper_type"],
-                "description": choice["description"],
-                "selected": False,
-            }
-            for choice in rubric["paper_type_choices"]
-        ],
-        "paper_type_reason": "",
+        "form_id": _form_id(source_text, rubric, locked_classification),
+        "literature_classification": locked_classification,
         "dimension_reviews": dimension_reviews,
         "criterion_reviews": criterion_reviews,
     }
@@ -217,8 +204,20 @@ def scoring_contract(connection: Any, db_path: Path) -> dict[str, Any]:
             "editable_fields": EDITABLE_FIELDS,
             "submit_command": "",
         }
-    rubric = _json_read(_rubric_path(inputs))
-    form = _review_form(str(source_doc["content"]), rubric)
+    try:
+        snapshot = profiles.require_classification(connection)
+    except ValueError:
+        return {
+            "scoring_review_form_path": "",
+            "scoring_review_draft_path": "",
+            "editable_fields": EDITABLE_FIELDS,
+            "submit_command": "",
+        }
+    form = _review_form(
+        str(source_doc["content"]),
+        snapshot["rubric"],
+        snapshot["classification"],
+    )
     form_path, draft_path = _review_paths(inputs, db_path, str(form["form_id"]))
     return {
         "scoring_review_form_path": str(form_path),
@@ -238,6 +237,10 @@ def prepare_scoring_context(db_path: Path) -> tuple[dict[str, Any], int]:
                     "next_action": "persist_literature_score",
                     "error": {"code": "score_prerequisite_missing", "message": "normalized source is missing"},
                 }, 2
+            try:
+                snapshot = profiles.require_classification(connection)
+            except ValueError as exc:
+                return profiles.classification_error(str(exc))
             if not runtime_db.is_score_only(connection):
                 receipts = runtime_db.fetch_action_receipts(connection)
                 if "persist_digest" not in receipts:
@@ -245,8 +248,11 @@ def prepare_scoring_context(db_path: Path) -> tuple[dict[str, Any], int]:
                         "next_action": "persist_literature_score",
                         "error": {"code": "score_prerequisite_missing", "message": "persist_digest must complete before scoring in full mode"},
                     }, 2
-            rubric = _json_read(_rubric_path(inputs))
-            form = _review_form(str(source_doc["content"]), rubric)
+            form = _review_form(
+                str(source_doc["content"]),
+                snapshot["rubric"],
+                snapshot["classification"],
+            )
             form_path, draft_path = _review_paths(inputs, db_path, str(form["form_id"]))
         form_path.parent.mkdir(parents=True, exist_ok=True)
         serialized = json.dumps(form, ensure_ascii=False, indent=2) + "\n"
@@ -432,62 +438,20 @@ def _review_to_score_payload(
     source_text: str,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
-    top_fields = {"form_id", "paper_type_choices", "paper_type_reason", "dimension_reviews", "criterion_reviews"}
+    top_fields = {"form_id", "literature_classification", "dimension_reviews", "criterion_reviews"}
     submitted = _validate_object_fields(payload, expected_fields=top_fields, field="payload", errors=errors)
     if submitted is None:
         return None, errors
 
-    choices_value = submitted.get("paper_type_choices")
-    original_choices = original["paper_type_choices"]
-    selected_types: list[str] = []
-    if not isinstance(choices_value, list):
-        errors.append(_review_error("incomplete_answer", "paper_type_choices", "must be an array"))
-    elif len(choices_value) != len(original_choices):
+    original_classification = original["literature_classification"]
+    if submitted.get("literature_classification") != original_classification:
         errors.append(
             _review_error(
-                "incomplete_answer",
-                "paper_type_choices",
-                "must preserve every generated paper-type choice",
-                expected_count=len(original_choices),
-                actual_count=len(choices_value),
+                "locked_field_changed",
+                "payload.literature_classification",
+                "runtime-owned field differs from the generated form",
             )
         )
-    else:
-        for index, original_choice in enumerate(original_choices):
-            field = f"paper_type_choices[{index}]"
-            choice = _validate_object_fields(
-                choices_value[index],
-                expected_fields={"paper_type", "description", "selected"},
-                field=field,
-                errors=errors,
-            )
-            if choice is None:
-                continue
-            _validate_locked_fields(
-                choice,
-                original_choice,
-                locked_fields=("paper_type", "description"),
-                field=field,
-                errors=errors,
-            )
-            selected = choice.get("selected")
-            if not isinstance(selected, bool):
-                errors.append(_review_error("invalid_selection", f"{field}.selected", "must be a boolean"))
-            elif selected:
-                selected_types.append(str(original_choice["paper_type"]))
-    if len(selected_types) != 1:
-        errors.append(
-            _review_error(
-                "invalid_selection",
-                "paper_type_choices",
-                "exactly one paper type must be selected",
-                selected_count=len(selected_types),
-            )
-        )
-
-    paper_type_reason = submitted.get("paper_type_reason")
-    if not isinstance(paper_type_reason, str) or not paper_type_reason.strip():
-        errors.append(_review_error("incomplete_answer", "paper_type_reason", "must be a non-empty string"))
 
     original_criteria = original["criterion_reviews"]
     criteria_value = submitted.get("criterion_reviews")
@@ -677,8 +641,7 @@ def _review_to_score_payload(
     if errors:
         return None, errors
     return {
-        "paper_type": selected_types[0],
-        "paper_type_reason": paper_type_reason.strip(),
+        "literature_classification": _classification_copy(original_classification),
         "dimension_reviews": converted_dimensions,
     }, []
 
@@ -688,21 +651,22 @@ def _normalize_score_payload(
     *,
     rubric: dict[str, Any],
     source_text: str,
+    classification: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[str]]:
     errors: list[dict[str, Any]] = []
     warnings: list[str] = []
-    allowed_top_level = {"paper_type", "paper_type_reason", "dimension_reviews"}
+    allowed_top_level = {"literature_classification", "dimension_reviews"}
     unknown_top = sorted(set(payload).difference(allowed_top_level))
     if unknown_top:
         errors.append({"field": "payload", "message": f"unknown fields: {unknown_top}"})
 
-    paper_type = payload.get("paper_type")
-    paper_types = [str(item["paper_type"]) for item in rubric.get("paper_type_choices", [])]
-    if paper_type not in paper_types:
-        errors.append({"field": "paper_type", "message": f"must be one of {paper_types}"})
-    paper_type_reason = payload.get("paper_type_reason")
-    if not isinstance(paper_type_reason, str) or not paper_type_reason.strip():
-        errors.append({"field": "paper_type_reason", "message": "must be a non-empty string"})
+    try:
+        submitted_classification = _classification_copy(payload.get("literature_classification"))
+    except ValueError as exc:
+        errors.append({"field": "literature_classification", "message": str(exc)})
+    else:
+        if submitted_classification != classification:
+            errors.append({"field": "literature_classification", "message": "must match the runtime classification snapshot"})
 
     reviews = payload.get("dimension_reviews")
     if not isinstance(reviews, list):
@@ -896,10 +860,9 @@ def _normalize_score_payload(
     overall_confidence = _round_confidence(confidence_precise)
     adjusted_score = _round_score(Decimal(str(overall_score)) * Decimal(str(overall_confidence)))
     result = {
-        "schema": "literature_score.v1",
+        "schema": "literature_score.v2",
         "rubric_id": str(rubric["rubric_id"]),
-        "paper_type": paper_type,
-        "paper_type_reason": paper_type_reason.strip(),
+        "literature_classification": classification,
         "overall_score": overall_score,
         "confidence": overall_confidence,
         "confidence_adjusted_score": adjusted_score,
@@ -910,12 +873,16 @@ def _normalize_score_payload(
 
 def _render_score_with_connection(connection: Any) -> Path:
     inputs = runtime_db.fetch_runtime_inputs(connection)
+    snapshot = profiles.require_classification(connection)
     score = runtime_db.fetch_literature_score(connection)
     if score is None:
         raise ValueError("literature score state is missing")
+    if score.get("literature_classification") != snapshot["classification"]:
+        raise ValueError("literature score classification does not match the runtime snapshot")
     context = {"literature_score": score}
     schema = _json_read(RENDER_SCHEMA_PATH)
     validate(instance=context, schema=schema)
+    _validate_score_rubric(score, snapshot["rubric"])
     template_path = _template_path(inputs)
     env = Environment(
         loader=FileSystemLoader(str(template_path.parent)),
@@ -928,6 +895,7 @@ def _render_score_with_connection(connection: Any) -> Path:
     rendered = env.get_template(template_path.name).render(**context)
     rendered_value = json.loads(rendered)
     validate(instance={"literature_score": rendered_value}, schema=schema)
+    _validate_score_rubric(rendered_value, snapshot["rubric"])
     output_dir = Path(inputs.get("output_dir", ".")).expanduser().resolve()
     output_path = (output_dir / SCORE_FILENAME).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -962,6 +930,10 @@ def render_score_only_outputs(db_path: Path) -> tuple[dict[str, Any], int]:
             receipts = runtime_db.fetch_action_receipts(connection)
             if source_doc is None:
                 raise ValueError("normalized source is missing")
+            try:
+                profiles.require_classification(connection)
+            except ValueError as exc:
+                raise _ClassificationRequired(str(exc)) from exc
             for receipt in ("persist_render_templates", "persist_literature_score"):
                 if receipt not in receipts:
                     raise ValueError(f"required receipt missing: {receipt}")
@@ -995,6 +967,11 @@ def render_score_only_outputs(db_path: Path) -> tuple[dict[str, Any], int]:
     except Exception as exc:  # noqa: BLE001
         with runtime_db.connect_db(db_path) as connection:
             inputs = runtime_db.fetch_runtime_inputs(connection)
+        classification_error = isinstance(exc, _ClassificationRequired)
+        error = {
+            "code": "classification_required" if classification_error else "score_render_failed",
+            "message": str(exc),
+        }
         payload = {
             "digest_path": "",
             "references_path": "",
@@ -1003,8 +980,10 @@ def render_score_only_outputs(db_path: Path) -> tuple[dict[str, Any], int]:
             "literature_score_path": "",
             "provenance": {"generated_at": "", "input_hash": "", "model": ""},
             "warnings": [],
-            "error": {"code": "score_render_failed", "message": str(exc)},
+            "error": error,
         }
+        if classification_error:
+            payload["next_action"] = profiles.CLASSIFICATION_ACTION
         result_json_value = inputs.get("result_json_path", "")
         if result_json_value:
             result_json_path = Path(result_json_value).expanduser().resolve()
@@ -1022,6 +1001,10 @@ def persist_literature_score(db_path: Path, payload: dict[str, Any]) -> tuple[di
                 "next_action": "persist_literature_score",
                 "error": {"code": "score_prerequisite_missing", "message": "normalized source is missing"},
             }, 2
+        try:
+            snapshot = profiles.require_classification(connection)
+        except ValueError as exc:
+            return profiles.classification_error(str(exc))
         if not runtime_db.is_score_only(connection):
             receipts = runtime_db.fetch_action_receipts(connection)
             if "persist_digest" not in receipts:
@@ -1030,8 +1013,12 @@ def persist_literature_score(db_path: Path, payload: dict[str, Any]) -> tuple[di
                     "error": {"code": "score_prerequisite_missing", "message": "persist_digest must complete before scoring in full mode"},
                 }, 2
         try:
-            rubric = _json_read(_rubric_path(inputs))
-            expected_form = _review_form(str(source_doc["content"]), rubric)
+            rubric = snapshot["rubric"]
+            expected_form = _review_form(
+                str(source_doc["content"]),
+                rubric,
+                snapshot["classification"],
+            )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             return {
                 "next_action": "persist_literature_score",
@@ -1103,6 +1090,7 @@ def persist_literature_score(db_path: Path, payload: dict[str, Any]) -> tuple[di
             converted_payload,
             rubric=rubric,
             source_text=str(source_doc["content"]),
+            classification=snapshot["classification"],
         )
         if errors or score is None:
             runtime_db.set_runtime_error(connection, "score_review_invalid", "scoring review form failed normalization", "stage_4_scoring")
@@ -1135,7 +1123,7 @@ def persist_literature_score(db_path: Path, payload: dict[str, Any]) -> tuple[di
             connection,
             action_name="persist_literature_score",
             stage="stage_4_scoring",
-            metadata={"rubric_id": score["rubric_id"], "paper_type": score["paper_type"]},
+            metadata={"rubric_id": score["rubric_id"], "profile_id": score["literature_classification"]["profile_id"]},
         )
         score_only = runtime_db.is_score_only(connection)
         if not score_only:
@@ -1162,10 +1150,47 @@ def persist_literature_score(db_path: Path, payload: dict[str, Any]) -> tuple[di
     }, 0
 
 
-def validate_public_score(path: Path) -> list[str]:
+def _validate_score_rubric(score: dict[str, Any], rubric: dict[str, Any]) -> None:
+    _validate_rubric(rubric)
+    if score.get("rubric_id") != rubric["rubric_id"]:
+        raise ValueError("score rubric_id does not match the resolved rubric")
+    expected = [
+        (
+            dimension["dimension_key"],
+            dimension["name"],
+            Decimal(str(dimension["weight"])),
+            tuple(
+                (criterion["criterion_key"], criterion["name"], criterion["max_score"])
+                for criterion in dimension["criteria"]
+            ),
+        )
+        for dimension in rubric["dimensions"]
+    ]
+    actual = [
+        (
+            dimension["dimension_key"],
+            dimension["name"],
+            Decimal(str(dimension["configured_weight"])),
+            tuple(
+                (criterion["criterion_key"], criterion["name"], criterion["max_score"])
+                for criterion in dimension["criteria"]
+            ),
+        )
+        for dimension in score["dimensions"]
+    ]
+    if actual != expected:
+        raise ValueError("score dimensions and criteria do not exactly match the resolved rubric")
+
+
+def validate_public_score(path: Path, rubric: dict[str, Any] | None = None) -> list[str]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         validate(instance={"literature_score": payload}, schema=_json_read(RENDER_SCHEMA_PATH))
+        if rubric is None:
+            profile_id = payload["literature_classification"]["profile_id"]
+            catalogue = profiles.load_catalogue()
+            _, rubric = profiles.resolve_profile(catalogue, profile_id)
+        _validate_score_rubric(payload, rubric)
     except Exception as exc:  # noqa: BLE001
         return [f"literature_score_path unreadable or invalid: {exc}"]
     return []

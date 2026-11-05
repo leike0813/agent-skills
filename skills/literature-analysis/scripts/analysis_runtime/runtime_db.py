@@ -22,15 +22,16 @@ OPTIONAL_ARTIFACT_KEYS = {"citation_analysis_report_path"}
 
 DIGEST_SLOT_KEYS = (
     "tldr",
-    "research_question_and_contributions",
-    "method_highlights",
-    "key_results",
-    "limitations_and_reproducibility",
+    "focus",
+    "basis",
+    "analysis",
+    "limits",
 )
 
 ALLOWED_STAGES = {
     "stage_0_bootstrap",
     "stage_1_normalize_source",
+    "stage_1_classification",
     "stage_2_outline_and_scopes",
     "stage_3_digest",
     "stage_4_scoring",
@@ -196,6 +197,12 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS literature_score (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             rubric_id TEXT NOT NULL,
+            content_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS literature_classification (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
             content_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -907,13 +914,7 @@ def fetch_section_scope(connection: sqlite3.Connection, scope_key: str) -> dict[
 
 
 def _empty_digest_slots() -> dict[str, dict[str, Any]]:
-    return {
-        "tldr": {"paragraphs": []},
-        "research_question_and_contributions": {"research_question": "", "contributions": []},
-        "method_highlights": {"items": []},
-        "key_results": {"items": []},
-        "limitations_and_reproducibility": {"items": []},
-    }
+    return {key: {"paragraphs" if key == "tldr" else "items": []} for key in DIGEST_SLOT_KEYS}
 
 
 def store_digest_slots(connection: sqlite3.Connection, slots: dict[str, dict[str, Any]]) -> None:
@@ -1312,6 +1313,51 @@ def fetch_reference_preprocess_quality(connection: sqlite3.Connection) -> dict[s
     if row is None:
         return None
     return json.loads(str(row["content_json"]))
+
+
+def store_literature_classification(connection: sqlite3.Connection, snapshot: dict[str, Any]) -> None:
+    connection.execute(
+        """INSERT INTO literature_classification (id, content_json, updated_at) VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET content_json=excluded.content_json, updated_at=excluded.updated_at""",
+        (_json_dump(snapshot), utc_now_iso()),
+    )
+    touch_runtime(connection)
+
+
+def fetch_literature_classification(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='literature_classification'"
+    ).fetchone()
+    if exists is None:
+        return None
+    row = connection.execute("SELECT content_json FROM literature_classification WHERE id=1").fetchone()
+    return json.loads(str(row["content_json"])) if row else None
+
+
+def invalidate_classification_dependents(connection: sqlite3.Connection) -> None:
+    # These tables all derive from the classified source and its analysis plan.
+    for table in (
+        "source_identity", "outline_nodes", "section_scopes", "digest_slots", "digest_section_summaries",
+        "representative_image", "literature_matching_metadata", "literature_score", "reference_preprocess_quality",
+        "reference_extraction_decision", "reference_entries", "reference_batches", "reference_items",
+        "reference_quality_issues", "reference_metadata_enrichment_workset", "reference_parse_candidates",
+        "reference_api_fetches", "reference_api_resolutions", "citation_mentions", "citation_batches",
+        "citation_mention_links", "citation_workset_items", "citation_items", "citation_unmapped_mentions",
+        "citation_summary", "citation_timeline", "artifact_registry",
+    ):
+        connection.execute(f"DELETE FROM {table}")
+    connection.execute(
+        "DELETE FROM action_receipts WHERE action_name NOT IN "
+        "('confirm_runtime_paths','bootstrap_runtime_db','persist_render_templates','normalize_source')"
+    )
+    connection.execute("DELETE FROM runtime_inputs WHERE key IN ('scoring_rubric_path','digest_heading_translations')")
+    resolve_runtime_errors(connection)
+    connection.execute(
+        "UPDATE runtime_warnings SET status='resolved', resolved_at=? "
+        "WHERE status='active' AND warning NOT LIKE 'invalid_identifier:%'",
+        (utc_now_iso(),),
+    )
+    touch_runtime(connection)
 
 
 def store_literature_score(connection: sqlite3.Connection, score: dict[str, Any]) -> None:
@@ -2087,10 +2133,23 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
 
 
 def build_digest_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
+    from . import profiles
+
     inputs = fetch_runtime_inputs(connection)
+    snapshot = profiles.require_classification(connection)
+    language = inputs.get("language") or "zh-CN"
+    slots = fetch_digest_slots(connection)
+    headings = profiles.digest_headings(
+        snapshot["profile"], language, json.loads(inputs.get("digest_heading_translations", "{}"))
+    )
     return {
-        "language": inputs.get("language") or "zh-CN",
-        "digest_slots": fetch_digest_slots(connection),
+        "language": language,
+        "digest_slots": slots,
+        "tldr_heading": headings["tldr"],
+        "section_summaries_heading": headings["section_summaries"],
+        "digest_sections": [
+            {"heading": headings[key], "items": slots[key]["items"]} for key in DIGEST_SLOT_KEYS[1:]
+        ],
         "section_summaries": fetch_digest_section_summaries(connection),
     }
 
