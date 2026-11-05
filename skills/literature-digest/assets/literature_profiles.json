@@ -1,0 +1,341 @@
+{
+  "schema": "literature_profiles.v1",
+  "profiles": {
+    "quantitative_empirical": {
+      "profile_id": "quantitative_empirical",
+      "name": {
+        "zh-CN": "量化实证",
+        "en-US": "Quantitative Empirical"
+      },
+      "description": "适用于以实验、观测、统计或计算分析等量化证据检验研究问题的论文。",
+      "digest_sections": [
+        {
+          "slot_key": "focus",
+          "heading": {
+            "zh-CN": "研究问题与贡献",
+            "en-US": "Research Question and Contribution"
+          },
+          "prompt": "提炼研究问题、目标、理论或实践缺口，以及作者明确陈述的主要贡献与结论。"
+        },
+        {
+          "slot_key": "basis",
+          "heading": {
+            "zh-CN": "方法要点",
+            "en-US": "Method Overview"
+          },
+          "prompt": "概括研究设计、样本或数据来源、关键变量或模型、对照组和主要分析步骤，保留影响解释的方法细节。"
+        },
+        {
+          "slot_key": "analysis",
+          "heading": {
+            "zh-CN": "关键结果",
+            "en-US": "Key Results"
+          },
+          "prompt": "按研究问题归纳主要结果，报告关键比较、效应或不确定性，并说明这些结果如何支持作者主张。"
+        },
+        {
+          "slot_key": "limits",
+          "heading": {
+            "zh-CN": "局限与可复现性线索",
+            "en-US": "Limitations and Reproducibility"
+          },
+          "prompt": "提炼作者承认或被材料支持的局限，并记录复现所需的数据、代码、参数、环境或流程信息。"
+        }
+      ]
+    },
+    "qualitative_empirical": {
+      "profile_id": "qualitative_empirical",
+      "name": {
+        "zh-CN": "质性实证",
+        "en-US": "Qualitative Empirical"
+      },
+      "description": "适用于以访谈、观察、案例、田野或档案材料开展质性分析的论文。",
+      "digest_sections": [
+        {
+          "slot_key": "focus",
+          "heading": {
+            "zh-CN": "研究问题与语境",
+            "en-US": "Research Question and Context"
+          },
+          "prompt": "提炼研究问题、社会或实践语境，以及论文希望推进的核心议题。"
+        },
+        {
+          "slot_key": "basis",
+          "heading": {
+            "zh-CN": "材料与研究过程",
+            "en-US": "Materials and Research Process"
+          },
+          "prompt": "说明材料来源、参与者或案例选择、资料收集方式，以及编码、比较或解释材料的分析过程。"
+        },
+        {
+          "slot_key": "analysis",
+          "heading": {
+            "zh-CN": "主题发现与解释",
+            "en-US": "Thematic Findings and Interpretation"
+          },
+          "prompt": "归纳主要主题与解释，用源材料中的模式、例证或引文说明其如何支持结论。"
+        },
+        {
+          "slot_key": "limits",
+          "heading": {
+            "zh-CN": "反思与适用边界",
+            "en-US": "Reflexivity and Applicability"
+          },
+          "prompt": "提炼作者对研究者位置、伦理、样本与情境的反思，以及结论可迁移或适用的范围。"
+        }
+      ]
+    },
+    "interpretive_historical": {
+      "profile_id": "interpretive_historical",
+      "name": {
+        "zh-CN": "历史／文本阐释",
+        "en-US": "Interpretive / Historical"
+      },
+      "description": "适用于以历史材料、文本、图像或话语为主要对象，通过阐释建立论点的论文。",
+      "digest_sections": [
+        {
+          "slot_key": "focus",
+          "heading": {
+            "zh-CN": "问题意识与核心论点",
+            "en-US": "Problem and Core Thesis"
+          },
+          "prompt": "提炼问题意识、作者的核心论点，以及论证所回应的学术或现实问题。"
+        },
+        {
+          "slot_key": "basis",
+          "heading": {
+            "zh-CN": "史料文本与语境",
+            "en-US": "Sources, Texts, and Context"
+          },
+          "prompt": "说明使用的主要史料、文本、版本与历史语境，包括作者如何考辨来源和处理材料缺口。"
+        },
+        {
+          "slot_key": "analysis",
+          "heading": {
+            "zh-CN": "阐释路径与论证",
+            "en-US": "Interpretive Path and Argument"
+          },
+          "prompt": "梳理阐释如何由文本证据展开，呈现关键推理、竞争性解读及作者对其的回应对。"
+        },
+        {
+          "slot_key": "limits",
+          "heading": {
+            "zh-CN": "争议与解释边界",
+            "en-US": "Debates and Interpretive Boundaries"
+          },
+          "prompt": "提炼论文承认的解释争议、材料限制和适用边界，避免把解释性结论改写成实验发现。"
+        }
+      ]
+    },
+    "conceptual_normative": {
+      "profile_id": "conceptual_normative",
+      "name": {
+        "zh-CN": "概念／规范论证",
+        "en-US": "Conceptual / Normative"
+      },
+      "description": "适用于以概念辨析、规范论证或理论批评为主要论证方式的论文。",
+      "digest_sections": [
+        {
+          "slot_key": "focus",
+          "heading": {
+            "zh-CN": "问题与核心立场",
+            "en-US": "Problem and Core Position"
+          },
+          "prompt": "提炼论文要解决的概念或规范问题、核心立场，以及作者声称的理论贡献。"
+        },
+        {
+          "slot_key": "basis",
+          "heading": {
+            "zh-CN": "概念前提与理论框架",
+            "en-US": "Conceptual Premises and Theoretical Framework"
+          },
+          "prompt": "界定关键概念，梳理所依据的理论前提、概念区分和论证框架。"
+        },
+        {
+          "slot_key": "analysis",
+          "heading": {
+            "zh-CN": "论证链与异议回应",
+            "en-US": "Argument and Engagement with Objections"
+          },
+          "prompt": "重建从前提、推理步骤到结论的论证链，并记录作者对反例、异议或替代立场的回应。"
+        },
+        {
+          "slot_key": "limits",
+          "heading": {
+            "zh-CN": "适用边界与未决问题",
+            "en-US": "Scope and Open Questions"
+          },
+          "prompt": "提炼理论的适用条件、未决问题和作者未充分处理的异议，区分概念论证与经验证据。"
+        }
+      ]
+    },
+    "formal_theoretical": {
+      "profile_id": "formal_theoretical",
+      "name": {
+        "zh-CN": "形式理论",
+        "en-US": "Formal Theoretical"
+      },
+      "description": "适用于以定义、形式模型、定理或严格推导建立理论结论的论文。",
+      "digest_sections": [
+        {
+          "slot_key": "focus",
+          "heading": {
+            "zh-CN": "理论问题与贡献",
+            "en-US": "Theoretical Problem and Contribution"
+          },
+          "prompt": "提炼理论问题、形式框架要解释的对象，以及相对既有结果的主要贡献。"
+        },
+        {
+          "slot_key": "basis",
+          "heading": {
+            "zh-CN": "定义假设与形式框架",
+            "en-US": "Definitions, Assumptions, and Formal Framework"
+          },
+          "prompt": "列出核心定义、假设、适用域和记号约定，说明形式框架中各部分的关系。"
+        },
+        {
+          "slot_key": "analysis",
+          "heading": {
+            "zh-CN": "主要命题与证明思路",
+            "en-US": "Main Propositions and Proof Strategy"
+          },
+          "prompt": "概括主要命题、定理或推导及证明思路，突出使结论成立的关键步骤。"
+        },
+        {
+          "slot_key": "limits",
+          "heading": {
+            "zh-CN": "成立条件与理论边界",
+            "en-US": "Conditions of Validity and Theoretical Boundaries"
+          },
+          "prompt": "提炼定理成立所需的条件、边界反例、未证明的猜想，以及结论不能覆盖的情形。"
+        }
+      ]
+    },
+    "review_synthesis": {
+      "profile_id": "review_synthesis",
+      "name": {
+        "zh-CN": "综述综合",
+        "en-US": "Review / Synthesis"
+      },
+      "description": "适用于综合已有研究以勾勒脉络、比较发现或识别缺口的综述；叙述性综述不强套系统综述清单。",
+      "digest_sections": [
+        {
+          "slot_key": "focus",
+          "heading": {
+            "zh-CN": "综述问题与范围",
+            "en-US": "Review Question and Scope"
+          },
+          "prompt": "提炼综述问题、目标读者、纳入范围，以及作者希望综合回答的问题。"
+        },
+        {
+          "slot_key": "basis",
+          "heading": {
+            "zh-CN": "文献选择与综合方式",
+            "en-US": "Literature Selection and Synthesis Approach"
+          },
+          "prompt": "说明文献检索或选择方式、纳入排除依据与综述所覆盖的材料；叙述性综述可按实际方法概括，不强制套用系统综述字段。"
+        },
+        {
+          "slot_key": "analysis",
+          "heading": {
+            "zh-CN": "研究脉络、共识与分歧",
+            "en-US": "Research Landscape, Consensus, and Divergence"
+          },
+          "prompt": "按作者采用的比较框架梳理研究脉络、主要共识、分歧和代表性依据。"
+        },
+        {
+          "slot_key": "limits",
+          "heading": {
+            "zh-CN": "证据缺口与综述局限",
+            "en-US": "Evidence Gaps and Review Limitations"
+          },
+          "prompt": "提炼证据缺口、纳入偏差、研究异质性和现有文献对综述结论的限制。"
+        }
+      ]
+    },
+    "mixed_methods": {
+      "profile_id": "mixed_methods",
+      "name": {
+        "zh-CN": "混合方法",
+        "en-US": "Mixed Methods"
+      },
+      "description": "仅适用于量化证据与质性证据共同承担主要论证的混合研究；附带质性材料或仅用一段访谈补充的量化研究仍归入量化实证。",
+      "digest_sections": [
+        {
+          "slot_key": "focus",
+          "heading": {
+            "zh-CN": "研究问题与整合设计",
+            "en-US": "Research Question and Integrated Design"
+          },
+          "prompt": "提炼需要量化与质性证据共同回答的研究问题，以及整合设计意在解释的目标。"
+        },
+        {
+          "slot_key": "basis",
+          "heading": {
+            "zh-CN": "数据材料与双轨方法",
+            "en-US": "Data, Materials, and Parallel Methods"
+          },
+          "prompt": "分别说明量化数据、质性材料及各自的收集与分析方式，并指出两类证据为何需要共同承担论证。"
+        },
+        {
+          "slot_key": "analysis",
+          "heading": {
+            "zh-CN": "联合发现与整合解释",
+            "en-US": "Joint Findings and Integrated Interpretation"
+          },
+          "prompt": "归纳两条证据线的发现，说明作者如何连接、互证或解释彼此一致与冲突之处。"
+        },
+        {
+          "slot_key": "limits",
+          "heading": {
+            "zh-CN": "分歧、局限与适用边界",
+            "en-US": "Divergence, Limitations, and Applicability"
+          },
+          "prompt": "提炼两类方法的各自限制、整合中的分歧或薄弱连接，以及联合推论能够达到的范围。"
+        }
+      ]
+    },
+    "general": {
+      "profile_id": "general",
+      "name": {
+        "zh-CN": "通用",
+        "en-US": "General"
+      },
+      "description": "适用于现有类别均不确定或没有适配类别，且材料不足以稳定判断论证证据方式的论文。",
+      "digest_sections": [
+        {
+          "slot_key": "focus",
+          "heading": {
+            "zh-CN": "主题问题与核心主张",
+            "en-US": "Topic, Question, and Core Claim"
+          },
+          "prompt": "提炼主题、研究问题、核心主张，以及作者希望读者把握的中心论点。"
+        },
+        {
+          "slot_key": "basis",
+          "heading": {
+            "zh-CN": "材料依据与分析路径",
+            "en-US": "Materials and Analytical Approach"
+          },
+          "prompt": "说明主要材料、来源和分析路径，交代论文依赖何种证据或文本开展工作。"
+        },
+        {
+          "slot_key": "analysis",
+          "heading": {
+            "zh-CN": "主要论证与结论",
+            "en-US": "Main Argument and Conclusions"
+          },
+          "prompt": "概括主要论证步骤、关键结论，以及结论如何由所给材料或理由得出。"
+        },
+        {
+          "slot_key": "limits",
+          "heading": {
+            "zh-CN": "局限与未决问题",
+            "en-US": "Limitations and Open Questions"
+          },
+          "prompt": "提炼作者承认或材料显示的局限、开放问题和结论适用边界。"
+        }
+      ]
+    }
+  }
+}
