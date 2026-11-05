@@ -184,7 +184,7 @@ Author-year aliases:
 - `Cheng, G.` -> `cheng`
 - `Waqas Zamir, S.` -> `waqas zamir` and `zamir`
 
-Ambiguous mentions remain in canonical Citation `unresolved`. Do not hard-guess mappings in semantic payload.
+Ambiguous mentions remain in `unmapped_mentions`. Do not hard-guess mappings in semantic payload.
 
 Reference-free mode:
 
@@ -319,16 +319,16 @@ These are invalid because submit payload should contain semantic reviews and nar
 
 Rendered `citation_analysis.json` includes:
 
-- `schema: "citation_analysis_artifact.v1"`
 - `meta`
 - `summary`
 - `timeline`
 - `items`
-- `unresolved`
+- `unmapped_mentions`
+- `report_md`
 
-`citation_analysis.md` is a separate renderer-derived report and is not embedded in the canonical JSON artifact.
+`citation_analysis.md` must equal `citation_analysis.json.report_md`.
 
-The agent does not write report text. The renderer derives it from persisted semantic reviews, derived timeline, unresolved mentions, and templates.
+The agent does not write `report_md`. The renderer derives it from persisted semantic reviews, derived timeline, unmapped mentions, and templates.
 
 ## Failure And Recovery Notes
 

@@ -13,6 +13,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from analysis_runtime import citations
 from analysis_runtime import gate_contract
+from analysis_runtime import profiles
 from analysis_runtime import references
 from analysis_runtime import runtime
 from analysis_runtime import runtime_db
@@ -97,7 +98,8 @@ def _reject_score_only(db_path: Path, requested_action: str) -> tuple[dict[str, 
             next_action = (
                 "completed"
                 if runtime_db.has_action_receipt(connection, "render_score_only")
-                else "persist_literature_score"
+                else ("persist_literature_score" if runtime_db.fetch_literature_classification(connection)
+                      else "persist_literature_classification")
             )
     except sqlite3.Error:
         return None, 0
@@ -146,18 +148,7 @@ def handle_init_runtime(args: argparse.Namespace) -> int:
         )
         return code
 
-    next_action = "persist_literature_score" if args.score_only else "persist_analysis_plan"
-    if args.score_only:
-        with runtime_db.connect_db(db_path) as connection:
-            runtime_db.set_workflow_state(
-                connection,
-                current_stage="stage_4_scoring",
-                current_substep="persist_literature_score",
-                stage_gate="ready",
-                next_action="persist_literature_score",
-                status_summary="normalized source ready for score-only analysis",
-            )
-            connection.commit()
+    next_action = "persist_literature_classification"
     _print(
         {
             "db_path": str(db_path),
@@ -170,6 +161,16 @@ def handle_init_runtime(args: argparse.Namespace) -> int:
         }
     )
     return 0
+
+
+def handle_persist_literature_classification(args: argparse.Namespace) -> int:
+    payload, error = _read_json_payload(args.payload_file, "persist_literature_classification")
+    if error is not None:
+        _print(error)
+        return 2
+    result, code = profiles.persist_classification(Path(args.db_path).expanduser().resolve(), payload)
+    _print(result)
+    return code
 
 
 def handle_persist_analysis_plan(args: argparse.Namespace) -> int:
@@ -321,6 +322,11 @@ def build_parser() -> argparse.ArgumentParser:
     citation.add_argument("--payload-file", default="")
     citation.set_defaults(handler=handle_persist_citation_analysis)
 
+    classification = subparsers.add_parser("persist_literature_classification", help="Validate and persist the LLM's source classification.")
+    classification.add_argument("--db-path", required=True)
+    classification.add_argument("--payload-file", required=True, help="UTF-8 JSON containing literature_classification.")
+    classification.set_defaults(handler=handle_persist_literature_classification)
+
     finalize = subparsers.add_parser("finalize_outputs")
     finalize.add_argument("--db-path", required=True)
     finalize.set_defaults(handler=handle_finalize_outputs)
@@ -335,6 +341,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.command not in {"init_runtime", "status", "persist_literature_classification", "finalize_outputs"}:
+        rejection, code = profiles.check_classification(Path(args.db_path).expanduser().resolve())
+        if rejection is not None:
+            _print(rejection)
+            return code
     return int(args.handler(args))
 
 

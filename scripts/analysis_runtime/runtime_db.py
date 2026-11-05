@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,15 +22,16 @@ OPTIONAL_ARTIFACT_KEYS = {"citation_analysis_report_path"}
 
 DIGEST_SLOT_KEYS = (
     "tldr",
-    "research_question_and_contributions",
-    "method_highlights",
-    "key_results",
-    "limitations_and_reproducibility",
+    "focus",
+    "basis",
+    "analysis",
+    "limits",
 )
 
 ALLOWED_STAGES = {
     "stage_0_bootstrap",
     "stage_1_normalize_source",
+    "stage_1_classification",
     "stage_2_outline_and_scopes",
     "stage_3_digest",
     "stage_4_scoring",
@@ -197,6 +197,12 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS literature_score (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             rubric_id TEXT NOT NULL,
+            content_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS literature_classification (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
             content_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -908,13 +914,7 @@ def fetch_section_scope(connection: sqlite3.Connection, scope_key: str) -> dict[
 
 
 def _empty_digest_slots() -> dict[str, dict[str, Any]]:
-    return {
-        "tldr": {"paragraphs": []},
-        "research_question_and_contributions": {"research_question": "", "contributions": []},
-        "method_highlights": {"items": []},
-        "key_results": {"items": []},
-        "limitations_and_reproducibility": {"items": []},
-    }
+    return {key: {"paragraphs" if key == "tldr" else "items": []} for key in DIGEST_SLOT_KEYS}
 
 
 def store_digest_slots(connection: sqlite3.Connection, slots: dict[str, dict[str, Any]]) -> None:
@@ -1315,6 +1315,51 @@ def fetch_reference_preprocess_quality(connection: sqlite3.Connection) -> dict[s
     return json.loads(str(row["content_json"]))
 
 
+def store_literature_classification(connection: sqlite3.Connection, snapshot: dict[str, Any]) -> None:
+    connection.execute(
+        """INSERT INTO literature_classification (id, content_json, updated_at) VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET content_json=excluded.content_json, updated_at=excluded.updated_at""",
+        (_json_dump(snapshot), utc_now_iso()),
+    )
+    touch_runtime(connection)
+
+
+def fetch_literature_classification(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='literature_classification'"
+    ).fetchone()
+    if exists is None:
+        return None
+    row = connection.execute("SELECT content_json FROM literature_classification WHERE id=1").fetchone()
+    return json.loads(str(row["content_json"])) if row else None
+
+
+def invalidate_classification_dependents(connection: sqlite3.Connection) -> None:
+    # These tables all derive from the classified source and its analysis plan.
+    for table in (
+        "source_identity", "outline_nodes", "section_scopes", "digest_slots", "digest_section_summaries",
+        "representative_image", "literature_matching_metadata", "literature_score", "reference_preprocess_quality",
+        "reference_extraction_decision", "reference_entries", "reference_batches", "reference_items",
+        "reference_quality_issues", "reference_metadata_enrichment_workset", "reference_parse_candidates",
+        "reference_api_fetches", "reference_api_resolutions", "citation_mentions", "citation_batches",
+        "citation_mention_links", "citation_workset_items", "citation_items", "citation_unmapped_mentions",
+        "citation_summary", "citation_timeline", "artifact_registry",
+    ):
+        connection.execute(f"DELETE FROM {table}")
+    connection.execute(
+        "DELETE FROM action_receipts WHERE action_name NOT IN "
+        "('confirm_runtime_paths','bootstrap_runtime_db','persist_render_templates','normalize_source')"
+    )
+    connection.execute("DELETE FROM runtime_inputs WHERE key IN ('scoring_rubric_path','digest_heading_translations')")
+    resolve_runtime_errors(connection)
+    connection.execute(
+        "UPDATE runtime_warnings SET status='resolved', resolved_at=? "
+        "WHERE status='active' AND warning NOT LIKE 'invalid_identifier:%'",
+        (utc_now_iso(),),
+    )
+    touch_runtime(connection)
+
+
 def store_literature_score(connection: sqlite3.Connection, score: dict[str, Any]) -> None:
     rubric_id = str(score.get("rubric_id", "")).strip()
     if not rubric_id:
@@ -1410,12 +1455,6 @@ def store_reference_items(connection: sqlite3.Connection, items: list[dict[str, 
         for key, value in item.items():
             if key not in {"ref_index", "author", "title", "year", "raw", "confidence", "metadata"}:
                 metadata[key] = value
-        explicit_id = item.get("sourceReferenceId")
-        if not isinstance(explicit_id, str) or not explicit_id.strip():
-            explicit_id = metadata.get("sourceReferenceId")
-        if not isinstance(explicit_id, str) or not explicit_id.strip():
-            explicit_id = str(uuid.uuid4())
-        metadata["sourceReferenceId"] = explicit_id
         connection.execute(
             """
             INSERT INTO reference_items (
@@ -1454,35 +1493,6 @@ def fetch_reference_items(connection: sqlite3.Connection) -> list[dict[str, Any]
             }
         )
         items.append(item)
-    return items
-
-
-def _ensure_reference_source_ids(
-    connection: sqlite3.Connection,
-    items: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Materialize opaque IDs for rows written before the canonical contract."""
-    changed = False
-    now = utc_now_iso()
-    for item in items:
-        source_id = item.get("sourceReferenceId")
-        if isinstance(source_id, str) and source_id.strip():
-            continue
-        source_id = str(uuid.uuid4())
-        item["sourceReferenceId"] = source_id
-        metadata = {
-            key: value
-            for key, value in item.items()
-            if key not in {"ref_index", "author", "title", "year", "raw", "confidence"}
-        }
-        metadata["sourceReferenceId"] = source_id
-        connection.execute(
-            "UPDATE reference_items SET metadata_json = ?, updated_at = ? WHERE ref_index = ?",
-            (_json_dump(metadata), now, int(item["ref_index"])),
-        )
-        changed = True
-    if changed:
-        touch_runtime(connection)
     return items
 
 
@@ -2123,10 +2133,23 @@ def fetch_citation_payload(connection: sqlite3.Connection, report_md: str = "") 
 
 
 def build_digest_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
+    from . import profiles
+
     inputs = fetch_runtime_inputs(connection)
+    snapshot = profiles.require_classification(connection)
+    language = inputs.get("language") or "zh-CN"
+    slots = fetch_digest_slots(connection)
+    headings = profiles.digest_headings(
+        snapshot["profile"], language, json.loads(inputs.get("digest_heading_translations", "{}"))
+    )
     return {
-        "language": inputs.get("language") or "zh-CN",
-        "digest_slots": fetch_digest_slots(connection),
+        "language": language,
+        "digest_slots": slots,
+        "tldr_heading": headings["tldr"],
+        "section_summaries_heading": headings["section_summaries"],
+        "digest_sections": [
+            {"heading": headings[key], "items": slots[key]["items"]} for key in DIGEST_SLOT_KEYS[1:]
+        ],
         "section_summaries": fetch_digest_section_summaries(connection),
     }
 
@@ -2168,98 +2191,8 @@ def _public_reference_item(item: dict[str, Any]) -> dict[str, Any]:
     return public_item
 
 
-_CANONICAL_CITATION_FUNCTIONS = {
-    "background",
-    "baseline",
-    "contrast",
-    "component",
-    "dataset",
-    "tooling",
-    "historical",
-    "uncategorized",
-}
-
-
-def _reference_value(item: dict[str, Any], field: str, default: Any = None) -> Any:
-    if field in item:
-        return item[field]
-    metadata = item.get("metadata")
-    if isinstance(metadata, dict) and field in metadata:
-        return metadata[field]
-    return default
-
-
-def _canonical_optional_string(value: Any) -> str | None:
-    if value is None:
-        return None
-    return str(value)
-
-
-def _canonical_optional_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
-    return None
-
-
-def _canonical_source_reference(item: dict[str, Any]) -> dict[str, Any]:
-    raw = item.get("raw")
-    confidence = item.get("confidence")
-    extraction = None
-    if raw is not None or confidence is not None:
-        extraction = {
-            "raw": "" if raw is None else str(raw),
-            "confidence": float(confidence) if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) else None,
-        }
-    bibliography: dict[str, Any] = {
-        "title": "" if item.get("title") is None else str(item.get("title", "")),
-        "authors": [str(author) for author in item.get("author", [])] if isinstance(item.get("author"), list) else [],
-        "year": _canonical_optional_int(item.get("year")),
-    }
-    for field in (
-        "publicationTitle",
-        "conferenceName",
-        "university",
-        "archiveID",
-        "volume",
-        "issue",
-        "pages",
-        "place",
-        "publisher",
-        "itemType",
-        "date",
-    ):
-        value = _reference_value(item, field)
-        if value is not None and value != "":
-            bibliography[field] = str(value)
-    num_pages = _canonical_optional_int(_reference_value(item, "numPages"))
-    if num_pages is not None and num_pages >= 0:
-        bibliography["numPages"] = num_pages
-
-    matching: dict[str, Any] = {}
-    for field in ("DOI", "url", "ISBN", "ISSN", "citekey"):
-        value = _reference_value(item, field)
-        if value is not None and value != "":
-            matching[field] = str(value)
-    return {
-        "sourceReferenceId": str(item["sourceReferenceId"]),
-        "extraction": extraction,
-        "bibliography": bibliography,
-        "matching": matching,
-    }
-
-
 def build_references_render_context(connection: sqlite3.Connection) -> dict[str, Any]:
-    items = _ensure_reference_source_ids(connection, fetch_reference_items(connection))
-    return {
-        "source_reference_artifact": {
-            "schema": "source_reference_artifact.v1",
-            "references": [_canonical_source_reference(item) for item in items],
-        }
-    }
+    return {"items": [_public_reference_item(item) for item in fetch_reference_items(connection)]}
 
 
 def build_reference_parse_audit_context(connection: sqlite3.Connection) -> dict[str, Any]:
@@ -2414,109 +2347,7 @@ def build_citation_report_render_context(connection: sqlite3.Connection) -> dict
 
 
 def build_citation_render_context(connection: sqlite3.Connection, report_md: str) -> dict[str, Any]:
-    del report_md
-    payload = fetch_citation_payload(connection, report_md="")
-    reference_items = _ensure_reference_source_ids(connection, fetch_reference_items(connection))
-    source_ids_by_index = {
-        int(item["ref_index"]): str(item["sourceReferenceId"])
-        for item in reference_items
-        if isinstance(item.get("sourceReferenceId"), str) and item["sourceReferenceId"]
-    }
-
-    def canonical_mention(mention: Any, *, unresolved: bool = False) -> dict[str, Any]:
-        value = dict(mention) if isinstance(mention, dict) else {}
-
-        def optional_string(key: str) -> str | None:
-            return _canonical_optional_string(value.get(key))
-
-        def optional_int(key: str) -> int | None:
-            return _canonical_optional_int(value.get(key))
-
-        result: dict[str, Any] = {
-            "mention_id": str(value.get("mention_id", "")),
-            "marker": optional_string("marker"),
-            "style": optional_string("style"),
-            "line_start": optional_int("line_start"),
-            "line_end": optional_int("line_end"),
-            "snippet": optional_string("snippet"),
-            "ref_number_hint": optional_int("ref_number_hint"),
-            "year_hint": optional_int("year_hint"),
-            "surname_hint": optional_string("surname_hint"),
-            "citation_label_hint": optional_string("citation_label_hint"),
-            "citekey_hint": optional_string("citekey_hint"),
-        }
-        if unresolved:
-            result["reason"] = optional_string("reason")
-        return result
-
-    def source_ids_for_timeline(bucket: Any) -> list[str]:
-        bucket_obj = dict(bucket) if isinstance(bucket, dict) else {}
-        indexes = bucket_obj.get("ref_indexes", [])
-        if not isinstance(indexes, list):
-            return []
-        return [source_ids_by_index[int(index)] for index in indexes if isinstance(index, int) and int(index) in source_ids_by_index]
-
-    timeline: dict[str, Any] = {}
-    source_timeline = payload.get("timeline", {})
-    for bucket_name in ("early", "mid", "recent"):
-        bucket = source_timeline.get(bucket_name, {}) if isinstance(source_timeline, dict) else {}
-        bucket_obj = dict(bucket) if isinstance(bucket, dict) else {}
-        timeline[bucket_name] = {
-            "summary": str(bucket_obj.get("summary", "")),
-            "sourceReferenceIds": source_ids_for_timeline(bucket),
-        }
-
-    citation_items: list[dict[str, Any]] = []
-    for item in payload.get("items", []):
-        if not isinstance(item, dict):
-            continue
-        ref_index = item.get("ref_index")
-        if not isinstance(ref_index, int) or ref_index not in source_ids_by_index:
-            continue
-        function = str(item.get("function", "")).strip().lower()
-        if function not in _CANONICAL_CITATION_FUNCTIONS:
-            function = "uncategorized"
-        citation_items.append(
-            {
-                "sourceReferenceId": source_ids_by_index[ref_index],
-                "function": function,
-                "role_in_context": _canonical_optional_string(item.get("role_in_context")),
-                "topic": _canonical_optional_string(item.get("topic")),
-                "usage": _canonical_optional_string(item.get("usage")),
-                "keywords": [str(keyword) for keyword in item.get("keywords", [])] if isinstance(item.get("keywords"), list) else [],
-                "summary": _canonical_optional_string(item.get("summary")),
-                "key_reference_reason": _canonical_optional_string(item.get("key_reference_reason")),
-                "confidence": float(item["confidence"]) if isinstance(item.get("confidence"), (int, float)) and not isinstance(item.get("confidence"), bool) else None,
-                "mentions": [canonical_mention(mention) for mention in item.get("mentions", []) if isinstance(mention, dict)],
-            }
-        )
-
-    scope_decision = dict(payload.get("meta", {}).get("scope_decision", {})) if isinstance(payload.get("meta"), dict) else {}
-    fallback_from = scope_decision.get("fallback_from")
-    if not isinstance(fallback_from, dict):
-        fallback_from = None
-    citation_meta = dict(payload.get("meta", {}))
-    citation_meta["scope_decision"] = {
-        "selection_reason": _canonical_optional_string(scope_decision.get("selection_reason")),
-        "covered_sections": [str(section) for section in scope_decision.get("covered_sections", [])] if isinstance(scope_decision.get("covered_sections"), list) else [],
-        "fallback_from": fallback_from,
-        "fallback_reason": _canonical_optional_string(scope_decision.get("fallback_reason")),
-    }
-    citation_meta.pop("report_md", None)
-
-    artifact = {
-        "schema": "citation_analysis_artifact.v1",
-        "meta": citation_meta,
-        "summary": str(payload.get("summary", "")),
-        "timeline": timeline,
-        "items": citation_items,
-        "unresolved": [
-            canonical_mention(mention, unresolved=True)
-            for mention in payload.get("unmapped_mentions", [])
-            if isinstance(mention, dict)
-        ],
-    }
-    return {"citation_analysis": artifact}
+    return {"citation_analysis": fetch_citation_payload(connection, report_md=report_md)}
 
 
 def build_literature_matching_metadata_render_context(connection: sqlite3.Connection) -> dict[str, Any]:

@@ -8,7 +8,6 @@ import os
 import re
 import sys
 import unicodedata
-import uuid
 import zlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,6 +18,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from jsonschema import validate  # type: ignore[import-untyped]
 
 from . import reference_api
+from . import profiles
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -723,6 +723,13 @@ def _record_action_receipt(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     delete_action_receipts(connection, ACTION_RECEIPT_INVALIDATIONS.get(action_name, []))
+    if action_name in {"persist_render_templates", "normalize_source", "confirm_runtime_paths"}:
+        connection.execute("DELETE FROM literature_classification")
+        delete_action_receipts(connection, ["persist_literature_classification"])
+        if action_name == "normalize_source":
+            from .runtime_db import invalidate_classification_dependents
+
+            invalidate_classification_dependents(connection)
     if action_name in {"persist_render_templates", "normalize_source"}:
         clear_literature_score(connection)
     resolve_runtime_errors(connection, stage=stage)
@@ -3522,9 +3529,9 @@ def _validate_context(context: dict[str, Any], schema_name: str) -> None:
 
 
 def _render_json(template_name: str, context: dict[str, Any], schema_name: str) -> str:
+    _validate_context(context, schema_name)
     rendered = _render_template(template_name, context)
-    rendered_obj = json.loads(rendered)
-    _validate_context(rendered_obj, schema_name)
+    json.loads(rendered)
     return rendered + ("" if rendered.endswith("\n") else "\n")
 
 
@@ -3680,6 +3687,8 @@ def _validate_representative_image_obj(value: object, *, field_name: str = "repr
 def _validate_digest_payload(
     payload: dict[str, Any],
 ) -> tuple[dict[str, dict[str, Any]] | None, list[dict[str, Any]] | None, dict[str, Any] | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None, None, "digest payload must be an object"
     if "sections" in payload:
         return None, None, None, "deprecated payload key 'sections' is not supported; use digest_slots + section_summaries"
 
@@ -3705,31 +3714,20 @@ def _validate_digest_payload(
     if error is not None:
         return None, None, None, error
     normalized_slots["tldr"] = {"paragraphs": paragraphs}
+    if not paragraphs or any(not item.strip() for item in paragraphs):
+        return None, None, None, "tldr.paragraphs must contain non-empty text"
 
-    research = digest_slots_obj.get("research_question_and_contributions")
-    if not isinstance(research, dict):
-        return None, None, None, "digest_slots.research_question_and_contributions must be object"
-    research_question = research.get("research_question")
-    if not isinstance(research_question, str):
-        return None, None, None, "digest_slots.research_question_and_contributions.research_question must be string"
-    contributions, error = _require_string_list(
-        research.get("contributions"),
-        "digest_slots.research_question_and_contributions.contributions",
-    )
-    if error is not None:
-        return None, None, None, error
-    normalized_slots["research_question_and_contributions"] = {
-        "research_question": research_question,
-        "contributions": contributions,
-    }
-
-    for slot_key in ("method_highlights", "key_results", "limitations_and_reproducibility"):
+    if set(digest_slots_obj) != {"tldr", "focus", "basis", "analysis", "limits"}:
+        return None, None, None, "digest_slots must contain tldr, focus, basis, analysis and limits"
+    for slot_key in ("focus", "basis", "analysis", "limits"):
         slot_value = digest_slots_obj.get(slot_key)
         if not isinstance(slot_value, dict):
             return None, None, None, f"digest_slots.{slot_key} must be object"
         items, error = _require_string_list(slot_value.get("items"), f"digest_slots.{slot_key}.items")
         if error is not None:
             return None, None, None, error
+        if not items or any(not item.strip() for item in items):
+            return None, None, None, f"digest_slots.{slot_key}.items must contain non-empty text"
         normalized_slots[slot_key] = {"items": items}
 
     normalized_summaries: list[dict[str, Any]] = []
@@ -3737,14 +3735,19 @@ def _validate_digest_payload(
         if not isinstance(summary, dict):
             return None, None, None, "section_summaries items must be objects"
         source_heading = summary.get("source_heading")
-        if not isinstance(source_heading, str):
+        if not isinstance(source_heading, str) or not source_heading.strip():
             return None, None, None, "section_summaries.source_heading must be string"
         items, error = _require_string_list(summary.get("items"), "section_summaries.items")
         if error is not None:
             return None, None, None, error
+        if not items or any(not item.strip() for item in items):
+            return None, None, None, "section_summaries.items must contain non-empty text"
+        position = summary.get("position", index)
+        if isinstance(position, bool) or not isinstance(position, int) or position < 1:
+            return None, None, None, "section_summaries.position must be a positive integer"
         normalized_summaries.append(
             {
-                "position": int(summary.get("position", index)),
+                "position": position,
                 "source_heading": source_heading,
                 "items": items,
             }
@@ -3758,11 +3761,6 @@ def _validate_digest_coverage(connection, digest_slots: dict[str, dict[str, Any]
         if slot_key == "tldr":
             if not slot_value.get("paragraphs"):
                 return [], f"digest slot '{slot_key}' must be non-empty"
-        elif slot_key == "research_question_and_contributions":
-            if not str(slot_value.get("research_question", "")).strip():
-                return [], "digest slot 'research_question_and_contributions.research_question' must be non-empty"
-            if not slot_value.get("contributions"):
-                return [], "digest slot 'research_question_and_contributions.contributions' must be non-empty"
         else:
             if not slot_value.get("items"):
                 return [], f"digest slot '{slot_key}.items' must be non-empty"
@@ -4615,32 +4613,62 @@ def _normalize_reference_items_with_entry_metadata(
 
 
 def _validate_references_items(items: object) -> list[str]:
-    if not isinstance(items, dict):
-        return ["references must be a canonical JSON object"]
-    try:
-        validate(instance=items, schema=_schema("references.schema.json"))
-    except Exception as exc:  # noqa: BLE001
-        message = getattr(exc, "message", str(exc))
-        return [f"references canonical artifact invalid: {message}"]
-    return []
+    if not isinstance(items, list):
+        return ["references must be a JSON array"]
+    errors: list[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append(f"references[{index}] must be object")
+            continue
+        if not isinstance(item.get("author"), list):
+            errors.append(f"references[{index}].author must be array")
+        if not isinstance(item.get("title"), str):
+            errors.append(f"references[{index}].title must be string")
+        year = item.get("year")
+        if year is not None and _as_int_or_none(year) is None:
+            errors.append(f"references[{index}].year must be int|null")
+        if not isinstance(item.get("raw"), str):
+            errors.append(f"references[{index}].raw must be string")
+        confidence = item.get("confidence")
+        if not isinstance(confidence, (int, float)):
+            errors.append(f"references[{index}].confidence must be number")
+    return errors
 
 
 def _validate_citation_analysis_obj(obj: object) -> list[str]:
     if not isinstance(obj, dict):
         return ["citation_analysis must be a JSON object"]
     errors: list[str] = []
-    try:
-        validate(instance=obj, schema=_schema("citation_analysis.schema.json"))
-    except Exception as exc:  # noqa: BLE001
-        message = getattr(exc, "message", str(exc))
-        errors.append(f"citation_analysis canonical artifact invalid: {message}")
+    meta = obj.get("meta")
+    if not isinstance(meta, dict):
+        return ["citation_analysis.meta must be object"]
+    scope = meta.get("scope")
+    if not isinstance(scope, dict):
+        errors.append("citation_analysis.meta.scope must be object")
+        scope = {}
+    if not isinstance(meta.get("language"), str):
+        errors.append("citation_analysis.meta.language must be string")
+    if not isinstance(scope.get("section_title"), str):
+        errors.append("citation_analysis.meta.scope.section_title must be string")
+    line_start = _as_int_or_none(scope.get("line_start"))
+    line_end = _as_int_or_none(scope.get("line_end"))
+    if line_start is None or line_end is None:
+        errors.append("citation_analysis.meta.scope.line_start/line_end must be int")
+    elif line_start <= 0 or line_end <= 0 or line_start > line_end:
+        errors.append("citation_analysis.meta.scope line range invalid")
 
     items = obj.get("items")
-    unresolved = obj.get("unresolved")
+    unmapped = obj.get("unmapped_mentions")
     if not isinstance(items, list):
+        errors.append("citation_analysis.items must be array")
         items = []
-    if not isinstance(unresolved, list):
-        unresolved = []
+    if not isinstance(unmapped, list):
+        errors.append("citation_analysis.unmapped_mentions must be array")
+        unmapped = []
+    if not isinstance(obj.get("summary"), str):
+        errors.append("citation_analysis.summary must be string")
+    if not isinstance(obj.get("report_md"), str):
+        errors.append("citation_analysis.report_md must be string")
 
     seen_mention_ids: set[str] = set()
     for ref_pos, item in enumerate(items):
@@ -4663,13 +4691,13 @@ def _validate_citation_analysis_obj(obj: object) -> list[str]:
                 errors.append("mention_id must be unique")
             seen_mention_ids.add(mention_id)
 
-    for mention in unresolved:
+    for mention in unmapped:
         if not isinstance(mention, dict):
-            errors.append("citation_analysis.unresolved item must be object")
+            errors.append("citation_analysis.unmapped_mentions item must be object")
             continue
         mention_id = mention.get("mention_id")
         if not isinstance(mention_id, str):
-            errors.append("unresolved mention_id must be string")
+            errors.append("unmapped mention_id must be string")
             continue
         if mention_id in seen_mention_ids:
             errors.append("mention_id must be unique")
@@ -4681,15 +4709,15 @@ def _count_citation_mentions(citation_analysis_obj: object) -> int | None:
     if not isinstance(citation_analysis_obj, dict):
         return None
     items = citation_analysis_obj.get("items")
-    unresolved = citation_analysis_obj.get("unresolved")
-    if not isinstance(items, list) or not isinstance(unresolved, list):
+    unmapped = citation_analysis_obj.get("unmapped_mentions")
+    if not isinstance(items, list) or not isinstance(unmapped, list):
         return None
     consumed = 0
     for item in items:
         if not isinstance(item, dict) or not isinstance(item.get("mentions"), list):
             return None
         consumed += len(item["mentions"])
-    return consumed + len(unresolved)
+    return consumed + len(unmapped)
 
 
 def _extract_preprocess_expected_mentions(preprocess_artifact: Path | None) -> tuple[int | None, str | None]:
@@ -4711,47 +4739,14 @@ def _extract_preprocess_expected_mentions(preprocess_artifact: Path | None) -> t
 
 
 def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, output_root: Path, warnings: list[str]) -> dict[str, Any]:
-    if "citation_analysis" in candidate:
-        errors = _validate_citation_analysis_obj(candidate["citation_analysis"])
-        if errors:
-            return {
-                "digest_path": "",
-                "references_path": "",
-                "citation_analysis_path": "",
-                "literature_matching_metadata_path": "",
-                "literature_score_path": "",
-                "provenance": {"generated_at": "", "input_hash": "", "model": ""},
-                "warnings": warnings,
-                "error": {"code": "invalid_citation_artifact", "message": "; ".join(errors)},
-            }
     digest_content = ""
-    references_artifact: dict[str, Any] = {
-        "schema": "source_reference_artifact.v1",
-        "references": [],
-    }
+    references_items: list[dict[str, Any]] = []
     citation_obj: dict[str, Any] = {
-        "schema": "citation_analysis_artifact.v1",
-        "meta": {
-            "language": "zh-CN",
-            "scope": {"section_title": "Introduction", "line_start": 0, "line_end": 0},
-            "scope_source": None,
-            "scope_decision": {
-                "selection_reason": None,
-                "covered_sections": [],
-                "fallback_from": None,
-                "fallback_reason": None,
-            },
-            "mapping_reliability": "normal",
-            "reference_extraction": {"status": "completed"},
-        },
+        "meta": {"language": "zh-CN", "scope": {"section_title": "Introduction", "line_start": 1, "line_end": 1}},
         "summary": "",
-        "timeline": {
-            "early": {"summary": "", "sourceReferenceIds": []},
-            "mid": {"summary": "", "sourceReferenceIds": []},
-            "recent": {"summary": "", "sourceReferenceIds": []},
-        },
         "items": [],
-        "unresolved": [],
+        "unmapped_mentions": [],
+        "report_md": "",
     }
 
     digest_val = candidate.get("digest")
@@ -4764,61 +4759,14 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
             digest_content = ""
 
     refs_val = candidate.get("references")
-    raw_reference_items: list[dict[str, Any]] = []
-    if isinstance(refs_val, dict) and refs_val.get("schema") == "source_reference_artifact.v1" and isinstance(refs_val.get("references"), list):
-        references_artifact = dict(refs_val)
-    elif isinstance(refs_val, dict) and isinstance(refs_val.get("items"), list):
-        warnings.append("legacy references.items wrapper is migration-only; materializing canonical references")
-        raw_reference_items = [_normalize_reference_item(item, warnings) for item in refs_val["items"]]
+    if isinstance(refs_val, dict) and isinstance(refs_val.get("items"), list):
+        references_items = [_normalize_reference_item(item, warnings) for item in refs_val["items"]]
     elif isinstance(refs_val, list):
-        raw_reference_items = [_normalize_reference_item(item, warnings) for item in refs_val]
-    else:
-        raw_reference_items = []
-
-    if references_artifact["references"] == [] and raw_reference_items:
-        canonical_references: list[dict[str, Any]] = []
-        for item in raw_reference_items:
-            metadata = dict(item.get("metadata", {})) if isinstance(item.get("metadata"), dict) else {}
-            source_id = item.get("sourceReferenceId") or metadata.get("sourceReferenceId")
-            if not isinstance(source_id, str) or not source_id.strip():
-                source_id = str(uuid.uuid4())
-            metadata["sourceReferenceId"] = source_id
-            bibliography: dict[str, Any] = {
-                "title": str(item.get("title", "")),
-                "authors": [str(author) for author in item.get("author", [])] if isinstance(item.get("author"), list) else [],
-                "year": _as_int_or_none(item.get("year")),
-            }
-            for field in (
-                "publicationTitle", "conferenceName", "university", "archiveID", "volume", "issue",
-                "pages", "place", "publisher", "itemType", "date",
-            ):
-                value = item.get(field, metadata.get(field))
-                if value not in (None, ""):
-                    bibliography[field] = str(value)
-            num_pages = _as_int_or_none(item.get("numPages", metadata.get("numPages")))
-            if num_pages is not None and num_pages >= 0:
-                bibliography["numPages"] = num_pages
-            matching = {
-                field: str(item.get(field, metadata.get(field)))
-                for field in ("DOI", "url", "ISBN", "ISSN", "citekey")
-                if item.get(field, metadata.get(field)) not in (None, "")
-            }
-            canonical_references.append(
-                {
-                    "sourceReferenceId": source_id,
-                    "extraction": {"raw": str(item.get("raw", "")), "confidence": _as_confidence(item.get("confidence"), 0.1)},
-                    "bibliography": bibliography,
-                    "matching": matching,
-                }
-            )
-        references_artifact = {"schema": "source_reference_artifact.v1", "references": canonical_references}
+        references_items = [_normalize_reference_item(item, warnings) for item in refs_val]
 
     citation_val = candidate.get("citation_analysis")
-    report_md = ""
     if isinstance(citation_val, dict):
-        citation_obj = dict(citation_val)
-    if isinstance(candidate.get("citation_analysis_report"), str):
-        report_md = str(candidate["citation_analysis_report"])
+        citation_obj = citation_val
 
     digest_path = output_root / DIGEST_FILENAME
     references_path = output_root / REFERENCES_FILENAME
@@ -4827,7 +4775,7 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
     matching_metadata_path = output_root / LITERATURE_MATCHING_METADATA_FILENAME
 
     _write_text(digest_path, digest_content)
-    _write_json(references_path, references_artifact)
+    _write_json(references_path, references_items)
     _write_json(citation_path, citation_obj)
     matching_metadata = candidate.get("literature_matching_metadata")
     normalized_matching_metadata, matching_error = _validate_literature_matching_metadata_payload(matching_metadata)
@@ -4843,8 +4791,8 @@ def _materialize_outputs(candidate: dict[str, Any], source_path: Path | None, ou
         if matching_error is not None:
             warnings.append(f"literature_matching_metadata ignored: {matching_error}")
     _write_json(matching_metadata_path, normalized_matching_metadata)
-    if report_md.strip():
-        _write_text(citation_report_path, report_md)
+    if str(citation_obj.get("report_md", "")).strip():
+        _write_text(citation_report_path, str(citation_obj["report_md"]))
 
     provenance = candidate.get("provenance")
     provenance_obj = provenance if isinstance(provenance, dict) else {}
@@ -4946,8 +4894,8 @@ def _validate_public_output(
                 errors.append(f"citation_analysis_report_path does not exist: {report_path}")
             else:
                 try:
-                    if not report_path.read_text(encoding="utf-8").strip():
-                        errors.append("citation_analysis_report_path must contain derived report text")
+                    if report_path.read_text(encoding="utf-8") != str(citation_obj.get("report_md", "")):
+                        errors.append("citation_analysis_report_path content must equal citation_analysis.report_md")
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"citation_analysis_report_path unreadable text: {exc}")
 
@@ -4969,7 +4917,16 @@ def _validate_public_output(
     if isinstance(score_path, str) and score_path:
         from .scoring import validate_public_score
 
-        errors.extend(validate_public_score(Path(score_path)))
+        rubric = None
+        if db_path is not None and db_path.exists():
+            with connect_db(db_path) as connection:
+                try:
+                    snapshot = profiles.require_classification(connection)
+                except ValueError as exc:
+                    errors.append(str(exc))
+                else:
+                    rubric = snapshot["rubric"]
+        errors.extend(validate_public_score(Path(score_path), rubric))
 
     expected_mentions, preprocess_error = _extract_preprocess_expected_mentions(preprocess_artifact)
     if preprocess_error is not None:
@@ -5150,6 +5107,11 @@ def _handle_bootstrap_runtime_db(args: argparse.Namespace) -> int:
 
 
 def _repair_state_from_receipts(connection) -> tuple[str, str, str, str]:  # type: ignore[no-untyped-def]
+    if fetch_source_document(connection, "normalized_source"):
+        try:
+            profiles.require_classification(connection)
+        except ValueError:
+            return (profiles.CLASSIFICATION_STAGE, profiles.CLASSIFICATION_ACTION, profiles.CLASSIFICATION_ACTION, "source classification required")
     if is_score_only(connection):
         if has_action_receipt(connection, "render_score_only") and has_action_receipt(connection, "persist_literature_score"):
             return ("stage_8_completed", "completed", "completed", "score-only workflow completed")
@@ -5457,9 +5419,9 @@ def _dispatch_source(
         store_source_document(connection, doc_key="normalized_source", content=markdown, metadata=meta)
         _set_success_state(
             connection,
-            stage="stage_2_outline_and_scopes",
-            substep="persist_outline_and_scopes",
-            next_action="persist_outline_and_scopes",
+            stage=profiles.CLASSIFICATION_STAGE,
+            substep=profiles.CLASSIFICATION_ACTION,
+            next_action=profiles.CLASSIFICATION_ACTION,
             status="normalized source persisted",
         )
         _record_action_receipt(connection, action_name="normalize_source", stage="stage_1_normalize_source")
@@ -5469,6 +5431,10 @@ def _dispatch_source(
 
 def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    rejection, code = profiles.check_classification(db_path)
+    if rejection is not None:
+        print(json.dumps(rejection, ensure_ascii=False))
+        return code
     payload = _read_json_payload(args.payload_file)
     outline_nodes, outline_error = _validate_outline_nodes_payload(payload.get("outline_nodes", []))
     references_scope, references_scope_error = _validate_scope_payload(payload.get("references_scope"), "references_scope")
@@ -5561,9 +5527,20 @@ def _handle_persist_outline_and_scopes(args: argparse.Namespace) -> int:
 
 def _handle_persist_digest(args: argparse.Namespace) -> int:
     db_path = Path(args.db_path).expanduser().resolve() if args.db_path else default_db_path().resolve()
+    rejection, code = profiles.check_classification(db_path)
+    if rejection is not None:
+        print(json.dumps(rejection, ensure_ascii=False))
+        return code
     payload = _read_json_payload(args.payload_file)
     digest_slots, section_summaries, representative_image, error = _validate_digest_payload(payload)
     with connect_db(db_path) as connection:
+        snapshot = profiles.require_classification(connection)
+        inputs = fetch_runtime_inputs(connection)
+        try:
+            profiles.digest_headings(snapshot["profile"], inputs.get("language", "zh-CN"),
+                                     payload.get("heading_translations") if isinstance(payload, dict) else None)
+        except ValueError as exc:
+            error = str(exc)
         if error is not None or digest_slots is None or section_summaries is None:
             set_runtime_error(connection, "digest_stage_failed", error or "invalid digest payload", "stage_3_digest")
             connection.commit()
@@ -5577,6 +5554,7 @@ def _handle_persist_digest(args: argparse.Namespace) -> int:
             return 2
         store_digest_slots(connection, digest_slots)
         store_digest_section_summaries(connection, section_summaries)
+        set_runtime_input(connection, "digest_heading_translations", json.dumps(payload.get("heading_translations", {}), ensure_ascii=False))
         if representative_image is not None:
             store_representative_image(connection, representative_image)
         for warning in coverage_warnings:
@@ -7322,6 +7300,10 @@ def _handle_persist_citation_summary(args: argparse.Namespace) -> int:
 
 
 def _validate_render_prerequisites(connection) -> str | None:  # type: ignore[no-untyped-def]
+    try:
+        profiles.require_classification(connection)
+    except ValueError as exc:
+        return str(exc)
     if not has_action_receipt(connection, "persist_literature_score"):
         return "persist_literature_score receipt missing before render"
     missing_receipts = _missing_required_receipts(connection, REQUIRED_STAGE5_RECEIPTS)
@@ -7533,9 +7515,6 @@ def _handle_render_and_validate(args: argparse.Namespace) -> int:
     if mode == "fix":
         warnings: list[str] = []
         fixed = _materialize_outputs(dict(obj) if isinstance(obj, dict) else {}, source_path, output_root, warnings)
-        if fixed.get("error"):
-            print(json.dumps(fixed, ensure_ascii=False))
-            return 2
         errors = _validate_public_output(fixed, preprocess_artifact=preprocess_artifact, db_path=db_path if args.db_path else None)
         if errors:
             fixed.setdefault("warnings", [])
