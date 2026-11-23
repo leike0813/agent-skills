@@ -16,6 +16,7 @@ need_cmd tar
 need_cmd sed
 need_cmd find
 need_cmd mktemp
+need_cmd tr
 
 DRY_RUN=0
 
@@ -733,7 +734,11 @@ if [[ "${VENDOR_MODE}" == "1" ]]; then
     | sed "s#^${PKG_PATH}/##" \
     > "${LIST_REL}"
 else
-  git -C "${DEV_ROOT}" ls-files -c -o --exclude-standard -- "${PKG_DIR}" >"${LIST_RAW}"
+  # -z suppresses git's path quoting (core.quotePath): without it, paths
+  # containing non-ASCII bytes are emitted quoted and octal-escaped, which
+  # breaks both the prefix strip below and `tar -T`. NUL-separated output is
+  # converted to the one-path-per-line list the remaining steps expect.
+  git -C "${DEV_ROOT}" ls-files -z -c -o --exclude-standard -- "${PKG_DIR}" | tr '\0' '\n' >"${LIST_RAW}"
   [[ -s "${LIST_RAW}" ]] || die "No publishable files found under ${PKG_DIR}."
   sed "s#^${PKG_DIR}/##" "${LIST_RAW}" >"${LIST_REL}"
 fi
